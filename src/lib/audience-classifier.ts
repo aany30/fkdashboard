@@ -40,8 +40,13 @@ export interface CustomAudienceDetail {
   name: string;
   size: number;
   subtype?: string;
-  lookalikeSpec?: { ratio?: number; type?: string; origin?: any[] };
+  lookalikeSpec?: { ratio?: number; type?: string; origin?: any[]; startingAudienceSize?: number };
   customerFileSource?: string;
+  timeUpdated?: string;
+  /** Number of days a user stays in the audience (website/engagement/app
+   *  audiences only). Real Meta field `retention_days`. Undefined for
+   *  lookalikes and customer-list audiences (no retention window). */
+  retentionDays?: number;
 }
 
 export interface AdSetTargeting {

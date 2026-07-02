@@ -1,5 +1,6 @@
 import { KpiCard, AuditCard, StatusBadge } from "./AuditCard";
 import type { AuditProps } from "./types";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 // Detect "objective mismatch" — campaigns whose name suggests a different goal
 // than the configured objective. Lightweight heuristic on keywords.
@@ -50,7 +51,7 @@ export default function CampaignObjectiveAudit({ campaigns }: AuditProps) {
       >
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr>
                 <th className="px-4 py-2 text-left font-semibold text-gray-700">Campaign</th>
                 <th className="px-4 py-2 text-left font-semibold text-gray-700">Set Objective</th>
@@ -79,6 +80,18 @@ export default function CampaignObjectiveAudit({ campaigns }: AuditProps) {
           </table>
         </div>
       </AuditCard>
+
+      <TabSummaryFooter
+        tabName="Campaign Objective Audit"
+        lines={[
+          `${total} campaign${total !== 1 ? "s" : ""} audited — ${okPct}% objective alignment.`,
+          `${mismatchCount} mismatch${mismatchCount !== 1 ? "es" : ""} detected where the set objective doesn't match the campaign name intent.`,
+          mismatchCount === 0 ? "All campaigns have consistent objectives and naming." : "Review mismatched campaigns and update their objectives or names.",
+        ]}
+        context={{ total, mismatchCount, okPct }}
+        platform="meta"
+        dateRange="30d"
+      />
     </div>
   );
 }

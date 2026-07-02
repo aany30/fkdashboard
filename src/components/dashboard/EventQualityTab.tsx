@@ -10,6 +10,7 @@ import SortTh from "@/components/shared/SortTh";
 import { TermText } from "@/components/shared/Term";
 import EMQBenchmarkTable from "@/components/dashboard/EMQBenchmarkTable";
 import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform?: "meta" | "google" | "both";
@@ -166,6 +167,8 @@ const DEFAULT_UNKNOWN_BENCHMARK = { min: 50, max: 70, impact: "Medium" as const,
 
 // Shape of a Match-Key Coverage row — declared at module scope so the
 // top-level `useMemo` and the deeper render branch can both reference it.
+const STATUS_RANK: Record<string, number> = { Critical: 3, Low: 2, Moderate: 1, Healthy: 0 };
+
 type MatchKeyRow = {
   label: string;
   coverage: number;
@@ -174,6 +177,7 @@ type MatchKeyRow = {
   impact: "High" | "Medium-High" | "Medium" | "Low";
   recommendation: string;
   status: { label: "Healthy" | "Moderate" | "Critical" | "Low"; tone: "good" | "warn" | "bad" };
+  statusRank: number;
   isOverride: boolean;
 };
 
@@ -216,6 +220,7 @@ export default function EventQualityTab({ platform = "both", dateRange = "30d", 
         benchmarkMin: b.min, benchmarkMax: b.max,
         impact: cfg.impact, recommendation: cfg.recommendation,
         status: statusForCoverage(coverage, b.min, b.max),
+        statusRank: STATUS_RANK[statusForCoverage(coverage, b.min, b.max).label] ?? 0,
         isOverride: b.isOverride,
       };
     });
@@ -229,12 +234,14 @@ export default function EventQualityTab({ platform = "both", dateRange = "30d", 
         const defaultMin = cfg?.benchmarkMin ?? DEFAULT_UNKNOWN_BENCHMARK.min;
         const defaultMax = cfg?.benchmarkMax ?? DEFAULT_UNKNOWN_BENCHMARK.max;
         const b = resolveBenchmark(label, defaultMin, defaultMax);
+        const status = statusForCoverage(coverage, b.min, b.max);
         return {
           label, coverage,
           benchmarkMin: b.min, benchmarkMax: b.max,
           impact: cfg?.impact ?? DEFAULT_UNKNOWN_BENCHMARK.impact,
           recommendation: cfg?.recommendation ?? DEFAULT_UNKNOWN_BENCHMARK.recommendation,
-          status: statusForCoverage(coverage, b.min, b.max),
+          status,
+          statusRank: STATUS_RANK[status.label] ?? 0,
           isOverride: b.isOverride,
         };
       })
@@ -372,7 +379,7 @@ export default function EventQualityTab({ platform = "both", dateRange = "30d", 
                   <SortTh col="label" sort={mkSort} onToggle={mkToggle} className="px-4 py-3">Match Key</SortTh>
                   <SortTh col="coverage" sort={mkSort} onToggle={mkToggle} className="px-4 py-3">Your Coverage</SortTh>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">Recommended Benchmark</th>
-                  <SortTh col="status" sort={mkSort} onToggle={mkToggle} className="px-4 py-3">Status</SortTh>
+                  <SortTh col="statusRank" sort={mkSort} onToggle={mkToggle} className="px-4 py-3">Status</SortTh>
                   <SortTh col="impact" sort={mkSort} onToggle={mkToggle} className="px-4 py-3">Impact on Match Quality</SortTh>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">Recommendation</th>
                 </tr>
@@ -513,6 +520,31 @@ export default function EventQualityTab({ platform = "both", dateRange = "30d", 
           </div>
         </div>
 
+      <TabSummaryFooter
+        tabName="Event Quality (EMQ)"
+        lines={[
+          `${matchKeyRows.length} match key${matchKeyRows.length !== 1 ? "s" : ""} analysed — average key coverage: ${avgKeyCoverage}%.`,
+          `Average PII coverage: ${avgPii}% — ${avgPii >= 80 ? "strong signal quality for Meta's matching algorithm" : avgPii > 0 ? "consider enriching with more PII signals (email, phone)" : "no PII coverage detected — CAPI enrichment recommended"}.`,
+          `${pixels.length} pixel${pixels.length !== 1 ? "s" : ""} contributing data to event quality analysis.`,
+        ]}
+        context={{
+          matchKeyCount: matchKeyRows.length,
+          avgKeyCoverage,
+          avgPii,
+          pixelCount: pixels.length,
+          matchKeyRows: matchKeyRows.map(r => ({
+            label: r.label,
+            coverage: r.coverage,
+            benchmarkMin: r.benchmarkMin,
+            benchmarkMax: r.benchmarkMax,
+            status: r.status.label,
+            impact: r.impact,
+            recommendation: r.recommendation,
+          })),
+        }}
+        platform={platform === "both" ? "meta" : (platform ?? "meta")}
+        dateRange={String(dateRange ?? "30d")}
+      />
       </div>
     );
   }
@@ -678,6 +710,36 @@ export default function EventQualityTab({ platform = "both", dateRange = "30d", 
 
       {/* EMQ Benchmark table available in demo mode too */}
       <EMQBenchmarkTable />
+
+      <TabSummaryFooter
+        tabName="Event Quality (EMQ)"
+        lines={[
+          `${emqBenchmarks.length} events benchmarked — ${emqBenchmarks.filter(e => e.status === "Healthy").length} healthy, ${emqBenchmarks.filter(e => e.status === "Critical").length} critical.`,
+          `Overall EMQ score: 7.1 / 10 — target is ${(customBenchmarks.metaEMQScore * 10).toFixed(1)}+.`,
+          "Estimated lift from fixing all event quality issues: +28% conversion improvement.",
+        ]}
+        context={{
+          emqScore: 7.1,
+          benchmarkCount: emqBenchmarks.length,
+          emqBenchmarks: emqBenchmarks.map(e => ({
+            event: e.event,
+            current: e.current,
+            benchmark: e.benchmark,
+            status: e.status,
+            impact: e.impact,
+          })),
+          matchKeys: matchKeys.map(m => ({
+            label: m.key,
+            coverage: m.coverage,
+            benchmarkMin: m.benchmark,
+            benchmarkMax: m.benchmark,
+            status: m.status,
+            gap: m.gap,
+          })),
+        }}
+        platform={platform === "both" ? "meta" : (platform ?? "meta")}
+        dateRange={String(dateRange ?? "30d")}
+      />
     </div>
   );
 }

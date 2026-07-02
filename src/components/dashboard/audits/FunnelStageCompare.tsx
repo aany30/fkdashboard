@@ -18,6 +18,7 @@ import {
 } from "recharts";
 import type { CampaignData } from "@/types";
 import { formatMoney } from "@/lib/currency";
+import { usePersistentValue } from "@/hooks/useColumnPrefs";
 
 type Stage = "TOF" | "MOF" | "BOF";
 
@@ -102,7 +103,7 @@ export default function FunnelStageCompare({ metaAccessToken, metaBusinessId, cu
   const [aEnd, setAEnd] = useState(todayMinus(0));
   const [bStart, setBStart] = useState(todayMinus(13));
   const [bEnd, setBEnd] = useState(todayMinus(7));
-  const [metric, setMetric] = useState<MetricId>("spend");
+  const [metric, setMetric] = usePersistentValue<MetricId>("funnel-stage-compare-metric", "spend");
 
   const [campA, setCampA] = useState<CampaignData[] | null>(null);
   const [campB, setCampB] = useState<CampaignData[] | null>(null);

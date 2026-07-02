@@ -7,7 +7,6 @@ import { useAuthStore } from "@/store/auth";
 import { useSort } from "@/hooks/useSort";
 import SortTh from "@/components/shared/SortTh";
 import { detectCurrency, formatMoney } from "@/lib/currency";
-
 // ─── date + formatting helpers ──────────────────────────────────────────────
 
 function fmtDate(iso?: string): string {
@@ -49,14 +48,13 @@ type Structure = "CBO" | "ABO" | "Unknown";
 
 function classifyStructure(c: CampaignData): Structure {
   if (c.platform !== "meta") return "Unknown";
-  const hasCampaignBudget =
-    (c.dailyBudget !== undefined && c.dailyBudget > 0) ||
-    (c.lifetimeBudget !== undefined && c.lifetimeBudget > 0);
-  if (hasCampaignBudget) return "CBO";
-  const liveAdSets = (c.adSets || []).filter(
+  if (c.budgetLevel === "campaign") return "CBO";
+  if (c.budgetLevel === "adset") return "ABO";
+  const hasAdSets = (c.adSets || []).some(
     (a) => a.status !== "DELETED" && a.status !== "ARCHIVED"
   );
-  if (liveAdSets.length > 0) return "ABO";
+  if (hasAdSets) return "ABO";
+  if ((c.dailyBudget ?? 0) > 0 || (c.lifetimeBudget ?? 0) > 0) return "CBO";
   return "Unknown";
 }
 
@@ -531,7 +529,7 @@ export default function LearningPhaseAudit({ campaigns }: AuditProps) {
                         phase === "Limited" || phase === "ExitedLowSignal" ? "bg-yellow-50/40" : ""
                       }`}
                     >
-                      <td className="px-3 py-2.5 font-mono text-gray-900 truncate max-w-[220px]" title={c.name}>{c.name}</td>
+                      <td className="px-3 py-2.5 font-mono text-gray-900 break-words max-w-[280px]" title={c.name}>{c.name}</td>
 
                       <td className="px-3 py-2.5 text-center">
                         <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${
@@ -691,6 +689,7 @@ export default function LearningPhaseAudit({ campaigns }: AuditProps) {
           </p>
         </div>
       </AuditCard>
+
     </div>
   );
 }

@@ -7,15 +7,28 @@
  */
 
 import React, { useState, useMemo } from "react";
-import { Users, ExternalLink, AlertCircle, Info } from "lucide-react";
+import { Users, ExternalLink, AlertCircle, Info, Plus, X, PieChart as PieIcon } from "lucide-react";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
+import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
+import {
+  ResponsiveContainer, PieChart, Pie, Cell, Tooltip as ReTooltip,
+  XAxis, YAxis, CartesianGrid,
+  ComposedChart, Bar, Line, Legend as ReLegend,
+} from "recharts";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useAdSetInsights, type AdSetRow } from "@/hooks/useAdSetInsights";
+import { useAnnualFrequency } from "@/hooks/useAnnualFrequency";
 import { formatMoney } from "@/lib/currency";
 import {
   classifyAdSet, AUDIENCE_COLORS, STAGE_COLORS,
-  type AudienceClassification, type AudienceClass, type CustomAudienceDetail,
+  type AudienceClassification, type AudienceClass,
 } from "@/lib/audience-classifier";
+
+const MAX_AUDIENCES = 10;
+const SLOT_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -64,6 +77,29 @@ function fmtSize(n: number): string {
   return n.toLocaleString("en-IN");
 }
 
+// Annual frequency-distribution model (low→high frequency = green→red saturation).
+const FREQ_BUCKETS = [
+  { label: "1–5×",   lo: 1,  hi: 5,  color: "#10B981" },
+  { label: "6–10×",  lo: 6,  hi: 10, color: "#F59E0B" },
+  { label: "11–20×", lo: 11, hi: 20, color: "#F97316" },
+  { label: "21×+",   lo: 21, hi: Infinity, color: "#EF4444" },
+];
+
+/**
+ * Estimate the per-user frequency distribution from real annual reach + average
+ * frequency using a zero-truncated geometric model (mean = 1/p, support k≥1).
+ * Meta doesn't expose a true per-user histogram — this is a labeled estimate.
+ */
+function freqDistribution(reach: number, frequency: number) {
+  const F = Math.max(1, frequency);
+  const q = 1 - 1 / F;                       // P(freq ≥ k+1) / P(freq ≥ k)
+  const tailGE = (k: number) => Math.pow(q, k - 1); // P(freq ≥ k)
+  return FREQ_BUCKETS.map((b) => {
+    const share = b.hi === Infinity ? tailGE(b.lo) : tailGE(b.lo) - tailGE(b.hi + 1);
+    return { ...b, share, people: Math.round(reach * Math.max(0, share)) };
+  });
+}
+
 function OverlapBar({ pct }: { pct: number }) {
   const clamped = Math.min(100, Math.max(0, pct));
   const color = clamped > 50 ? "bg-red-500" : clamped > 25 ? "bg-orange-400" : "bg-green-500";
@@ -94,10 +130,303 @@ function audienceBadge(cls: AudienceClassification) {
   );
 }
 
+
+// ─── Audience Size table helpers ────────────────────────────────────────────
+
+type SizeRisk = "Too small" | "Limited" | "OK";
+
+function sizeRisk(size: number): SizeRisk {
+  if (size > 0 && size < 1000) return "Too small";
+  if (size >= 1000 && size < 10000) return "Limited";
+  return "OK";
+}
+
+function sizeRiskBadge(risk: SizeRisk) {
+  const styles: Record<SizeRisk, string> = {
+    "Too small": "bg-red-100 text-red-800",
+    Limited:     "bg-yellow-100 text-yellow-800",
+    OK:          "bg-green-100 text-green-800",
+  };
+  return <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${styles[risk]}`}>{risk}</span>;
+}
+
+function fmtDaysAgo(timeUpdated?: string): string {
+  if (!timeUpdated) return "—";
+  const days = Math.round((Date.now() - new Date(timeUpdated).getTime()) / 86400000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return `${days}d ago`;
+}
+
+interface AudienceSizeTableProps {
+  audiences: import("@/lib/audience-classifier").CustomAudienceDetail[];
+}
+
+function AudienceSizeTable({ audiences }: AudienceSizeTableProps) {
+  const rows = useMemo(() =>
+    audiences.map((a) => ({
+      ...a,
+      risk: sizeRisk(a.size),
+      riskRank: sizeRisk(a.size) === "Too small" ? 0 : sizeRisk(a.size) === "Limited" ? 1 : 2,
+      daysAgo: fmtDaysAgo(a.timeUpdated),
+      daysAgoNum: a.timeUpdated
+        ? Math.round((Date.now() - new Date(a.timeUpdated).getTime()) / 86400000)
+        : Number.MAX_SAFE_INTEGER,
+    })),
+  [audiences]);
+
+  const { sorted, sort, toggle } = useSort(rows, "riskRank", "asc");
+
+  const tooSmallCount = rows.filter((r) => r.risk === "Too small").length;
+  const limitedCount  = rows.filter((r) => r.risk === "Limited").length;
+
+  if (audiences.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+      <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-bold text-gray-900">Audience Size</h3>
+          <div className="text-xs text-gray-600 mt-0.5">
+            Audiences under 1,000 can&apos;t be reliably delivered; 1K–10K exhausts fast and drives frequency up.
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {tooSmallCount > 0 && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-red-50 text-red-700 border border-red-200">
+              {tooSmallCount} too small
+            </span>
+          )}
+          {limitedCount > 0 && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-yellow-50 text-yellow-700 border border-yellow-200">
+              {limitedCount} limited
+            </span>
+          )}
+        </div>
+      </div>
+      <div>
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 z-20 bg-gray-50 shadow-[0_1px_0_0_rgb(229,231,235)]">
+            <tr>
+              <SortTh col="name" sort={sort} onToggle={toggle} className="px-3 py-2 text-[10px] uppercase font-semibold text-gray-500 sticky left-0 bg-gray-50 z-10">Audience</SortTh>
+              <SortTh col="subtype" sort={sort} onToggle={toggle} className="px-3 py-2 text-[10px] uppercase font-semibold text-gray-500">Type</SortTh>
+              <SortTh col="size" sort={sort} onToggle={toggle} className="px-3 py-2 text-[10px] uppercase font-semibold text-gray-500" align="right">Size</SortTh>
+              <SortTh col="daysAgoNum" sort={sort} onToggle={toggle} className="px-3 py-2 text-[10px] uppercase font-semibold text-gray-500" align="right">Last Updated</SortTh>
+              <SortTh col="riskRank" sort={sort} onToggle={toggle} className="px-3 py-2 text-[10px] uppercase font-semibold text-gray-500" align="right">Status</SortTh>
+              <th className="px-3 py-2 text-[10px] uppercase font-semibold text-gray-500 text-right">AI Plan</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((a) => {
+              const rowBg = a.risk === "Too small" ? "bg-red-50/30" : a.risk === "Limited" ? "bg-yellow-50/20" : "bg-white";
+              const aiStatus = a.risk === "Too small" ? "critical" : a.risk === "Limited" ? "warn" : "moderate";
+              return (
+                <tr key={a.id} className={`group border-b border-gray-50 last:border-0 ${rowBg}`}>
+                  <td className={`px-3 py-2 font-medium text-gray-800 max-w-[220px] truncate sticky left-0 z-[5] ${rowBg} group-hover:bg-gray-50`} title={a.name}>{a.name}</td>
+                  <td className="px-3 py-2 text-gray-500">{a.subtype || "—"}</td>
+                  <td className="px-3 py-2 text-right text-gray-700">{a.size > 0 ? a.size.toLocaleString("en-IN") : "—"}</td>
+                  <td className="px-3 py-2 text-right text-gray-500">{a.daysAgo}</td>
+                  <td className="px-3 py-2 text-right">{sizeRiskBadge(a.risk)}</td>
+                  <td className="px-3 py-2 text-right">
+                    <AIRecommendationButton
+                      metric="Audience size"
+                      value={a.risk}
+                      status={aiStatus}
+                      platform="meta"
+                      threshold={
+                        a.risk === "Too small"
+                          ? `Size ${a.size.toLocaleString("en-IN")} — below 1,000 users; Meta can't reliably deliver.`
+                          : a.risk === "Limited"
+                          ? `Size ${a.size.toLocaleString("en-IN")} — 1K–10K range exhausts quickly and drives up frequency.`
+                          : `Size ${a.size.toLocaleString("en-IN")} — healthy delivery range.`
+                      }
+                      auditContext={{
+                        module: "Audience Size",
+                        siblingMetrics: {
+                          audience: a.name,
+                          subtype: a.subtype || "unknown",
+                          size: a.size,
+                          lastUpdated: a.daysAgo,
+                          risk: a.risk,
+                        },
+                      }}
+                      compact
+                    />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Audience Type Spend Efficiency matrix ──────────────────────────────────
+// Groups ad sets by their classified audience type (from real targeting) and
+// aggregates real spend / reach / conversions / value. ROAS, CPA, CPM and
+// $/Unique Reach are arithmetic of those real fields — no modeling, no proxy.
+
+interface AudienceTypeEfficiencyProps {
+  adsets: AdSetRow[];
+  classifyRow: (a: AdSetRow) => AudienceClassification;
+  cur: (n: number) => string;
+  curPrecise: (n: number) => string;
+}
+
+function AudienceTypeEfficiency({ adsets, classifyRow, cur, curPrecise }: AudienceTypeEfficiencyProps) {
+  if (adsets.length === 0) return null;
+
+  const groups = new Map<AudienceClass, { spend: number; reach: number; impressions: number; conversions: number; conversionValue: number; count: number }>();
+  for (const a of adsets) {
+    const cls = classifyRow(a).cls;
+    const g = groups.get(cls) || { spend: 0, reach: 0, impressions: 0, conversions: 0, conversionValue: 0, count: 0 };
+    g.spend += a.spend || 0;
+    g.reach += a.reach || 0;
+    g.impressions += a.impressions || 0;
+    g.conversions += a.conversions || 0;
+    g.conversionValue += a.conversionValue || 0;
+    g.count += 1;
+    groups.set(cls, g);
+  }
+
+  const totalSpend = Array.from(groups.values()).reduce((s, g) => s + g.spend, 0);
+  const rows = Array.from(groups.entries())
+    .map(([cls, g]) => ({
+      cls,
+      ...g,
+      spendShare: totalSpend > 0 ? g.spend / totalSpend : 0,
+      costPerUniqueReach: g.reach > 0 ? g.spend / g.reach : null,
+      cpa: g.conversions > 0 ? g.spend / g.conversions : null,
+      roas: g.spend > 0 ? g.conversionValue / g.spend : null,
+    }))
+    .sort((a, b) => b.spend - a.spend);
+
+  // Highlight the best & worst ROAS among groups that actually have ROAS.
+  const roasVals = rows.map((r) => r.roas).filter((v): v is number => v !== null);
+  const bestRoas = roasVals.length ? Math.max(...roasVals) : null;
+  const worstRoas = roasVals.length ? Math.min(...roasVals) : null;
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-bold text-gray-900">Audience Type — Spend Efficiency</h3>
+          <div className="text-xs text-gray-600 mt-0.5">Real spend, reach &amp; conversions grouped by audience type. Spot where budget concentrates vs. where it returns.</div>
+        </div>
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-bold uppercase border border-green-200">Real</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50 border-b border-gray-100">
+            <tr>
+              <th className="px-3 py-2 text-left font-semibold text-gray-500 uppercase text-[10px]">Audience Type</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase text-[10px]">Ad Sets</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase text-[10px]">Spend</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase text-[10px]">% Spend</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase text-[10px]">$/Unique Reach</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase text-[10px]">Conv.</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase text-[10px]">CPA</th>
+              <th className="px-3 py-2 text-right font-semibold text-gray-500 uppercase text-[10px]">ROAS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.cls} className="border-b border-gray-50 last:border-0 hover:bg-gray-50">
+                <td className="px-3 py-2">
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${AUDIENCE_COLORS[r.cls] ?? "bg-gray-100 text-gray-600"}`}>{r.cls}</span>
+                </td>
+                <td className="px-3 py-2 text-right text-gray-600">{r.count}</td>
+                <td className="px-3 py-2 text-right font-semibold text-gray-900">{cur(r.spend)}</td>
+                <td className="px-3 py-2 text-right text-gray-600">{(r.spendShare * 100).toFixed(0)}%</td>
+                <td className="px-3 py-2 text-right text-gray-700">{r.costPerUniqueReach !== null ? curPrecise(r.costPerUniqueReach) : "—"}</td>
+                <td className="px-3 py-2 text-right text-gray-700">{r.conversions.toLocaleString()}</td>
+                <td className="px-3 py-2 text-right text-gray-700">{r.cpa !== null ? cur(r.cpa) : "—"}</td>
+                <td className={`px-3 py-2 text-right font-bold ${r.roas !== null && r.roas === bestRoas ? "text-green-700" : r.roas !== null && r.roas === worstRoas ? "text-red-600" : "text-gray-700"}`}>
+                  {r.roas !== null ? `${r.roas.toFixed(2)}x` : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 text-xs text-gray-600 font-medium leading-relaxed">
+        Audience type classified from each ad set&apos;s real Meta targeting setup. Green/red ROAS marks the best &amp; worst-returning types.
+      </div>
+    </div>
+  );
+}
+
+// ─── Cross-Campaign Frequency Burden ────────────────────────────────────────
+// True cross-campaign frequency = account-level `frequency` (real, deduplicated
+// across every campaign). Overlap factor = Σ ad-set reach ÷ account dedup reach
+// (both real Meta numbers) = how many ad sets the average reached person sits in.
+
+interface CrossCampaignBurdenProps {
+  adsets: AdSetRow[];
+  accountReach: number;
+  accountFrequency: number;
+}
+
+function CrossCampaignBurden({ adsets, accountReach, accountFrequency }: CrossCampaignBurdenProps) {
+  if (accountReach <= 0 || adsets.length === 0) return null;
+
+  const sumAdSetReach = adsets.reduce((s, a) => s + (a.reach || 0), 0);
+  const overlapFactor = accountReach > 0 ? sumAdSetReach / accountReach : 0;
+  // Severity from real numbers: high account frequency + heavy ad-set overlap.
+  const freqHot = accountFrequency >= 8;
+  const freqWarm = accountFrequency >= 5;
+  const overlapHot = overlapFactor >= 2.5;
+
+  const burden = freqHot || overlapHot ? "High burden" : freqWarm || overlapFactor >= 1.8 ? "Moderate" : "Healthy";
+  const burdenStyle = burden === "High burden"
+    ? "bg-red-100 text-red-800 border-red-200"
+    : burden === "Moderate"
+      ? "bg-yellow-100 text-yellow-800 border-yellow-200"
+      : "bg-green-100 text-green-800 border-green-200";
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-bold text-gray-900">Cross-Campaign Frequency Burden</h3>
+          <div className="text-xs text-gray-600 mt-0.5">How hard the average person is hit across all campaigns combined — deduplicated by Meta.</div>
+        </div>
+        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${burdenStyle}`}>{burden}</span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-px bg-gray-100">
+        <div className="bg-white px-5 py-4">
+          <div className={`text-2xl font-bold ${freqHot ? "text-red-600" : freqWarm ? "text-yellow-600" : "text-gray-900"}`}>{accountFrequency.toFixed(1)}×</div>
+          <div className="text-xs text-gray-500 mt-0.5">account frequency</div>
+          <div className="text-xs text-gray-600 mt-1">avg impressions per person, all campaigns</div>
+        </div>
+        <div className="bg-white px-5 py-4">
+          <div className={`text-2xl font-bold ${overlapHot ? "text-red-600" : overlapFactor >= 1.8 ? "text-yellow-600" : "text-gray-900"}`}>{overlapFactor.toFixed(2)}×</div>
+          <div className="text-xs text-gray-500 mt-0.5">ad-set overlap factor</div>
+          <div className="text-xs text-gray-600 mt-1">avg ad sets each person falls into</div>
+        </div>
+        <div className="bg-white px-5 py-4">
+          <div className="text-2xl font-bold text-gray-900">{fmtSize(accountReach)}</div>
+          <div className="text-xs text-gray-500 mt-0.5">deduplicated reach</div>
+          <div className="text-xs text-gray-600 mt-1">vs {fmtSize(sumAdSetReach)} summed across ad sets</div>
+        </div>
+      </div>
+      <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 text-xs text-gray-600 font-medium leading-relaxed">
+        Account frequency &amp; deduplicated reach are real Meta account-level fields for the selected period. Overlap factor = Σ ad-set reach ÷ deduplicated reach.
+      </div>
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
+function stageBadge(stage: FunnelStage) {
+  return <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${STAGE_COLORS[stage]}`}>{stage}</span>;
+}
+
 export default function AudienceOverlapTab({ platform, dateRange, customStart, customEnd }: Props) {
-  const { adsets, audienceMap, loading, currency } = useAdSetInsights(
+  const { adsets, audiences, audienceMap, loading, error: insightsError, currency, accountReach, accountFrequency } = useAdSetInsights(
     platform === "both" ? "meta" : platform,
     dateRange, customStart, customEnd
   );
@@ -105,39 +434,95 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
   const classifyRow = (a: AdSetRow): AudienceClassification =>
     classifyAdSet(a.targeting, audienceMap, a.campaignObjective, a.name);
   const cur = (n: number) => formatMoney(n, currency, 0);
+  // Cost-per-unique-reach is typically < 1 currency unit, so it needs decimals.
+  const curPrecise = (n: number) => formatMoney(n, currency, 2);
 
-  const [adSetA, setAdSetA] = useState("");
-  const [adSetB, setAdSetB] = useState("");
+  // Annual (trailing 12-month) reach + avg frequency for the distribution chart.
+  const annual = useAnnualFrequency(platform === "both" ? "meta" : platform);
+  const freqDist = useMemo(
+    () => (annual.reach > 0 && annual.frequency > 0 ? freqDistribution(annual.reach, annual.frequency) : []),
+    [annual.reach, annual.frequency]
+  );
 
+  // Per-month real trend (no modeling): reach + avg frequency for each month.
+  // Used as the honest top chart so users can see "April/May/August ran hot" directly.
+  // Builds a FULL trailing-12-month skeleton (this month → 11 months back) and
+  // fills in real Meta data where it exists — zero for months the account didn't
+  // run. Meta omits zero-activity months entirely, so without the skeleton the
+  // chart would only show the months that had spend (e.g. Jan–Jun).
+  const monthlyTrend = useMemo(() => {
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    if (annual.monthly.length === 0) return [];
+    const byMonth = new Map(annual.monthly.map((m) => [m.month, m]));
+    const now = new Date();
+    const out: Array<{ label: string; reach: number; frequency: number; impressions: number }> = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const m = byMonth.get(key);
+      out.push({
+        label: `${MONTHS[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`,
+        reach: m?.reach ?? 0,
+        frequency: m ? +m.frequency.toFixed(2) : 0,
+        impressions: m?.impressions ?? 0,
+      });
+    }
+    return out;
+  }, [annual.monthly]);
+
+  // "Months of activity" — derived from real numbers only.
+  // sumMonthlyReach / annualReach = avg distinct months a reached user appeared in.
+  // Real signal, no modeling: tells whether exposure is concentrated or spread.
+  const monthsOfActivity = useMemo(() => {
+    const sumMonthly = annual.monthly.reduce((s, m) => s + (m.reach || 0), 0);
+    const avg = annual.reach > 0 ? sumMonthly / annual.reach : 0;
+    return { sumMonthly, avg };
+  }, [annual.monthly, annual.reach]);
+
+
+  // 2–4 selectable slots; start with two empty.
+  const [selected, setSelected] = useState<string[]>(["", ""]);
+  const setSlot = (idx: number, id: string) =>
+    setSelected((prev) => prev.map((v, i) => (i === idx ? id : v)));
+  const addSlot = () => setSelected((prev) => (prev.length < MAX_AUDIENCES ? [...prev, ""] : prev));
+  const removeSlot = (idx: number) =>
+    setSelected((prev) => (prev.length > 2 ? prev.filter((_, i) => i !== idx) : prev));
 
   const adSetMap = useMemo(() => new Map(adsets.map((a) => [a.id, a])), [adsets]);
 
-  const result = useMemo(() => {
-    if (!adSetA || !adSetB || adSetA === adSetB) return null;
-    const a = adSetMap.get(adSetA);
-    const b = adSetMap.get(adSetB);
-    if (!a || !b) return null;
+  // Resolve the chosen ad sets (non-empty, valid, de-duplicated, in slot order).
+  const analysis = useMemo(() => {
+    const seen = new Set<string>();
+    const items = selected
+      .map((id) => adSetMap.get(id))
+      .filter((r): r is AdSetRow => !!r && (seen.has(r.id) ? false : (seen.add(r.id), true)))
+      .map((row) => {
+        const cls = classifyRow(row);
+        return { row, cls, size: row.reach || row.impressions || 0 };
+      });
+    if (items.length < 2) return null;
 
-    const sizeA = a.reach || a.impressions || 0;
-    const sizeB = b.reach || b.impressions || 0;
-    const cA = classifyRow(a);
-    const cB = classifyRow(b);
-    const overlapPct = estimateOverlapPct(cA.cls, cA.funnelStage, cB.cls, cB.funnelStage);
-    const overlap = Math.round(Math.min(sizeA, sizeB) * (overlapPct / 100));
-    const unionReach = sizeA + sizeB - overlap;
+    const pairs: { a: typeof items[number]; b: typeof items[number]; pct: number; users: number }[] = [];
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const a = items[i], b = items[j];
+        const pct = estimateOverlapPct(a.cls.cls, a.cls.funnelStage, b.cls.cls, b.cls.funnelStage);
+        const users = Math.round(Math.min(a.size, b.size) * (pct / 100));
+        pairs.push({ a, b, pct, users });
+      }
+    }
+    const sumSizes = items.reduce((s, x) => s + x.size, 0);
+    const sumOverlap = pairs.reduce((s, p) => s + p.users, 0);
+    const maxSize = Math.max(...items.map((x) => x.size), 0);
+    // Heuristic union via pairwise inclusion–exclusion, clamped to a sane range.
+    const unionReach = Math.max(maxSize, Math.min(sumSizes, sumSizes - sumOverlap));
+    const topPair = [...pairs].sort((a, b) => b.pct - a.pct)[0] ?? null;
 
-    return { sizeA, sizeB, unionReach, overlap, overlapPct };
+    return { items, pairs, unionReach, topPair };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adSetA, adSetB, adSetMap, audienceMap]);
+  }, [selected, adSetMap, audienceMap]);
 
-  const adA = adSetMap.get(adSetA);
-  const adB = adSetMap.get(adSetB);
-  const nameA = adA?.name ?? "";
-  const nameB = adB?.name ?? "";
-  const classA = adA ? classifyRow(adA) : null;
-  const classB = adB ? classifyRow(adB) : null;
-  const stageA: FunnelStage | null = classA?.funnelStage ?? null;
-  const stageB: FunnelStage | null = classB?.funnelStage ?? null;
+  const chosenNames = analysis?.items.map((it) => it.row.name) ?? [];
 
   return (
     <div className="space-y-6">
@@ -146,7 +531,7 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
           <Users className="w-8 h-8 text-blue-600" />
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Audience Overlap</h1>
-            <p className="text-gray-600 mt-1">Compare two ad sets to estimate audience cannibalization.</p>
+            <p className="text-gray-600 mt-1">Compare 2–4 ad sets to estimate audience cannibalization.</p>
           </div>
         </div>
         {platform !== "google" && (
@@ -154,8 +539,8 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
             tabName="Audience Overlap"
             context={{
               adSetCount: adsets.length,
-              lastCompared: adSetA && adSetB ? { a: nameA, b: nameB } : null,
-              lastResult: result ? { overlapPct: result.overlapPct } : null,
+              lastCompared: chosenNames.length >= 2 ? chosenNames : null,
+              lastResult: analysis?.topPair ? { topOverlapPct: analysis.topPair.pct } : null,
             }}
             platform="meta"
             inline
@@ -184,115 +569,284 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
             </span>
           </div>
 
+          {/* Monthly exposure intensity: real reach + avg frequency, plus a modeled bucket bubble view */}
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap rounded-t-xl overflow-hidden">
+              <div className="flex items-center gap-2">
+                <PieIcon className="w-4 h-4 text-violet-600" />
+                <h3 className="text-sm font-bold text-gray-900">Monthly Exposure Intensity</h3>
+              </div>
+              <span className="text-[10px] text-gray-500">Trailing 12 months · all campaigns</span>
+            </div>
+
+            {annual.loading ? (
+              <div className="px-5 py-10 text-sm text-gray-500 text-center">Loading monthly reach &amp; frequency…</div>
+            ) : monthlyTrend.length === 0 ? (
+              <div className="px-5 py-10 text-sm text-gray-500 text-center">No monthly reach/frequency data for the trailing 12 months.</div>
+            ) : (
+              <>
+                {/* TOP: real Meta data — monthly reach (bars) + avg frequency (line). Scrollable so all 12 months are visible. */}
+                <div className="p-5 pb-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <div className="text-sm font-bold text-gray-900">Monthly Reach &amp; Avg Frequency</div>
+                      <div className="text-xs text-gray-500 mt-0.5">Real Meta data — months with a higher orange line ran more repeat exposure.</div>
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-bold uppercase border border-green-200">Real</span>
+                  </div>
+                  {/* Fixed pixel width per bar; overflow-x-scroll always shows a scrollbar. */}
+                  <div className="overflow-x-scroll pb-1" style={{ scrollbarWidth: "thin" }}>
+                    <ComposedChart data={monthlyTrend} width={Math.max(monthlyTrend.length * 120, 600)} height={220} margin={{ top: 10, right: 12, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
+                      <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#64748B" }} tickLine={false} axisLine={{ stroke: "#E5E9F0" }} />
+                      <YAxis yAxisId="reach" tickFormatter={(v: number) => fmtSize(v)} tick={{ fontSize: 10, fill: "#64748B" }} tickLine={false} axisLine={{ stroke: "#E5E9F0" }} width={48} />
+                      <YAxis yAxisId="freq" orientation="right" tickFormatter={(v: number) => `${v}×`} tick={{ fontSize: 10, fill: "#F59E0B" }} tickLine={false} axisLine={{ stroke: "#E5E9F0" }} width={36} />
+                      <ReTooltip
+                        formatter={(value: number, name: string) => {
+                          if (name === "reach") return [fmtSize(value), "Reach"];
+                          if (name === "frequency") return [`${value.toFixed(2)}×`, "Avg Frequency"];
+                          return [value, name];
+                        }}
+                      />
+                      <ReLegend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar yAxisId="reach" dataKey="reach" name="Reach" fill="#6366F1" fillOpacity={0.7} radius={[3, 3, 0, 0]} />
+                      <Line yAxisId="freq" type="monotone" dataKey="frequency" name="Avg Frequency" stroke="#F59E0B" strokeWidth={2.4} dot={{ r: 3, fill: "#F59E0B" }} />
+                    </ComposedChart>
+                  </div>
+                </div>
+
+                {/* BOTTOM: real cross-month exposure stat — derived from data we already fetch */}
+                <div className="p-5 pt-3 border-t border-gray-100">
+                  <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                    <div>
+                      <div className="text-sm font-bold text-gray-900">Months of Activity (real)</div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        Cross-month exposure intensity, derived directly from Meta — no modeling.
+                      </div>
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-bold uppercase border border-green-200">Real</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-gray-400">Annual Unique Reach</div>
+                      <div className="text-2xl font-bold text-gray-900">{fmtSize(annual.reach)}</div>
+                      <div className="text-xs text-gray-600 mt-1">people reached in the year</div>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-gray-400">Sum of Monthly Reaches</div>
+                      <div className="text-2xl font-bold text-gray-900">{fmtSize(monthsOfActivity.sumMonthly)}</div>
+                      <div className="text-xs text-gray-600 mt-1">Σ of each month&apos;s reach</div>
+                    </div>
+                    <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-3">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-violet-700">Avg Months / Reached User</div>
+                      <div className="text-2xl font-bold text-violet-800">
+                        {monthsOfActivity.avg > 0 ? `${monthsOfActivity.avg.toFixed(1)} mo` : "—"}
+                      </div>
+                      <div className="text-xs text-violet-700 mt-1">distinct months active</div>
+                    </div>
+                  </div>
+                  <div className="mt-3 text-xs text-gray-600 leading-relaxed">
+                    {monthsOfActivity.avg > 0 && (
+                      <>
+                        On average, each reached user appeared across <span className="font-semibold">{monthsOfActivity.avg.toFixed(1)}</span> distinct months this year.
+                        {monthsOfActivity.avg >= 3
+                          ? " Exposure is spread broadly — users come back across many months (good for steady brand familiarity)."
+                          : monthsOfActivity.avg >= 1.8
+                            ? " Exposure is moderately spread — users typically see ads across 2–3 months."
+                            : " Exposure is concentrated — users mostly saw ads in a single month (heavier bursts, less continuity)."}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 text-xs text-gray-600 leading-relaxed">
+              All numbers on this card come directly from Meta (monthly <code>reach</code>, <code>frequency</code>, <code>impressions</code> over the trailing 12 months).
+              <span className="block mt-1">A per-user frequency histogram (e.g. "10% saw 6× in Apr/May/Aug") is not exposed by Meta's auction Insights API — only by <a href="https://developers.facebook.com/docs/marketing-api/reach-and-frequency/" target="_blank" rel="noopener noreferrer" className="underline">Reach &amp; Frequency campaigns</a>, which use reserved buying.</span>
+            </div>
+          </div>
+
+          {/* ── Audience Size table ──────────────────────────────────────── */}
+          <AudienceSizeTable audiences={audiences} />
+
+          {/* ── Cross-campaign frequency burden (real account-level data) ── */}
+          <CrossCampaignBurden adsets={adsets} accountReach={accountReach} accountFrequency={accountFrequency} />
+
+          {/* ── Audience type spend efficiency (real, grouped by classifier) ── */}
+          <AudienceTypeEfficiency adsets={adsets} classifyRow={classifyRow} cur={cur} curPrecise={curPrecise} />
+
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-5">
-            <h3 className="text-sm font-bold text-gray-900">Select two ad sets to compare</h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-gray-900">Select ad sets to compare</h3>
+              <span className="text-xs text-gray-400">{selected.length} of {MAX_AUDIENCES}</span>
+            </div>
 
             {loading ? (
               <div className="text-sm text-gray-500">Loading ad sets…</div>
             ) : adsets.length === 0 ? (
               <div className="text-sm text-gray-500">No ad sets found. Connect a Meta account or widen the date range.</div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {([["A", adSetA, setAdSetA, adSetB], ["B", adSetB, setAdSetB, adSetA]] as const).map(([label, val, setter, other]) => (
-                  <div key={label}>
-                    <label className="block text-xs font-semibold text-gray-600 mb-1.5">Ad Set {label}</label>
-                    <select
-                      value={val}
-                      onChange={(e) => setter(e.target.value)}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                    >
-                      <option value="">— Select ad set —</option>
-                      {[...adsets].sort((a, b) => (b.spend || 0) - (a.spend || 0)).map((a) => (
-                        <option key={a.id} value={a.id} disabled={a.id === other}>
-                          {a.name}
-                        </option>
-                      ))}
-                    </select>
-                    {val && (
-                      <div className="mt-1.5 flex items-center gap-2">
-                        {stageA && label === "A" && <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${STAGE_COLORS[stageA]}`}>{stageA}</span>}
-                        {stageB && label === "B" && <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${STAGE_COLORS[stageB]}`}>{stageB}</span>}
-                        {(() => {
-                          const c = label === "A" ? classA : classB;
-                          return c ? audienceBadge(c) : null;
-                        })()}
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {selected.map((val, idx) => {
+                    const others = new Set(selected.filter((_, i) => i !== idx));
+                    const row = val ? adSetMap.get(val) : undefined;
+                    const cls = row ? classifyRow(row) : null;
+                    return (
+                      <div key={idx}>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="block text-xs font-semibold text-gray-600">Ad Set {SLOT_LABELS[idx]}</label>
+                          {selected.length > 2 && (
+                            <button
+                              onClick={() => removeSlot(idx)}
+                              className="text-gray-400 hover:text-red-600 inline-flex items-center gap-0.5 text-[11px] font-medium"
+                              title="Remove this audience"
+                            >
+                              <X className="w-3 h-3" /> Remove
+                            </button>
+                          )}
+                        </div>
+                        <select
+                          value={val}
+                          onChange={(e) => setSlot(idx, e.target.value)}
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                        >
+                          <option value="">— Select ad set —</option>
+                          {[...adsets].sort((a, b) => (b.spend || 0) - (a.spend || 0)).map((a) => (
+                            <option key={a.id} value={a.id} disabled={others.has(a.id)}>
+                              {a.name}
+                            </option>
+                          ))}
+                        </select>
+                        {cls && (
+                          <div className="mt-1.5 flex items-center gap-2">
+                            {stageBadge(cls.funnelStage)}
+                            {audienceBadge(cls)}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                ))}
-              </div>
+                    );
+                  })}
+                </div>
+
+                {selected.length < MAX_AUDIENCES && (
+                  <button
+                    onClick={addSlot}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-gray-300 text-sm font-medium text-gray-600 hover:border-blue-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" /> Add audience
+                  </button>
+                )}
+              </>
             )}
           </div>
 
-          {result && (
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-              <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
-                <h3 className="text-sm font-bold text-gray-900">Overlap Estimate</h3>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 font-bold uppercase border border-blue-200">Heuristic</span>
-              </div>
+          {analysis && (() => {
+            const { items, pairs, unionReach, topPair } = analysis;
+            const fmt = (n: number | null, suffix = "") => n !== null ? `${n.toFixed(suffix === "x" ? 2 : suffix === "%" ? 2 : 0)}${suffix}` : "—";
+            const cpm  = (r: AdSetRow) => r.impressions > 0 ? (r.spend / r.impressions) * 1000 : null;
+            const ctr  = (r: AdSetRow) => r.impressions > 0 ? (r.clicks  / r.impressions) * 100 : null;
+            const cpc  = (r: AdSetRow) => r.clicks > 0 ? r.spend / r.clicks : null;
+            const roas = (r: AdSetRow) => r.spend > 0 ? r.conversionValue / r.spend : null;
+            const cpa  = (r: AdSetRow) => r.conversions > 0 ? r.spend / r.conversions : null;
+            const cvr  = (r: AdSetRow) => r.clicks > 0 ? (r.conversions / r.clicks) * 100 : null;
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-gray-100">
-                {[
-                  { label: nameA || "Ad Set A", value: result.sizeA > 0 ? fmtSize(result.sizeA) : "—", sub: "reach (period)" },
-                  { label: nameB || "Ad Set B", value: result.sizeB > 0 ? fmtSize(result.sizeB) : "—", sub: "reach (period)" },
-                  { label: "Est. Overlap",       value: result.sizeA > 0 ? fmtSize(result.overlap) : "—", sub: "shared users" },
-                  { label: "Overlap %",           value: `${result.overlapPct.toFixed(1)}%`, sub: "of smaller ad set" },
-                ].map((c) => (
-                  <div key={c.label} className="bg-white px-5 py-4">
-                    <div className="text-2xl font-bold text-gray-900">{c.value}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">{c.sub}</div>
-                    <div className="text-[11px] text-gray-400 mt-1 truncate" title={c.label}>{c.label}</div>
+            const cpuReach = (r: AdSetRow) => r.reach > 0 ? r.spend / r.reach : null;
+
+            const rows: { label: string; values: React.ReactNode[]; combined: React.ReactNode }[] = [
+              { label: "Funnel Stage",      values: items.map((it) => stageBadge(it.cls.funnelStage)), combined: "—" },
+              { label: "Audience Type",     values: items.map((it) => audienceBadge(it.cls)), combined: "—" },
+              { label: "Spend",             values: items.map((it) => cur(it.row.spend)), combined: cur(items.reduce((s, it) => s + it.row.spend, 0)) },
+              { label: "Impressions",       values: items.map((it) => fmtSize(it.row.impressions)), combined: fmtSize(items.reduce((s, it) => s + it.row.impressions, 0)) },
+              { label: "Reach (period)",    values: items.map((it) => it.size > 0 ? fmtSize(it.size) : "—"), combined: unionReach > 0 ? fmtSize(unionReach) : "—" },
+              { label: "Frequency",         values: items.map((it) => it.row.frequency?.toFixed(1) ?? "—"), combined: "—" },
+              { label: "$/Unique Reach",    values: items.map((it) => cpuReach(it.row) !== null ? curPrecise(cpuReach(it.row)!) : "—"), combined: "—" },
+              { label: "CPM",               values: items.map((it) => cpm(it.row) !== null ? cur(cpm(it.row)!) : "—"), combined: "—" },
+              { label: "CTR",               values: items.map((it) => fmt(ctr(it.row), "%")), combined: "—" },
+              { label: "CPC",               values: items.map((it) => cpc(it.row) !== null ? cur(cpc(it.row)!) : "—"), combined: "—" },
+              { label: "Conversions",       values: items.map((it) => it.row.conversions.toLocaleString()), combined: items.reduce((s, it) => s + it.row.conversions, 0).toLocaleString() },
+              { label: "Conv. Value",       values: items.map((it) => cur(it.row.conversionValue)), combined: cur(items.reduce((s, it) => s + it.row.conversionValue, 0)) },
+              { label: "CPA",               values: items.map((it) => cpa(it.row) !== null ? cur(cpa(it.row)!) : "—"), combined: "—" },
+              { label: "CVR",               values: items.map((it) => fmt(cvr(it.row), "%")), combined: "—" },
+              { label: "ROAS",              values: items.map((it) => fmt(roas(it.row), "x")), combined: "—" },
+            ];
+
+            return (
+              <div className="space-y-6">
+                {/* Reach summary */}
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-gray-900">Reach Summary</h3>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 font-bold uppercase border border-blue-200">Heuristic</span>
                   </div>
-                ))}
-              </div>
-
-              <div className="px-5 py-4 space-y-3">
-                <OverlapBar pct={result.overlapPct} />
-                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border ${riskLabel(result.overlapPct).color}`}>
-                  {riskLabel(result.overlapPct).label} — {result.overlapPct.toFixed(1)}% overlap
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-px bg-gray-100">
+                    {items.map((it, i) => (
+                      <div key={i} className="bg-white px-5 py-4">
+                        <div className="text-2xl font-bold text-gray-900">{it.size > 0 ? fmtSize(it.size) : "—"}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">reach (period)</div>
+                        <div className="text-xs text-gray-600 mt-1 truncate" title={it.row.name}>
+                          {SLOT_LABELS[i]} · {it.row.name}
+                        </div>
+                      </div>
+                    ))}
+                    <div className="bg-white px-5 py-4">
+                      <div className="text-2xl font-bold text-blue-700">{unionReach > 0 ? fmtSize(unionReach) : "—"}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">combined union</div>
+                      <div className="text-xs text-gray-600 mt-1">de-duplicated est.</div>
+                    </div>
+                  </div>
                 </div>
-                <p className="text-[11px] text-gray-400">
-                  Estimated from audience class ({classA?.cls ?? "?"} vs {classB?.cls ?? "?"}) and funnel stage ({stageA} vs {stageB}) similarity.
-                  {result.overlapPct > 30 && " High overlap means these ad sets may be bidding against each other — consider adding exclusions."}
-                </p>
-              </div>
 
-              {(() => {
-                const rowA = adSetMap.get(adSetA)!;
-                const rowB = adSetMap.get(adSetB)!;
-                const fmt = (n: number | null, suffix = "") => n !== null ? `${n.toFixed(suffix === "x" ? 2 : suffix === "%" ? 2 : 0)}${suffix}` : "—";
-                const cpm  = (r: typeof rowA) => r.impressions > 0 ? (r.spend / r.impressions) * 1000 : null;
-                const ctr  = (r: typeof rowA) => r.impressions > 0 ? (r.clicks  / r.impressions) * 100 : null;
-                const cpc  = (r: typeof rowA) => r.clicks > 0 ? r.spend / r.clicks : null;
-                const roas = (r: typeof rowA) => r.spend > 0 ? r.conversionValue / r.spend : null;
-                const cpa  = (r: typeof rowA) => r.conversions > 0 ? r.spend / r.conversions : null;
-                const cvr  = (r: typeof rowA) => r.clicks > 0 ? (r.conversions / r.clicks) * 100 : null;
-                const rows: { label: string; a: React.ReactNode; b: React.ReactNode; combined: React.ReactNode; muted?: boolean }[] = [
-                  { label: "Funnel Stage",   a: stageA ? <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${STAGE_COLORS[stageA]}`}>{stageA}</span> : "—", b: stageB ? <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${STAGE_COLORS[stageB]}`}>{stageB}</span> : "—", combined: "—" },
-                  { label: "Audience Type",  a: classA ? audienceBadge(classA) : "—", b: classB ? audienceBadge(classB) : "—", combined: "—" },
-                  { label: "Spend",          a: cur(rowA.spend), b: cur(rowB.spend), combined: cur(rowA.spend + rowB.spend) },
-                  { label: "Impressions",    a: fmtSize(rowA.impressions), b: fmtSize(rowB.impressions), combined: fmtSize(rowA.impressions + rowB.impressions) },
-                  { label: "Reach (period)", a: result.sizeA > 0 ? fmtSize(result.sizeA) : "—", b: result.sizeB > 0 ? fmtSize(result.sizeB) : "—", combined: result.unionReach > 0 ? fmtSize(result.unionReach) : "—" },
-                  { label: "Frequency",      a: rowA.frequency?.toFixed(1) ?? "—", b: rowB.frequency?.toFixed(1) ?? "—", combined: "—" },
-                  { label: "CPM",            a: cpm(rowA) !== null ? cur(cpm(rowA)!) : "—", b: cpm(rowB) !== null ? cur(cpm(rowB)!) : "—", combined: "—" },
-                  { label: "CTR",            a: fmt(ctr(rowA), "%"), b: fmt(ctr(rowB), "%"), combined: "—" },
-                  { label: "CPC",            a: cpc(rowA) !== null ? cur(cpc(rowA)!) : "—", b: cpc(rowB) !== null ? cur(cpc(rowB)!) : "—", combined: "—" },
-                  { label: "Conversions",    a: rowA.conversions.toLocaleString(), b: rowB.conversions.toLocaleString(), combined: (rowA.conversions + rowB.conversions).toLocaleString() },
-                  { label: "Conv. Value",    a: cur(rowA.conversionValue), b: cur(rowB.conversionValue), combined: cur(rowA.conversionValue + rowB.conversionValue) },
-                  { label: "CPA",            a: cpa(rowA) !== null ? cur(cpa(rowA)!) : "—", b: cpa(rowB) !== null ? cur(cpa(rowB)!) : "—", combined: "—" },
-                  { label: "CVR",            a: fmt(cvr(rowA), "%"), b: fmt(cvr(rowB), "%"), combined: "—" },
-                  { label: "ROAS",           a: fmt(roas(rowA), "x"), b: fmt(roas(rowB), "x"), combined: "—" },
-                  { label: "Est. Overlap",   a: "—", b: "—", combined: result.sizeA > 0 ? fmtSize(result.overlap) : "—", muted: true },
-                  { label: "Overlap %",      a: "—", b: "—", combined: `${result.overlapPct.toFixed(1)}%`, muted: true },
-                ];
-                return (
-                  <div className="border-t border-gray-100 overflow-x-auto">
+                {/* Pairwise overlap */}
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="px-5 py-3 border-b border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-900">Pairwise Overlap</h3>
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      {pairs.length} pair{pairs.length > 1 ? "s" : ""} compared.
+                      {topPair && topPair.pct > 30 && " High-overlap pairs may be bidding against each other — consider exclusions."}
+                    </p>
+                  </div>
+                  <div className="divide-y divide-gray-100">
+                    {pairs.map((p, i) => {
+                      const isTop = topPair === p && p.pct > 25;
+                      return (
+                        <div key={i} className={`px-5 py-4 ${isTop ? "bg-red-50/40" : ""}`}>
+                          <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+                            <div className="text-sm font-medium text-gray-800 truncate">
+                              <span title={p.a.row.name}>{p.a.row.name}</span>
+                              <span className="text-gray-400 mx-1.5">↔</span>
+                              <span title={p.b.row.name}>{p.b.row.name}</span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-xs text-gray-500">{p.users > 0 ? `${fmtSize(p.users)} shared` : "—"}</span>
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border ${riskLabel(p.pct).color}`}>
+                                {p.pct.toFixed(1)}%
+                              </span>
+                            </div>
+                          </div>
+                          <OverlapBar pct={p.pct} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Metric comparison */}
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="px-5 py-3 border-b border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-900">Metric Comparison</h3>
+                  </div>
+                  <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                      <thead className="bg-gray-50 border-b border-gray-200">
+                      <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
                         <tr>
                           <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Metric</th>
-                          <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase max-w-[140px] truncate" title={nameA}>{nameA || "Ad Set A"}</th>
-                          <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase max-w-[140px] truncate" title={nameB}>{nameB || "Ad Set B"}</th>
+                          {items.map((it, i) => (
+                            <th key={i} className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase max-w-[160px] truncate" title={it.row.name}>
+                              {SLOT_LABELS[i]} · {it.row.name}
+                            </th>
+                          ))}
                           <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Combined</th>
                         </tr>
                       </thead>
@@ -300,20 +854,75 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
                         {rows.map((r) => (
                           <tr key={r.label} className="border-b border-gray-100 last:border-0">
                             <td className="px-4 py-2.5 text-gray-700 font-medium">{r.label}</td>
-                            <td className="px-4 py-2.5 text-right text-gray-900">{r.a}</td>
-                            <td className="px-4 py-2.5 text-right text-gray-900">{r.b}</td>
+                            {r.values.map((v, i) => (
+                              <td key={i} className="px-4 py-2.5 text-right text-gray-900">{v}</td>
+                            ))}
                             <td className="px-4 py-2.5 text-right font-bold text-blue-700">{r.combined}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                );
-              })()}
-            </div>
-          )}
-
+                </div>
+              </div>
+            );
+          })()}
         </>
+      )}
+
+      {platform !== "google" && (
+        <TabSummaryFooter
+          lines={(() => {
+            // Chart-derived insight lines (always shown when data exists).
+            const chartLines: string[] = [];
+
+            // Line 1 — peak frequency month from Monthly Exposure Intensity chart.
+            if (monthlyTrend.length > 0) {
+              const peakFreqMonth = [...monthlyTrend].sort((a, b) => b.frequency - a.frequency)[0];
+              const peakReachMonth = [...monthlyTrend].sort((a, b) => b.reach - a.reach)[0];
+              chartLines.push(
+                `Peak frequency in ${peakFreqMonth.label} (${peakFreqMonth.frequency.toFixed(1)}×); peak reach in ${peakReachMonth.label} (${fmtSize(peakReachMonth.reach)} people).`
+              );
+            }
+
+            // Line 2 — frequency distribution breakdown (Annual Frequency Distribution donut).
+            if (freqDist.length > 0 && annual.reach > 0) {
+              const low = freqDist[0];   // 1–5×
+              const high = freqDist.find((b) => b.lo >= 11); // 11–20× bucket
+              const veryHigh = freqDist[freqDist.length - 1]; // 21×+
+              const oversatPct = ((veryHigh.share + (high?.share ?? 0)) * 100).toFixed(0);
+              chartLines.push(
+                `${(low.share * 100).toFixed(0)}% of your annual reach saw ads 1–5× (light touch); ${oversatPct}% saw 11×+ (potential ad fatigue).`
+              );
+            }
+
+            // Line 3 — months of activity or overlap insight.
+            if (analysis) {
+              const { topPair, unionReach } = analysis;
+              chartLines.push(
+                topPair && topPair.pct > 30
+                  ? `Highest overlap: "${topPair.a.row.name}" ↔ "${topPair.b.row.name}" at ${topPair.pct.toFixed(1)}% — add exclusions to reduce cannibalization.`
+                  : topPair
+                    ? `Compared ${analysis.items.length} ad sets — est. union reach ${fmtSize(unionReach)}; overlap within healthy range (<30%).`
+                    : `Avg exposure spread: ${monthsOfActivity.avg.toFixed(1)} months per reached user — ${monthsOfActivity.avg >= 3 ? "broad continuity across the year" : "concentrated bursts; consider always-on spend"}.`
+              );
+            } else if (monthsOfActivity.avg > 0) {
+              chartLines.push(
+                `Avg ${monthsOfActivity.avg.toFixed(1)} months of active exposure per reached user — ${monthsOfActivity.avg >= 3 ? "healthy spread across the year" : "mostly burst activity; consider more even pacing"}.`
+              );
+            } else if (adsets.length > 0) {
+              chartLines.push(`${adsets.length} ad sets available — select 2 or more above to compare audience overlap.`);
+            }
+
+            return chartLines.length > 0
+              ? chartLines
+              : ["No reach/frequency data available for the trailing 12 months."];
+          })()}
+          tabName="Audience Overlap"
+          context={{ adSetCount: adsets.length, overlapPairs: analysis?.pairs.length ?? 0 }}
+          platform="meta"
+          dateRange={String(dateRange)}
+        />
       )}
     </div>
   );

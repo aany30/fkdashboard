@@ -14,10 +14,12 @@
  *        "Good ✓" when at/above benchmark; blank when not entered.
  */
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Sparkles, CheckCircle2, AlertTriangle, Loader2, Wrench, TrendingUp } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { isDemoCredential } from "@/lib/demo-data";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 
 interface EMQEvent {
   id: string;
@@ -46,6 +48,17 @@ export default function EMQBenchmarkTable() {
 
   const [aiStatus, setAiStatus] = useState<Record<string, AiStatus>>({});
   const [aiRec, setAiRec] = useState<Record<string, RecData>>({});
+
+  const enrichedEmqRows = useMemo(() =>
+    EMQ_EVENTS.map((event) => {
+      const current = emqInputs[event.id] ?? null;
+      const benchmark = event.benchmark;
+      const variance = current !== null && benchmark !== null ? +(current - benchmark).toFixed(1) : null;
+      return { ...event, current, variance };
+    }),
+    [emqInputs]
+  );
+  const { sorted: emqSorted, sort: emqSort, toggle: emqToggle } = useSort(enrichedEmqRows, "label", "asc");
 
   const fetchInsight = async (event: EMQEvent, currentEmq: number) => {
     if (!event.benchmark) return;
@@ -133,19 +146,19 @@ export default function EMQBenchmarkTable() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
-              <th className="px-4 py-3 text-left font-semibold text-gray-700">Event</th>
-              <th className="px-4 py-3 text-center font-semibold text-gray-700">EMQ Benchmark</th>
-              <th className="px-4 py-3 text-center font-semibold text-gray-700">Current EMQ</th>
-              <th className="px-4 py-3 text-center font-semibold text-gray-700">Variance</th>
+              <SortTh col="label" sort={emqSort} onToggle={emqToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Event</SortTh>
+              <SortTh col="benchmark" sort={emqSort} onToggle={emqToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="center">EMQ Benchmark</SortTh>
+              <SortTh col="current" sort={emqSort} onToggle={emqToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="center">Current EMQ</SortTh>
+              <SortTh col="variance" sort={emqSort} onToggle={emqToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="center">Variance</SortTh>
               <th className="px-4 py-3 text-center font-semibold text-gray-700">Alert</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-700">Recommendation</th>
             </tr>
           </thead>
           <tbody>
-            {EMQ_EVENTS.map((event) => {
-              const current = emqInputs[event.id] ?? null;
+            {emqSorted.map((event) => {
+              const current = event.current;
               const benchmark = event.benchmark;
-              const variance = current !== null && benchmark !== null ? +(current - benchmark).toFixed(1) : null;
+              const variance = event.variance;
               const isBelow = variance !== null && variance < 0;
               const isGood = variance !== null && variance >= 0;
               const status = aiStatus[event.id] ?? "idle";

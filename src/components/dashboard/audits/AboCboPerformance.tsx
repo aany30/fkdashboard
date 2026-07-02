@@ -25,6 +25,7 @@ import { useAuthStore } from "@/store/auth";
 import { basisMetrics, BASIS_OPTIONS, BASIS_SUBTITLE, type SpendBasis, type LifetimeMap } from "@/lib/spend-basis";
 import { detectCurrency, formatMoney } from "@/lib/currency";
 import AttributionInfo from "@/components/shared/AttributionInfo";
+import { usePersistentValue } from "@/hooks/useColumnPrefs";
 
 type Structure = "CBO" | "ABO" | "Unknown";
 
@@ -33,14 +34,15 @@ type Structure = "CBO" | "ABO" | "Unknown";
  * back to "Unknown". Same logic used in LearningPhaseAudit. */
 function classifyStructure(c: CampaignData): Structure {
   if (c.platform !== "meta") return "Unknown";
-  const hasCampaignBudget =
-    (c.dailyBudget !== undefined && c.dailyBudget > 0) ||
-    (c.lifetimeBudget !== undefined && c.lifetimeBudget > 0);
-  if (hasCampaignBudget) return "CBO";
-  const liveAdSets = (c.adSets || []).filter(
+  if (c.budgetLevel === "campaign") return "CBO";
+  if (c.budgetLevel === "adset") return "ABO";
+  // Fallback for campaigns without budgetLevel (e.g. demo data / old cache):
+  // if dailyBudget/lifetimeBudget exists but no ad sets → CBO; if ad sets exist → ABO.
+  const hasAdSets = (c.adSets || []).some(
     (a) => a.status !== "DELETED" && a.status !== "ARCHIVED"
   );
-  if (liveAdSets.length > 0) return "ABO";
+  if (hasAdSets) return "ABO";
+  if ((c.dailyBudget ?? 0) > 0 || (c.lifetimeBudget ?? 0) > 0) return "CBO";
   return "Unknown";
 }
 
@@ -73,24 +75,25 @@ const METRIC_OPTIONS = [
 
 type MetricId = (typeof METRIC_OPTIONS)[number]["id"];
 
-type StructureBuckets = Record<Exclude<Structure, "Unknown">, {
+type BucketData = {
   campaignCount: number;
   spend: number;
   impressions: number;
   clicks: number;
+  reach: number;
   conversions: number;
   conversionValue: number;
-  reach: number;
-  engagements: number;
-  views: number;
-  leads: number;
-  atc: number;
-}>;
+  windowSpend: number;
+  windowClicks: number;
+  windowImpressions: number;
+};
+type StructureBuckets = Record<Exclude<Structure, "Unknown">, BucketData>;
 
 function aggregate(campaigns: CampaignData[], lifetime: LifetimeMap, basis: SpendBasis): StructureBuckets {
-  const init = () => ({
-    campaignCount: 0, spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0,
-    reach: 0, engagements: 0, views: 0, leads: 0, atc: 0,
+  const init = (): BucketData => ({
+    campaignCount: 0, spend: 0, impressions: 0, clicks: 0, reach: 0,
+    conversions: 0, conversionValue: 0,
+    windowSpend: 0, windowClicks: 0, windowImpressions: 0,
   });
   const buckets: StructureBuckets = { CBO: init(), ABO: init() };
   for (const c of campaigns) {
@@ -98,47 +101,49 @@ function aggregate(campaigns: CampaignData[], lifetime: LifetimeMap, basis: Spen
     if (s === "Unknown") continue;
     const b = buckets[s];
     b.campaignCount += 1;
-    // All three resolved on the SAME basis so ratios stay coherent.
     const { spend, impressions, clicks } = basisMetrics(c, lifetime, basis);
     b.spend += spend;
     b.impressions += impressions;
     b.clicks += clicks;
+    b.reach += c.reach || 0;
     b.conversions += c.conversions || 0;
     b.conversionValue += c.conversionValue || 0;
-    // Derived placeholders for metrics Meta doesn't expose directly here
-    b.reach += Math.round(impressions * 0.45);
-    b.engagements += clicks;
-    b.views += Math.round(impressions * 0.10);
-    b.leads += Math.round((c.conversions || 0) * 0.7);
-    b.atc += Math.round((c.conversions || 0) * 3.5);
+    b.windowSpend += c.spend || 0;
+    b.windowClicks += c.clicks || 0;
+    b.windowImpressions += c.impressions || 0;
   }
   return buckets;
 }
 
-function metricValue(b: StructureBuckets[keyof StructureBuckets], metric: MetricId): number {
+function metricValue(b: BucketData, metric: MetricId): number {
   switch (metric) {
+    // Basis-adjusted absolute metrics (spend/impressions/clicks have lifetime data)
     case "spend": return b.spend;
     case "impressions": return b.impressions;
-    case "reach": return b.reach;
-    case "cpm": return b.impressions > 0 ? (b.spend / b.impressions) * 1000 : 0;
-    case "frequency": return b.reach > 0 ? b.impressions / b.reach : 0;
     case "clicks": return b.clicks;
+    // Real API data (window-scoped only)
+    case "reach": return b.reach;
+    case "sales": return b.conversions;
+    // Rates from basis-adjusted metrics (internally consistent)
+    case "cpm": return b.impressions > 0 ? (b.spend / b.impressions) * 1000 : 0;
+    case "frequency": return b.reach > 0 ? b.windowImpressions / b.reach : 0;
     case "ctr": return b.impressions > 0 ? (b.clicks / b.impressions) * 100 : 0;
     case "cpc": return b.clicks > 0 ? b.spend / b.clicks : 0;
-    case "engagements": return b.engagements;
-    case "engRate": return b.impressions > 0 ? (b.engagements / b.impressions) * 100 : 0;
-    case "cpe": return b.engagements > 0 ? b.spend / b.engagements : 0;
-    case "views": return b.views;
-    case "vtr": return b.impressions > 0 ? (b.views / b.impressions) * 100 : 0;
-    case "cpv": return b.views > 0 ? b.spend / b.views : 0;
-    case "leads": return b.leads;
-    case "convRate": return b.clicks > 0 ? (b.conversions / b.clicks) * 100 : 0;
-    case "cpl": return b.leads > 0 ? b.spend / b.leads : 0;
-    case "atc": return b.atc;
-    case "atcConvRate": return b.atc > 0 ? (b.conversions / b.atc) * 100 : 0;
-    case "sales": return b.conversions;
-    case "saleConvRate": return b.clicks > 0 ? (b.conversions / b.clicks) * 100 : 0;
-    case "cps": return b.conversions > 0 ? b.spend / b.conversions : 0;
+    // Conversion-derived rates always use WINDOW values so ratios stay correct
+    case "convRate": return b.windowClicks > 0 ? (b.conversions / b.windowClicks) * 100 : 0;
+    case "saleConvRate": return b.windowClicks > 0 ? (b.conversions / b.windowClicks) * 100 : 0;
+    case "cps": return b.conversions > 0 ? b.windowSpend / b.conversions : 0;
+    case "cpl": return b.conversions > 0 ? b.windowSpend / b.conversions : 0;
+    case "cpv": return b.conversions > 0 ? b.windowSpend / b.conversions : 0;
+    case "cpe": return b.clicks > 0 ? b.windowSpend / b.clicks : 0;
+    // Metrics not available at campaign level from Meta API — return 0
+    case "engagements": return 0;
+    case "engRate": return 0;
+    case "views": return 0;
+    case "vtr": return 0;
+    case "leads": return 0;
+    case "atc": return 0;
+    case "atcConvRate": return 0;
   }
 }
 
@@ -158,8 +163,9 @@ interface Props {
 export default function AboCboPerformance({ campaigns }: Props) {
   const acctCurrency = detectCurrency(campaigns);
   const { metaAccessToken } = useAuthStore();
-  const [primaryMetric, setPrimaryMetric] = useState<MetricId>("spend");
-  const [secondaryMetric, setSecondaryMetric] = useState<MetricId>("cpm");
+  const [primaryMetric, setPrimaryMetric] = usePersistentValue<MetricId>("abo-cbo-perf-primary", "spend");
+  const [secondaryMetric, setSecondaryMetric] = usePersistentValue<MetricId>("abo-cbo-perf-secondary", "cpm");
+  const [tertiaryMetric, setTertiaryMetric] = usePersistentValue<MetricId>("abo-cbo-perf-tertiary", "ctr");
   const [basis, setBasis] = useState<SpendBasis>("perDay");
 
   // Lifetime spend + run-dates for ALL Meta campaigns — needed for Lifetime /
@@ -195,11 +201,13 @@ export default function AboCboPerformance({ campaigns }: Props) {
 
   const primary = METRIC_OPTIONS.find((m) => m.id === primaryMetric)!;
   const secondary = METRIC_OPTIONS.find((m) => m.id === secondaryMetric)!;
+  const tertiary = METRIC_OPTIONS.find((m) => m.id === tertiaryMetric)!;
 
   const chartData = order.map((s) => ({
     structure: s,
     [primaryMetric]: Number(metricValue(buckets[s], primaryMetric).toFixed(2)),
     [secondaryMetric]: Number(metricValue(buckets[s], secondaryMetric).toFixed(2)),
+    [`__tertiary__${tertiaryMetric}`]: Number(metricValue(buckets[s], tertiaryMetric).toFixed(2)),
   }));
 
   const structureColor = (s: Exclude<Structure, "Unknown">) =>
@@ -300,11 +308,23 @@ export default function AboCboPerformance({ campaigns }: Props) {
               ))}
             </select>
           </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-600">Tertiary Y:</span>
+            <select
+              value={tertiaryMetric}
+              onChange={(e) => setTertiaryMetric(e.target.value as MetricId)}
+              className="px-2 py-1 bg-white border border-orange-300 rounded font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-orange-400"
+            >
+              {METRIC_OPTIONS.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div style={{ width: "100%", height: 320 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={chartData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+            <ComposedChart data={chartData} margin={{ top: 10, right: 80, left: 10, bottom: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
               <XAxis dataKey="structure" stroke="#6b7280" tick={{ fill: "#374151", fontSize: 12 }} axisLine={false} tickLine={false} />
               <YAxis
@@ -320,19 +340,32 @@ export default function AboCboPerformance({ campaigns }: Props) {
                 stroke="#10b981"
                 tick={{ fill: "#10b981", fontSize: 11 }}
                 axisLine={false} tickLine={false}
+                width={60}
                 tickFormatter={(v) => formatValue(v, secondary.unit, acctCurrency)}
+              />
+              <YAxis
+                yAxisId="right2"
+                orientation="right"
+                stroke="#f59e0b"
+                tick={{ fill: "#f59e0b", fontSize: 11 }}
+                axisLine={false} tickLine={false}
+                width={60}
+                tickFormatter={(v) => formatValue(v, tertiary.unit, acctCurrency)}
               />
               <Tooltip
                 cursor={{ fill: "rgba(99,102,241,0.06)" }}
                 formatter={(value: number, name: string) => {
-                  const metric = name === primary.label ? primary : secondary;
-                  return [formatValue(value, metric.unit, acctCurrency), name];
+                  if (name === primary.label) return [formatValue(value, primary.unit, acctCurrency), name];
+                  if (name === secondary.label) return [formatValue(value, secondary.unit, acctCurrency), name];
+                  if (name === tertiary.label) return [formatValue(value, tertiary.unit, acctCurrency), name];
+                  return [formatValue(value, "", acctCurrency), name];
                 }}
                 contentStyle={{ background: "#fff", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 12 }}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar yAxisId="left" dataKey={primaryMetric} name={primary.label} fill="#4f46e5" radius={[4, 4, 0, 0]} animationDuration={600} animationEasing="ease-out" />
               <Line yAxisId="right" dataKey={secondaryMetric} name={secondary.label} stroke="#10b981" strokeWidth={2} dot={{ r: 5, fill: "#10b981" }} activeDot={{ r: 7 }} animationDuration={700} animationEasing="ease-out" />
+              <Line yAxisId="right2" dataKey={`__tertiary__${tertiaryMetric}`} name={tertiary.label} stroke="#f59e0b" strokeWidth={2} strokeDasharray="5 3" dot={{ r: 5, fill: "#f59e0b" }} activeDot={{ r: 7 }} animationDuration={800} animationEasing="ease-out" />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -351,6 +384,12 @@ export default function AboCboPerformance({ campaigns }: Props) {
                 {secondary.label}:{" "}
                 <span className="font-mono text-green-700 font-semibold">
                   {formatValue(metricValue(buckets[s], secondaryMetric), secondary.unit, acctCurrency)}
+                </span>
+              </div>
+              <div className="text-gray-600">
+                {tertiary.label}:{" "}
+                <span className="font-mono font-semibold" style={{ color: "#d97706" }}>
+                  {formatValue(metricValue(buckets[s], tertiaryMetric), tertiary.unit, acctCurrency)}
                 </span>
               </div>
             </div>

@@ -24,6 +24,8 @@ export function useAdSetInsights(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currency, setCurrency] = useState("INR");
+  const [accountReach, setAccountReach] = useState(0);
+  const [accountFrequency, setAccountFrequency] = useState(0);
 
   const { startDate, endDate } = rangeToDates(dateRange, customStart, customEnd);
 
@@ -46,12 +48,20 @@ export function useAdSetInsights(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accessToken: effectiveToken, businessId: effectiveBiz, startDate, endDate }),
     })
-      .then((r) => r.json())
+      .then(async (r) => {
+        if (!r.ok) {
+          const text = await r.text().catch(() => "");
+          throw new Error(`API error ${r.status}${text && !text.startsWith("<!") ? ": " + text.substring(0, 200) : ""}`);
+        }
+        return r.json();
+      })
       .then((data) => {
         if (cancelled) return;
         if (data.error) { setError(data.error); return; }
         setAdsets(data.adsets || []);
         setAudiences(data.audiences || []);
+        setAccountReach(data.accountReach || 0);
+        setAccountFrequency(data.accountFrequency || 0);
         if (data.currency) setCurrency(data.currency);
       })
       .catch((e) => { if (!cancelled) setError(e.message); })
@@ -63,5 +73,5 @@ export function useAdSetInsights(
 
   const audienceMap = useMemo(() => buildAudienceMap(audiences), [audiences]);
 
-  return { adsets, audiences, audienceMap, loading, error, currency, startDate, endDate };
+  return { adsets, audiences, audienceMap, loading, error, currency, accountReach, accountFrequency, startDate, endDate };
 }

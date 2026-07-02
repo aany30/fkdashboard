@@ -20,11 +20,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Layers, AlertCircle, Info } from "lucide-react";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useAuthStore } from "@/store/auth";
+import { usePersistentValue } from "@/hooks/useColumnPrefs";
 import { detectCurrency, formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -76,8 +80,8 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
   const { metaAccessToken, metaBusinessId, demoMode } = useAuthStore();
   const currency = detectCurrency(campaigns);
 
-  const [groupBy, setGroupBy] = useState<GroupBy>("campaign");
-  const [metric, setMetric] = useState<Metric>("spend");
+  const [groupBy, setGroupBy] = usePersistentValue<GroupBy>("breakdowns-groupby", "campaign");
+  const [metric, setMetric] = usePersistentValue<Metric>("breakdowns-metric", "spend");
 
   // API-backed breakdown data
   const [apiRows, setApiRows] = useState<BreakdownRow[]>([]);
@@ -167,6 +171,11 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
   }, [campaigns, groupBy, metric, opt.source]);
 
   const rows = opt.source === "client" ? clientRows : sortedApiRows;
+  const rowsWithRoas = useMemo(
+    () => rows.map((r) => ({ ...r, roas: r.spend > 0 ? r.conversionValue / r.spend : 0 })),
+    [rows]
+  );
+  const { sorted, sort, toggle } = useSort(rowsWithRoas, "spend", "desc");
   const loading = opt.source === "client" ? campaignsLoading : apiLoading;
 
   const cur = (n: number) => formatMoney(n, currency, 0);
@@ -325,20 +334,20 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
             <div className="px-5 py-3 border-b border-gray-200">
               <h3 className="text-sm font-bold text-gray-900">All rows ({rows.length})</h3>
             </div>
-            <div className="overflow-x-auto">
+            <div>
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+                <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
                   <tr>
-                    <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase">{opt.label}</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">Spend</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">Impressions</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">Clicks</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">Conv</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">ROAS</th>
+                    <SortTh col="label" sort={sort} onToggle={toggle} className="text-[11px] uppercase">{opt.label}</SortTh>
+                    <SortTh col="spend" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Spend</SortTh>
+                    <SortTh col="impressions" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Impressions</SortTh>
+                    <SortTh col="clicks" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Clicks</SortTh>
+                    <SortTh col="conversions" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Conv</SortTh>
+                    <SortTh col="roas" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">ROAS</SortTh>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
+                  {sorted.map((r) => (
                     <tr key={r.label} className="border-b border-gray-100 hover:bg-gray-50">
                       <td className="px-4 py-2 font-mono text-gray-900 truncate max-w-[300px]" title={r.label}>{r.label}</td>
                       <td className="px-4 py-2 text-right font-semibold text-gray-900">{cur(r.spend)}</td>
@@ -364,6 +373,30 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
             : "No data for the selected window. Connect a Meta account or widen the date range."}
         </div>
       )}
+
+      {rows.length > 0 && (() => {
+        const cur = (n: number) => formatMoney(n, currency, 0);
+        const totalSpend = rows.reduce((s, r) => s + (r.spend || 0), 0);
+        const topSpend = [...rows].sort((a, b) => (b.spend || 0) - (a.spend || 0))[0];
+        const topRoas = [...rows].filter((r) => (r.spend || 0) > 0 && (r.conversionValue || 0) > 0)
+          .sort((a, b) => (b.conversionValue! / b.spend!) - (a.conversionValue! / a.spend!))[0];
+        const shareTop = totalSpend > 0 ? Math.round(((topSpend?.spend || 0) / totalSpend) * 100) : 0;
+        return (
+          <TabSummaryFooter
+            lines={[
+              `${rows.length} ${opt.label.toLowerCase()} segment${rows.length !== 1 ? "s" : ""} — total spend ${cur(totalSpend)}.`,
+              topSpend ? `"${topSpend.label}" accounts for ${shareTop}% of spend at ${cur(topSpend.spend || 0)}.` : "",
+              topRoas && topRoas.label !== topSpend?.label
+                ? `Best ROAS: "${topRoas.label}" at ${((topRoas.conversionValue || 0) / (topRoas.spend || 1)).toFixed(2)}×.`
+                : topRoas ? `Top spender "${topRoas.label}" is also your best ROAS performer.` : "No conversion data available for ROAS comparison.",
+            ].filter(Boolean)}
+            tabName={`Breakdowns — ${opt.label}`}
+            context={{ groupBy, rowCount: rows.length }}
+            platform={platform === "both" ? "meta" : platform}
+            dateRange={String(dateRange)}
+          />
+        );
+      })()}
 
     </div>
   );

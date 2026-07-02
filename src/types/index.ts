@@ -144,11 +144,19 @@ export interface CampaignData {
   /** Budget + spend fields (optional — populated when Insights data is available). */
   dailyBudget?: number;
   lifetimeBudget?: number;
+  /** Where the budget is set: "campaign" = CBO (campaign-level budget),
+   * "adset" = ABO (budget lives on individual ad sets, dailyBudget here is the
+   * sum of active ad-set budgets for display only). */
+  budgetLevel?: "campaign" | "adset";
   spend?: number;
   impressions?: number;
   clicks?: number;
+  reach?: number;
   conversions?: number;
   conversionValue?: number;
+  /** Total video plays (Meta `video_play_actions`). Powers Views + VTR in the
+   * Planning report. Undefined for non-video campaigns / Google. */
+  videoViews?: number;
   /** 0-100, Google Ads only (search_impression_share). */
   impressionShare?: number;
   /** ISO currency code: "USD", "INR", etc. */
@@ -174,6 +182,10 @@ export interface AdData {
   id: string;
   name: string;
   status: string;
+  spend?: number;
+  impressions?: number;
+  clicks?: number;
+  reach?: number;
 }
 
 export interface AdSetData {
@@ -184,6 +196,7 @@ export interface AdSetData {
   spend?: number;
   impressions?: number;
   clicks?: number;
+  reach?: number;
   /** Real Meta learning-phase status (LEARNING / LEARNING_LIMITED / SUCCESS).
    * Populated only for Meta ad sets via `learning_stage_info` field. */
   learningStatus?: "LEARNING" | "LEARNING_LIMITED" | "SUCCESS" | string;

@@ -20,6 +20,7 @@ import AudienceAnalysisReport from "@/components/dashboard/reports/AudienceAnaly
 import CreativeReport from "@/components/dashboard/reports/CreativeReport";
 import PlacementReport from "@/components/dashboard/reports/PlacementReport";
 import AttributionReport from "@/components/dashboard/reports/AttributionReport";
+import PlanningReport from "@/components/dashboard/reports/PlanningReport";
 import ExportReport from "@/components/dashboard/reports/ExportReport";
 import GenerateReport from "@/components/dashboard/reports/GenerateReport";
 import AskAITab from "@/components/dashboard/tabs/AskAITab";
@@ -109,6 +110,7 @@ const NAV: NavGroup[] = [
       { id: "rep-creative",    label: "Creative Analysis",   Icon: ImageIcon },
       { id: "rep-placement",   label: "Placement Analysis",  Icon: MapIcon   },
       { id: "rep-attribution", label: "Attribution Report",  Icon: GitBranch },
+      { id: "rep-planning",    label: "Planning",            Icon: Briefcase },
       { id: "rep-generate",    label: "Generate Report",     Icon: Download  },
     ],
   },
@@ -294,6 +296,8 @@ export default function Dashboard() {
         return <PlacementReport {...props} />;
       case "rep-attribution":
         return <AttributionReport {...props} />;
+      case "rep-planning":
+        return <PlanningReport {...props} />;
       case "rep-export":
         return <ExportReport {...props} />;
       case "rep-generate":
@@ -398,7 +402,7 @@ export default function Dashboard() {
               title="Total AI credits used this session. Resets on logout."
             >
               <span>✦ AI Credits</span>
-              <span className="font-mono">${totalAiCreditsUsd.toFixed(2)}</span>
+              <span className="font-mono">{totalAiCreditsUsd.toFixed(2)}</span>
             </div>
 
             {/* Alert-email icon — when set, critical Budget Allocation issues
@@ -537,7 +541,7 @@ export default function Dashboard() {
           </nav>
         </aside>
 
-        <main className="flex-1 overflow-y-auto overflow-x-hidden bg-gray-50">
+        <main className="flex-1 overflow-y-auto bg-gray-50">
           <div className="p-8">{renderTabContent()}</div>
         </main>
       </div>

@@ -1,8 +1,11 @@
 import type { MetaPixelStats } from "@/lib/api-clients/meta";
 import { Activity, AlertCircle, AlertTriangle, Clock } from "lucide-react";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 
 export default function DiagnosticsPanel({ pixel }: { pixel: MetaPixelStats }) {
   const d = pixel.diagnostics;
+  const { sorted: sortedActivity, sort: diagSort, toggle: diagToggle } = useSort(d.recentActivity, "time", "asc");
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
@@ -56,16 +59,16 @@ export default function DiagnosticsPanel({ pixel }: { pixel: MetaPixelStats }) {
           <div className="text-xs font-semibold text-gray-600 mb-2">Recent Activity</div>
           <div className="overflow-hidden border border-gray-200 rounded">
             <table className="w-full text-xs">
-              <thead className="bg-gray-50">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
                 <tr>
-                  <th className="px-3 py-2 text-left font-semibold text-gray-700">Time</th>
-                  <th className="px-3 py-2 text-left font-semibold text-gray-700">Event</th>
-                  <th className="px-3 py-2 text-left font-semibold text-gray-700">Source</th>
-                  <th className="px-3 py-2 text-right font-semibold text-gray-700">Status</th>
+                  <SortTh col="time" sort={diagSort} onToggle={diagToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Time</SortTh>
+                  <SortTh col="event" sort={diagSort} onToggle={diagToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Event</SortTh>
+                  <SortTh col="type" sort={diagSort} onToggle={diagToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Source</SortTh>
+                  <SortTh col="status" sort={diagSort} onToggle={diagToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="right">Status</SortTh>
                 </tr>
               </thead>
               <tbody>
-                {d.recentActivity.map((a, i) => (
+                {sortedActivity.map((a, i) => (
                   <tr key={i} className="border-t border-gray-100">
                     <td className="px-3 py-2 text-gray-500">{a.time}</td>
                     <td className="px-3 py-2 font-mono text-gray-900">{a.event}</td>

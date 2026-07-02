@@ -7,7 +7,6 @@ import { KpiCard, AuditCard, StatusBadge } from "./AuditCard";
 import { CheckCircle2, Copy, Wand2, ChevronUp, ChevronDown, ChevronRight } from "lucide-react";
 import { buildAccountContext, type AuditProps } from "./types";
 import type { CampaignData } from "@/types";
-
 type FilterStatus = "all" | "pass" | "fail";
 
 export default function NamingConventionAudit({ campaigns }: AuditProps) {
@@ -591,6 +590,7 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
           </table>
         </div>
       </AuditCard>
+
     </div>
   );
 }

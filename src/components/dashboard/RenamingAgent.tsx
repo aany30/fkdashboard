@@ -3,6 +3,8 @@ import { useAuthStore } from "@/store/auth";
 import { Copy, CheckCircle2, AlertCircle } from "lucide-react";
 import { suggestCorrectedNames } from "@/lib/naming/suggester";
 import type { CampaignData } from "@/types";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 
 interface Props {
   campaigns: CampaignData[];
@@ -16,6 +18,7 @@ export default function RenamingAgent({ campaigns, loading }: Props) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const activeConvention = namingConventions.find((c) => c.id === activeConventionId);
+  const { sorted: sortedSuggestions, sort: renameSort, toggle: renameToggle } = useSort(suggestions, "currentName", "asc");
 
   useEffect(() => {
     if (activeConvention && campaigns.length > 0) {
@@ -88,7 +91,7 @@ export default function RenamingAgent({ campaigns, loading }: Props) {
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr>
                 <th className="px-6 py-3 text-left font-semibold text-gray-700">
                   <input
@@ -98,9 +101,9 @@ export default function RenamingAgent({ campaigns, loading }: Props) {
                     className="w-4 h-4"
                   />
                 </th>
-                <th className="px-6 py-3 text-left font-semibold text-gray-700">Current Name</th>
-                <th className="px-6 py-3 text-left font-semibold text-gray-700">Suggested Name</th>
-                <th className="px-6 py-3 text-center font-semibold text-gray-700">Confidence</th>
+                <SortTh col="currentName" sort={renameSort} onToggle={renameToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Current Name</SortTh>
+                <SortTh col="suggestedName" sort={renameSort} onToggle={renameToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Suggested Name</SortTh>
+                <SortTh col="confidence" sort={renameSort} onToggle={renameToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="center">Confidence</SortTh>
                 <th className="px-6 py-3 text-right font-semibold text-gray-700">Action</th>
               </tr>
             </thead>
@@ -112,7 +115,7 @@ export default function RenamingAgent({ campaigns, loading }: Props) {
                   </td>
                 </tr>
               ) : (
-                suggestions.map((suggestion) => (
+                sortedSuggestions.map((suggestion) => (
                   <tr key={suggestion.currentName} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="px-6 py-4">
                       <input

@@ -1,9 +1,13 @@
 import { useAuthStore } from "@/store/auth";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 
 export default function ActivityTab() {
   const { customBenchmarks } = useAuthStore();
 
-  const events = [
+  const STATUS_RANK: Record<string, number> = { Critical: 2, Moderate: 1, Healthy: 0 };
+  const eventsRaw = [
     { time: "Just now", event: "Purchase", platform: "Meta", pixel: "Main Pixel", value: "$129.00", match: 9, dedup: "OK", status: "Healthy" },
     { time: "3s ago", event: "AddToCart", platform: "Meta", pixel: "Main Pixel", value: "$59.00", match: 8, dedup: "OK", status: "Healthy" },
     { time: "5s ago", event: "view_item", platform: "Google", pixel: "GA4-DEMO-001", value: "—", match: 7, dedup: "OK", status: "Healthy" },
@@ -16,7 +20,8 @@ export default function ActivityTab() {
     { time: "28s ago", event: "AddPaymentInfo", platform: "Meta", pixel: "Checkout Pixel", value: "$179.00", match: 5, dedup: "Dup", status: "Critical" },
     { time: "31s ago", event: "PageView", platform: "Meta", pixel: "Main Pixel", value: "—", match: 6, dedup: "OK", status: "Healthy" },
     { time: "34s ago", event: "purchase", platform: "Google", pixel: "GA4-DEMO-001", value: "$199.00", match: 8, dedup: "OK", status: "Healthy" },
-  ];
+  ].map((e) => ({ ...e, statusRank: STATUS_RANK[e.status] ?? 0 }));
+  const { sorted: events, sort: actSort, toggle: actToggle } = useSort(eventsRaw, "match", "desc");
 
   const statusColor = (s: string) =>
     s === "Healthy" ? "text-green-700 bg-green-100" : s === "Moderate" ? "text-yellow-700 bg-yellow-100" : "text-red-700 bg-red-100";
@@ -83,14 +88,14 @@ export default function ActivityTab() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
               <tr>
-                <th className="px-6 py-3 text-left font-semibold text-gray-700">Time</th>
-                <th className="px-6 py-3 text-left font-semibold text-gray-700">Event</th>
-                <th className="px-6 py-3 text-left font-semibold text-gray-700">Platform</th>
-                <th className="px-6 py-3 text-left font-semibold text-gray-700">Source</th>
-                <th className="px-6 py-3 text-right font-semibold text-gray-700">Value</th>
-                <th className="px-6 py-3 text-right font-semibold text-gray-700">Match</th>
-                <th className="px-6 py-3 text-right font-semibold text-gray-700">Dedup</th>
-                <th className="px-6 py-3 text-right font-semibold text-gray-700">Status</th>
+                <SortTh col="time" sort={actSort} onToggle={actToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Time</SortTh>
+                <SortTh col="event" sort={actSort} onToggle={actToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Event</SortTh>
+                <SortTh col="platform" sort={actSort} onToggle={actToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Platform</SortTh>
+                <SortTh col="pixel" sort={actSort} onToggle={actToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Source</SortTh>
+                <SortTh col="value" sort={actSort} onToggle={actToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="right">Value</SortTh>
+                <SortTh col="match" sort={actSort} onToggle={actToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="right">Match</SortTh>
+                <SortTh col="dedup" sort={actSort} onToggle={actToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="right">Dedup</SortTh>
+                <SortTh col="statusRank" sort={actSort} onToggle={actToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="right">Status</SortTh>
               </tr>
             </thead>
             <tbody>
@@ -112,6 +117,18 @@ export default function ActivityTab() {
           </table>
         </div>
       </div>
+
+      <TabSummaryFooter
+        tabName="Real-time Activity"
+        lines={[
+          `${events.length} events shown in the live stream — ${events.filter(e => e.status === "Healthy").length} healthy, ${events.filter(e => e.status === "Critical").length} critical.`,
+          `${[...new Set(events.map(e => e.event))].length} unique event types across Meta and Google tracking.`,
+          `Last event: ${events[0]?.event ?? "—"} (${events[0]?.time ?? "—"}).`,
+        ]}
+        context={{ eventCount: events.length }}
+        platform="meta"
+        dateRange="30d"
+      />
     </div>
   );
 }

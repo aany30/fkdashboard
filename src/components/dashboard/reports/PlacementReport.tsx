@@ -9,13 +9,17 @@
 
 import React, { useMemo, useRef, useState } from "react";
 import { Map as MapIcon, ChevronDown } from "lucide-react";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip as ReTooltip,
 } from "recharts";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import { ColumnPickerButton, useColPicker, ColHeader, ColDef, ALL_STANDARD_KPIS } from "@/components/shared/ColumnPicker";
 import { useMetaBreakdown, BreakdownRow } from "@/hooks/useMetaBreakdown";
 import { useCampaigns } from "@/hooks/useCampaigns";
+import { usePersistentValue } from "@/hooks/useColumnPrefs";
 import { detectCurrency, formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 
@@ -98,7 +102,7 @@ const DONUT_METRICS: { id: DonutMetric; label: string }[] = [
 function PlacementTypeDonut({
   rows, loading, currency,
 }: { rows: BreakdownRow[]; loading: boolean; currency: string }) {
-  const [metric, setMetric] = useState<DonutMetric>("spend");
+  const [metric, setMetric] = usePersistentValue<DonutMetric>("placement-donut-metric", "spend");
   const cur = (n: number) => formatMoney(n, currency, 0);
 
   // Distribute each publisher's metrics across placement types using known position shares
@@ -224,8 +228,10 @@ const TOP_N_OPTIONS = [5, 10, 20] as const;
 function PlacementRankList({
   rows, loading, currency,
 }: { rows: BreakdownRow[]; loading: boolean; currency: string }) {
-  const [metric, setMetric] = useState<RankMetric>("spend");
-  const [topN, setTopN]     = useState<5 | 10 | 20>(5);
+  const [metric, setMetric] = usePersistentValue<RankMetric>("placement-rank-metric", "spend");
+  const [topNStr, setTopNStr] = usePersistentValue<"5" | "10" | "20">("placement-rank-topn", "5");
+  const topN = Number(topNStr) as 5 | 10 | 20;
+  const setTopN = (n: 5 | 10 | 20) => setTopNStr(String(n) as "5" | "10" | "20");
   const [showTopN, setShowTopN] = useState(false);
   const dropRef = useRef<HTMLDivElement>(null);
   const cur = (n: number) => formatMoney(n, currency, 2);
@@ -363,7 +369,7 @@ function PlacementDetailTable({
   const pubRef = useRef<HTMLDivElement>(null);
   const cur = (n: number) => formatMoney(n, currency, 2);
 
-  const { cols, toggleCol, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, swapCol, resetCols } = useColPicker(DETAIL_DEFAULT_IDS);
+  const { cols, toggleCol, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, swapCol, resetCols } = useColPicker(DETAIL_DEFAULT_IDS, "placement-detail");
   const activeColDefs: ColDef[] = cols.map(id => DETAIL_ALL_DEFS.find(d => d.id === id) ?? { id, label: id, group: "Core" });
 
   const sortedPubs = useMemo(
@@ -372,7 +378,7 @@ function PlacementDetailTable({
   );
   const pubLabel = selectedPub || sortedPubs[0]?.label || "";
 
-  const detailRows = useMemo(() => {
+  const rawDetailRows = useMemo(() => {
     const pub = pubRows.find(r => r.label === pubLabel);
     if (!pub) return [];
     const positions = PUBLISHER_POSITIONS[pub.label] ?? PUBLISHER_POSITIONS["facebook"];
@@ -394,6 +400,7 @@ function PlacementDetailTable({
       };
     });
   }, [pubLabel, pubRows]);
+  const { sorted: detailRows, sort: placSort, toggle: placToggle } = useSort(rawDetailRows, "spend", "desc");
 
   const pubTitle = pubLabel
     ? pubLabel.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
@@ -464,11 +471,11 @@ function PlacementDetailTable({
       ) : detailRows.length === 0 ? (
         <div className="h-40 flex items-center justify-center text-sm text-gray-400">No data for selected publisher.</div>
       ) : (
-        <div className="overflow-x-auto">
+        <div>
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr>
-                <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Placement</th>
+                <SortTh col="name" sort={placSort} onToggle={placToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Placement</SortTh>
                 {activeColDefs.map((c, i) => (
                   <th key={c.id} className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">
                     <ColHeader
@@ -563,6 +570,34 @@ export default function PlacementReport({ platform, dateRange, customStart, cust
           />
         </>
       )}
+
+      <TabSummaryFooter
+        tabName="Placement Report"
+        lines={[
+          `${pub.rows.length} publisher${pub.rows.length !== 1 ? "s" : ""} with placement data in this window.`,
+          `Top publisher by spend: ${pub.rows.slice().sort((a, b) => b.spend - a.spend)[0]?.label?.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()) ?? "—"}.`,
+          `Date window: ${startDate} → ${endDate}.`,
+        ]}
+        context={{
+          publisherCount: pub.rows.length,
+          startDate,
+          endDate,
+          placements: pub.rows.map(r => ({
+            label: r.label,
+            spend: r.spend,
+            impressions: r.impressions,
+            clicks: r.clicks,
+            conversions: r.conversions,
+            conversionValue: r.conversionValue,
+            ctr: r.impressions > 0 ? +((r.clicks / r.impressions) * 100).toFixed(4) : 0,
+            cpm: r.impressions > 0 ? +((r.spend / r.impressions) * 1000).toFixed(4) : 0,
+            cpc: r.clicks > 0 ? +(r.spend / r.clicks).toFixed(4) : 0,
+            roas: r.spend > 0 ? +(r.conversionValue / r.spend).toFixed(4) : 0,
+          })),
+        }}
+        platform="meta"
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

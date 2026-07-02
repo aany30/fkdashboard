@@ -7,12 +7,18 @@
  * Both use ad-set insights (frequency + reach available from Meta Insights API).
  */
 
-import { useMemo, useState } from "react";
-import { Zap, AlertCircle, Info } from "lucide-react";
+import { useMemo, useState, useRef } from "react";
+import { Zap, AlertCircle, Info, X } from "lucide-react";
 import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
 import { useAdSetInsights } from "@/hooks/useAdSetInsights";
 import { formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
+import { ColumnPickerButton, ALL_STANDARD_KPIS } from "@/components/shared/ColumnPicker";
+import { formatStandardKpi, FETCHABLE_KPIS } from "@/lib/standard-kpis";
+import { usePersistentColumns } from "@/hooks/useColumnPrefs";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -35,13 +41,81 @@ function fatigueLabel(freq: number, ctr: number): { label: string; color: string
   if (freq >= 3 || ctr < 1.0)  return { label: "Fatigued",  color: "bg-orange-100 text-orange-800" };
   return { label: "Healthy", color: "bg-green-100 text-green-800" };
 }
+function fatigueSeverity(freq: number, ctr: number): number {
+  if (freq >= 5 || ctr < 0.5) return 2;
+  if (freq >= 3 || ctr < 1.0) return 1;
+  return 0;
+}
+
+// ─── Generic column picker ───────────────────────────────────────────────────
+
+interface LocalColDef { id: string; label: string; group: string; defaultOn: boolean; }
+
+function ColPicker({ cols, setCols, allCols }: {
+  cols: string[]; setCols: (c: string[]) => void; allCols: LocalColDef[]; label?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const defaultIds = allCols.filter(c => c.defaultOn).map(c => c.id);
+  const toggleCol = (id: string) => {
+    if (cols.includes(id)) { if (cols.length > 1) setCols(cols.filter(c => c !== id)); }
+    else setCols([...cols, id]);
+  };
+  return (
+    <ColumnPickerButton
+      cols={cols}
+      allDefs={FETCHABLE_KPIS}
+      defaultIds={defaultIds}
+      pickerOpen={open}
+      setPickerOpen={setOpen}
+      pickerRef={ref}
+      toggleCol={toggleCol}
+      resetCols={(ids) => setCols([...ids])}
+    />
+  );
+}
 
 // ─── §7 Saturation ──────────────────────────────────────────────────────────
 
+const SAT_ALL_COLS: LocalColDef[] = [
+  { id: "frequency",       label: "Freq.",       group: "Engagement",  defaultOn: true  },
+  { id: "ctr",             label: "CTR",         group: "Engagement",  defaultOn: true  },
+  { id: "cpc",             label: "CPC",         group: "Engagement",  defaultOn: false },
+  { id: "clicks",          label: "Clicks",      group: "Engagement",  defaultOn: false },
+  { id: "cpm",             label: "CPM",         group: "Reach",       defaultOn: true  },
+  { id: "reach",           label: "Reach",       group: "Reach",       defaultOn: true  },
+  { id: "reachPct",        label: "Reach %",     group: "Reach",       defaultOn: true  },
+  { id: "impressions",     label: "Impr.",       group: "Reach",       defaultOn: false },
+  { id: "spend",           label: "Spend",       group: "Conversion",  defaultOn: true  },
+  { id: "conversionValue", label: "Revenue",     group: "Conversion",  defaultOn: true  },
+  { id: "conversions",     label: "Orders",      group: "Conversion",  defaultOn: true  },
+  { id: "roas",            label: "ROAS",        group: "Conversion",  defaultOn: true  },
+  { id: "cpa",             label: "CPA",         group: "Conversion",  defaultOn: true  },
+  { id: "cvr",             label: "CVR",         group: "Conversion",  defaultOn: false },
+  { id: "aov",             label: "AOV",         group: "Conversion",  defaultOn: false },
+];
+const SAT_DEFAULT_COLS = SAT_ALL_COLS.filter(c => c.defaultOn).map(c => c.id);
+
 function SaturationAnalysis({ adsets, loading, currency }: { adsets: ReturnType<typeof useAdSetInsights>["adsets"]; loading: boolean; currency: string }) {
-  const totalReach = useMemo(() => adsets.reduce((s, a) => s + a.reach, 0), [adsets]);
-  const sorted = useMemo(() => [...adsets].sort((a, b) => b.frequency - a.frequency), [adsets]);
+  const [cols, setCols] = usePersistentColumns("sat", SAT_DEFAULT_COLS);
   const cur = (n: number) => formatMoney(n, currency, 0);
+  const cur2 = (n: number) => formatMoney(n, currency, 2);
+
+  const totalReach = useMemo(() => adsets.reduce((s, a) => s + a.reach, 0), [adsets]);
+  const enriched = useMemo(() => adsets.map((a) => ({
+    ...a,
+    ctr:      a.impressions > 0 ? (a.clicks / a.impressions) * 100 : 0,
+    cpm:      a.impressions > 0 ? (a.spend / a.impressions) * 1000 : 0,
+    reachPct: totalReach > 0 ? (a.reach / totalReach) * 100 : 0,
+    cpc:      a.clicks > 0 ? a.spend / a.clicks : 0,
+    roas:     a.spend > 0 ? a.conversionValue / a.spend : 0,
+    cpa:      a.conversions > 0 ? a.spend / a.conversions : 0,
+    cvr:      a.clicks > 0 ? (a.conversions / a.clicks) * 100 : 0,
+    aov:      a.conversions > 0 ? a.conversionValue / a.conversions : 0,
+    fatigue:  0, // set below
+  })).map(a => ({ ...a, fatigue: fatigueSeverity(a.frequency, a.ctr) })), [adsets, totalReach]);
+
+  const { sorted, sort: satSort, toggle: satToggle } = useSort(enriched, "frequency", "desc");
 
   if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
   if (!adsets.length) return (
@@ -50,7 +124,30 @@ function SaturationAnalysis({ adsets, loading, currency }: { adsets: ReturnType<
     </div>
   );
 
-  const critical = sorted.filter((a) => fatigueLabel(a.frequency, a.impressions > 0 ? (a.clicks / a.impressions) * 100 : 0).label === "Critical").length;
+  const critical = sorted.filter(a => a.fatigue === 2).length;
+
+  function fmtCol(id: string, a: typeof enriched[0]): string {
+    switch (id) {
+      case "frequency":       return a.frequency.toFixed(1);
+      case "ctr":             return a.ctr > 0 ? `${a.ctr.toFixed(2)}%` : "—";
+      case "cpm":             return a.cpm > 0 ? cur(a.cpm) : "—";
+      case "reach":           return Math.round(a.reach).toLocaleString("en-IN");
+      case "reachPct":        return a.reachPct > 0 ? `${a.reachPct.toFixed(1)}%` : "—";
+      case "spend":           return cur(a.spend);
+      case "impressions":     return Math.round(a.impressions).toLocaleString("en-IN");
+      case "clicks":          return Math.round(a.clicks).toLocaleString("en-IN");
+      case "cpc":             return a.cpc > 0 ? cur2(a.cpc) : "—";
+      case "conversions":     return Math.round(a.conversions).toLocaleString("en-IN");
+      case "roas":            return a.roas > 0 ? `${a.roas.toFixed(2)}×` : "—";
+      case "cpa":             return a.cpa > 0 ? cur(a.cpa) : "—";
+      case "cvr":             return a.cvr > 0 ? `${a.cvr.toFixed(2)}%` : "—";
+      case "aov":             return a.aov > 0 ? cur(a.aov) : "—";
+      case "conversionValue": return cur(a.conversionValue);
+      default:                return formatStandardKpi(a, id, currency);
+    }
+  }
+
+  const thBase = "px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600";
 
   return (
     <div className="space-y-4">
@@ -60,37 +157,32 @@ function SaturationAnalysis({ adsets, loading, currency }: { adsets: ReturnType<
           <strong>{critical} ad set{critical !== 1 ? "s" : ""} showing critical fatigue</strong> — frequency ≥ 5 or CTR &lt; 0.5%. Consider refreshing creatives or expanding audiences.
         </div>
       )}
-      <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm">
+      <div className="flex justify-end">
+        <ColPicker cols={cols} setCols={setCols} allCols={SAT_ALL_COLS} />
+      </div>
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Audience (Ad Set)</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Frequency</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">CTR</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">CPM</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Reach</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Reach %</th>
-              <th className="px-4 py-2.5 text-center text-[11px] font-semibold text-gray-600 uppercase">Status</th>
+              <SortTh col="name" sort={satSort} onToggle={satToggle} className={`${thBase} sticky left-0 bg-gray-50 z-20 shadow-[1px_0_0_0_rgb(229,231,235)]`}>Audience (Ad Set)</SortTh>
+              {cols.map(id => {
+                const def = SAT_ALL_COLS.find(c => c.id === id) ?? ALL_STANDARD_KPIS.find(c => c.id === id);
+                return <SortTh key={id} col={id} sort={satSort} onToggle={satToggle} className={thBase} align="right">{def?.label ?? id}</SortTh>;
+              })}
+              <SortTh col="fatigue" sort={satSort} onToggle={satToggle} className={`${thBase} text-center`} align="center">Status</SortTh>
             </tr>
           </thead>
           <tbody>
             {sorted.map((a) => {
-              const ctr = a.impressions > 0 ? (a.clicks / a.impressions) * 100 : 0;
-              const cpm = a.impressions > 0 ? (a.spend / a.impressions) * 1000 : 0;
-              const reachPct = totalReach > 0 ? (a.reach / totalReach) * 100 : 0;
-              const { label, color } = fatigueLabel(a.frequency, ctr);
+              const { label, color } = fatigueLabel(a.frequency, a.ctr);
               return (
-                <tr key={a.id} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="px-4 py-2.5 font-mono text-gray-900 truncate max-w-[220px]" title={a.name}>{a.name}</td>
-                  <td className="px-4 py-2.5 text-right">
-                    <span className={`font-bold ${a.frequency >= 5 ? "text-red-600" : a.frequency >= 3 ? "text-orange-600" : "text-gray-900"}`}>
-                      {a.frequency.toFixed(1)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2.5 text-right text-gray-700">{ctr > 0 ? `${ctr.toFixed(2)}%` : "—"}</td>
-                  <td className="px-4 py-2.5 text-right text-gray-700">{cpm > 0 ? cur(cpm) : "—"}</td>
-                  <td className="px-4 py-2.5 text-right text-gray-700">{Math.round(a.reach).toLocaleString("en-IN")}</td>
-                  <td className="px-4 py-2.5 text-right text-gray-700">{reachPct > 0 ? `${reachPct.toFixed(1)}%` : "—"}</td>
+                <tr key={a.id} className="group border-b border-gray-100 hover:bg-gray-50">
+                  <td className="px-4 py-2.5 font-mono text-gray-900 break-words min-w-[200px] sticky left-0 bg-white group-hover:bg-gray-50 z-10 shadow-[1px_0_0_0_rgb(229,231,235)]">{a.name}</td>
+                  {cols.map(id => (
+                    <td key={id} className={`px-4 py-2.5 text-right text-gray-700 whitespace-nowrap ${id === "frequency" ? (a.frequency >= 5 ? "text-red-600 font-bold" : a.frequency >= 3 ? "text-orange-600 font-bold" : "text-gray-900 font-bold") : ""}`}>
+                      {fmtCol(id, a)}
+                    </td>
+                  ))}
                   <td className="px-4 py-2.5 text-center">
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${color}`}>{label}</span>
                     {label !== "Healthy" && (
@@ -100,7 +192,7 @@ function SaturationAnalysis({ adsets, loading, currency }: { adsets: ReturnType<
                           value={a.frequency}
                           status={label === "Critical" ? "critical" : "warn"}
                           platform="meta"
-                          auditContext={{ module: "Audience Saturation", siblingMetrics: { frequency: a.frequency, ctr: +ctr.toFixed(2), cpm: +cpm.toFixed(2) } }}
+                          auditContext={{ module: "Audience Saturation", siblingMetrics: { frequency: a.frequency, ctr: +a.ctr.toFixed(2), cpm: +a.cpm.toFixed(2) } }}
                         />
                       </div>
                     )}
@@ -128,12 +220,51 @@ function opportunityLabel(roas: number, spendSharePct: number): { label: Opportu
   if (roas < 1)                         return { label: "Reduce",    color: "bg-red-100 text-red-800" };
   return { label: "Review", color: "bg-yellow-100 text-yellow-800" };
 }
+function opportunityScore(label: OpportunityLabel): number {
+  return { "Scale up": 3, "Maintain": 2, "Review": 1, "Reduce": 0 }[label];
+}
+
+const EXP_ALL_COLS: LocalColDef[] = [
+  { id: "spend",           label: "Spend",       group: "Core",       defaultOn: true  },
+  { id: "spendPct",        label: "Spend %",     group: "Core",       defaultOn: true  },
+  { id: "conversionValue", label: "Revenue",     group: "Core",       defaultOn: true  },
+  { id: "revPct",          label: "Rev %",       group: "Core",       defaultOn: true  },
+  { id: "roas",            label: "ROAS",        group: "Core",       defaultOn: true  },
+  { id: "conversions",     label: "Orders",      group: "Conversion", defaultOn: true  },
+  { id: "cpa",             label: "CPA",         group: "Conversion", defaultOn: true  },
+  { id: "cvr",             label: "CVR",         group: "Conversion", defaultOn: false },
+  { id: "aov",             label: "AOV",         group: "Conversion", defaultOn: false },
+  { id: "frequency",       label: "Freq.",       group: "Engagement", defaultOn: false },
+  { id: "ctr",             label: "CTR",         group: "Engagement", defaultOn: false },
+  { id: "cpc",             label: "CPC",         group: "Engagement", defaultOn: false },
+  { id: "clicks",          label: "Clicks",      group: "Engagement", defaultOn: false },
+  { id: "cpm",             label: "CPM",         group: "Reach",      defaultOn: false },
+  { id: "reach",           label: "Reach",       group: "Reach",      defaultOn: false },
+  { id: "impressions",     label: "Impr.",       group: "Reach",      defaultOn: false },
+];
+const EXP_DEFAULT_COLS = EXP_ALL_COLS.filter(c => c.defaultOn).map(c => c.id);
 
 function ExpansionOpportunity({ adsets, loading, currency }: { adsets: ReturnType<typeof useAdSetInsights>["adsets"]; loading: boolean; currency: string }) {
+  const [cols, setCols] = usePersistentColumns("sat-exp", EXP_DEFAULT_COLS);
+  const cur = (n: number) => formatMoney(n, currency, 0);
+  const cur2 = (n: number) => formatMoney(n, currency, 2);
+
   const totalSpend   = useMemo(() => adsets.reduce((s, a) => s + a.spend, 0), [adsets]);
   const totalRevenue = useMemo(() => adsets.reduce((s, a) => s + a.conversionValue, 0), [adsets]);
-  const sorted = useMemo(() => [...adsets].sort((a, b) => b.spend - a.spend), [adsets]);
-  const cur = (n: number) => formatMoney(n, currency, 0);
+  const enriched = useMemo(() => adsets.map((a) => {
+    const spendPct = totalSpend > 0 ? (a.spend / totalSpend) * 100 : 0;
+    const revPct   = totalRevenue > 0 ? (a.conversionValue / totalRevenue) * 100 : 0;
+    const roas     = a.spend > 0 ? a.conversionValue / a.spend : 0;
+    const ctr      = a.impressions > 0 ? (a.clicks / a.impressions) * 100 : 0;
+    const cpm      = a.impressions > 0 ? (a.spend / a.impressions) * 1000 : 0;
+    const cpc      = a.clicks > 0 ? a.spend / a.clicks : 0;
+    const cpa      = a.conversions > 0 ? a.spend / a.conversions : 0;
+    const cvr      = a.clicks > 0 ? (a.conversions / a.clicks) * 100 : 0;
+    const aov      = a.conversions > 0 ? a.conversionValue / a.conversions : 0;
+    return { ...a, spendPct, revPct, roas, ctr, cpm, cpc, cpa, cvr, aov, oppScore: opportunityScore(opportunityLabel(roas, spendPct).label) };
+  }), [adsets, totalSpend, totalRevenue]);
+
+  const { sorted, sort: expSort, toggle: expToggle } = useSort(enriched, "spend", "desc");
 
   if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
   if (!adsets.length) return (
@@ -142,11 +273,31 @@ function ExpansionOpportunity({ adsets, loading, currency }: { adsets: ReturnTyp
     </div>
   );
 
-  const scaleUp = sorted.filter((a) => {
-    const spendPct = totalSpend > 0 ? (a.spend / totalSpend) * 100 : 0;
-    const roas = a.spend > 0 ? a.conversionValue / a.spend : 0;
-    return opportunityLabel(roas, spendPct).label === "Scale up";
-  }).length;
+  const scaleUp = sorted.filter(a => opportunityLabel(a.roas, a.spendPct).label === "Scale up").length;
+
+  function fmtCol(id: string, a: typeof enriched[0]): string {
+    switch (id) {
+      case "spend":           return cur(a.spend);
+      case "spendPct":        return `${a.spendPct.toFixed(1)}%`;
+      case "conversionValue": return cur(a.conversionValue);
+      case "revPct":          return `${a.revPct.toFixed(1)}%`;
+      case "roas":            return a.roas > 0 ? `${a.roas.toFixed(2)}×` : "—";
+      case "conversions":     return Math.round(a.conversions).toLocaleString("en-IN");
+      case "cpa":             return a.cpa > 0 ? cur(a.cpa) : "—";
+      case "cvr":             return a.cvr > 0 ? `${a.cvr.toFixed(2)}%` : "—";
+      case "aov":             return a.aov > 0 ? cur(a.aov) : "—";
+      case "frequency":       return a.frequency.toFixed(1);
+      case "ctr":             return a.ctr > 0 ? `${a.ctr.toFixed(2)}%` : "—";
+      case "cpc":             return a.cpc > 0 ? cur2(a.cpc) : "—";
+      case "clicks":          return Math.round(a.clicks).toLocaleString("en-IN");
+      case "cpm":             return a.cpm > 0 ? cur(a.cpm) : "—";
+      case "reach":           return Math.round(a.reach).toLocaleString("en-IN");
+      case "impressions":     return Math.round(a.impressions).toLocaleString("en-IN");
+      default:                return formatStandardKpi(a, id, currency);
+    }
+  }
+
+  const thBase = "px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600";
 
   return (
     <div className="space-y-4">
@@ -156,43 +307,40 @@ function ExpansionOpportunity({ adsets, loading, currency }: { adsets: ReturnTyp
           <strong>{scaleUp} ad set{scaleUp !== 1 ? "s" : ""} flagged for scaling</strong> — high ROAS with low spend share. Increase budget here.
         </div>
       )}
-      <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm">
+      <div className="flex justify-end">
+        <ColPicker cols={cols} setCols={setCols} allCols={EXP_ALL_COLS} />
+      </div>
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Audience (Ad Set)</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Spend</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Spend Share</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Revenue</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Rev Share</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">ROAS</th>
-              <th className="px-4 py-2.5 text-center text-[11px] font-semibold text-gray-600 uppercase">Opportunity</th>
+              <SortTh col="name" sort={expSort} onToggle={expToggle} className={`${thBase} sticky left-0 bg-gray-50 z-20 shadow-[1px_0_0_0_rgb(229,231,235)]`}>Audience (Ad Set)</SortTh>
+              {cols.map(id => {
+                const def = EXP_ALL_COLS.find(c => c.id === id) ?? ALL_STANDARD_KPIS.find(c => c.id === id);
+                return <SortTh key={id} col={id} sort={expSort} onToggle={expToggle} className={thBase} align="right">{def?.label ?? id}</SortTh>;
+              })}
+              <SortTh col="oppScore" sort={expSort} onToggle={expToggle} className={`${thBase} text-center`} align="center">Opportunity</SortTh>
             </tr>
           </thead>
           <tbody>
             {sorted.map((a) => {
-              const spendPct = totalSpend > 0 ? (a.spend / totalSpend) * 100 : 0;
-              const revPct = totalRevenue > 0 ? (a.conversionValue / totalRevenue) * 100 : 0;
-              const roas = a.spend > 0 ? a.conversionValue / a.spend : 0;
-              const { label, color } = opportunityLabel(roas, spendPct);
+              const { label, color } = opportunityLabel(a.roas, a.spendPct);
               return (
-                <tr key={a.id} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="px-4 py-2.5 font-mono text-gray-900 truncate max-w-[220px]" title={a.name}>{a.name}</td>
-                  <td className="px-4 py-2.5 text-right font-semibold text-gray-900">{cur(a.spend)}</td>
-                  <td className="px-4 py-2.5 text-right text-gray-700">{spendPct.toFixed(1)}%</td>
-                  <td className="px-4 py-2.5 text-right text-gray-700">{cur(a.conversionValue)}</td>
-                  <td className="px-4 py-2.5 text-right text-gray-700">{revPct.toFixed(1)}%</td>
-                  <td className="px-4 py-2.5 text-right text-gray-700">{roas > 0 ? `${roas.toFixed(2)}×` : "—"}</td>
+                <tr key={a.id} className="group border-b border-gray-100 hover:bg-gray-50">
+                  <td className="px-4 py-2.5 font-mono text-gray-900 break-words min-w-[200px] sticky left-0 bg-white group-hover:bg-gray-50 z-10 shadow-[1px_0_0_0_rgb(229,231,235)]">{a.name}</td>
+                  {cols.map(id => (
+                    <td key={id} className="px-4 py-2.5 text-right text-gray-700 whitespace-nowrap">{fmtCol(id, a)}</td>
+                  ))}
                   <td className="px-4 py-2.5 text-center">
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${color}`}>{label}</span>
                     {(label === "Reduce" || label === "Review") && (
                       <div className="mt-1">
                         <AIRecommendationButton
                           metric={`Expansion opportunity — ${a.name}`}
-                          value={`ROAS ${roas.toFixed(2)}x, spend share ${spendPct.toFixed(1)}%`}
+                          value={`ROAS ${a.roas.toFixed(2)}x, spend share ${a.spendPct.toFixed(1)}%`}
                           status={label === "Reduce" ? "critical" : "warn"}
                           platform="meta"
-                          auditContext={{ module: "Expansion Opportunity", siblingMetrics: { roas: +roas.toFixed(2), spendSharePct: +spendPct.toFixed(1), revSharePct: +revPct.toFixed(1) } }}
+                          auditContext={{ module: "Expansion Opportunity", siblingMetrics: { roas: +a.roas.toFixed(2), spendSharePct: +a.spendPct.toFixed(1), revSharePct: +a.revPct.toFixed(1) } }}
                         />
                       </div>
                     )}
@@ -251,6 +399,18 @@ export default function AudienceSaturationTab({ platform, dateRange, customStart
 
       {active === "saturation" && <SaturationAnalysis adsets={adsets} loading={loading} currency={currency} />}
       {active === "expansion"  && <ExpansionOpportunity adsets={adsets} loading={loading} currency={currency} />}
+
+      <TabSummaryFooter
+        tabName="Saturation & Expansion"
+        lines={[
+          `${adsets.length} ad set${adsets.length !== 1 ? "s" : ""} analysed for frequency, reach, and saturation signals.`,
+          `Total spend: ${adsets.reduce((s, a) => s + a.spend, 0).toLocaleString("en-US", { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 })} across all ad sets in window.`,
+          `${adsets.filter(a => a.spend > 0 && (a.conversionValue / a.spend) >= 3).length} ad set${adsets.filter(a => a.spend > 0 && (a.conversionValue / a.spend) >= 3).length !== 1 ? "s" : ""} with ROAS ≥ 3× (scale candidates).`,
+        ]}
+        context={{ adSetCount: adsets.length, totalSpend: adsets.reduce((s, a) => s + a.spend, 0) }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

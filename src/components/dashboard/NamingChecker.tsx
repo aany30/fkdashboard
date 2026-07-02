@@ -3,6 +3,8 @@ import { useAuthStore } from "@/store/auth";
 import { RefreshCw, AlertCircle, CheckCircle2 } from "lucide-react";
 import { validateCampaignName, getComplianceDetails } from "@/lib/naming/validator";
 import type { CampaignData, NamingComplianceResult } from "@/types";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 
 interface Props {
   campaigns: CampaignData[];
@@ -32,10 +34,11 @@ export default function NamingChecker({ campaigns, loading, onRefresh }: Props) 
     }
   }, [campaigns, activeConvention]);
 
-  const filtered = results.filter((r) => {
+  const filteredBase = results.filter((r) => {
     if (filterStatus === "all") return true;
     return r.status === filterStatus;
   });
+  const { sorted: filtered, sort: namingSort, toggle: namingToggle } = useSort(filteredBase, "campaignName", "asc");
 
   const compliantCount = results.filter((r) => r.status === "compliant").length;
   const compliancePercentage =
@@ -108,11 +111,11 @@ export default function NamingChecker({ campaigns, loading, onRefresh }: Props) 
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr>
-                <th className="px-6 py-3 text-left font-semibold text-gray-700">Campaign Name</th>
-                <th className="px-6 py-3 text-left font-semibold text-gray-700">Platform</th>
-                <th className="px-6 py-3 text-center font-semibold text-gray-700">Status</th>
+                <SortTh col="campaignName" sort={namingSort} onToggle={namingToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Campaign Name</SortTh>
+                <SortTh col="platform" sort={namingSort} onToggle={namingToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Platform</SortTh>
+                <SortTh col="status" sort={namingSort} onToggle={namingToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="center">Status</SortTh>
                 <th className="px-6 py-3 text-right font-semibold text-gray-700">Details</th>
               </tr>
             </thead>

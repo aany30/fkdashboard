@@ -42,7 +42,7 @@ function bucket(objective?: string): "TOF" | "MOF" | "BOF" | "Unknown" {
   if (!objective) return "Unknown";
   const o = objective.toLowerCase();
   if (o.includes("aware") || o.includes("reach") || o.includes("video") || o.includes("store")) return "TOF";
-  if (o.includes("engagement") || o.includes("traffic") || o.includes("consideration")) return "MOF";
+  if (o.includes("engagement") || o.includes("traffic") || o.includes("consideration") || o.includes("link_click") || o.includes("link click") || o === "link_clicks") return "MOF";
   if (o.includes("conversion") || o.includes("sales") || o.includes("lead") || o.includes("catalog") || o.includes("app")) return "BOF";
   return "Unknown";
 }
@@ -84,7 +84,7 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
       // Only auto-add an active status if the entire current selection is the
       // default-on-load active set (i.e. user hasn't customised yet).
       const isDefaultActive =
-        [...prev].every((s) => ACTIVE_STATUSES.has(s)) && prev.size > 0;
+        prev.size === 0 || ([...prev].every((s) => ACTIVE_STATUSES.has(s)) && prev.size > 0);
       if (isDefaultActive) {
         for (const s of availableStatuses) {
           if (ACTIVE_STATUSES.has(s)) next.add(s);

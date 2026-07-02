@@ -15,6 +15,7 @@ import { formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useColPicker, ColumnPickerButton, ColHeader, ALL_STANDARD_KPIS, STD_KPI_MAP } from "@/components/shared/ColumnPicker";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -69,13 +70,18 @@ function fmtAqKpi(id: string, a: ReturnType<typeof useAdSetInsights>["adsets"][n
   }
 }
 
+// Only KPIs this table can actually populate — probe fmtAqKpi with a full row;
+// anything still "—" (Views, CPV, Leads, …) is dropped from the column picker.
+const AQ_SAMPLE = { spend: 5000, impressions: 100000, clicks: 1500, reach: 40000, frequency: 2.5, conversions: 80, conversionValue: 120000 } as ReturnType<typeof useAdSetInsights>["adsets"][number];
+const AQ_FETCHABLE = ALL_STANDARD_KPIS.filter((k) => fmtAqKpi(k.id, AQ_SAMPLE, (n) => String(n)) !== "—");
+
 // ─── §6 Audience Quality ────────────────────────────────────────────────────
 
 function AudienceQuality({ adsets, loading, currency }: { adsets: ReturnType<typeof useAdSetInsights>["adsets"]; loading: boolean; currency: string }) {
   const sorted = useMemo(() => [...adsets].sort((a, b) => b.spend - a.spend), [adsets]);
   const cur = (n: number) => formatMoney(n, currency, 0);
 
-  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(AQ_DEFAULTS);
+  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(AQ_DEFAULTS, "aud-quality");
 
   if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
   if (!adsets.length) return (
@@ -94,13 +100,13 @@ function AudienceQuality({ adsets, loading, currency }: { adsets: ReturnType<typ
         </span>
       </div>
       <ColumnPickerButton
-        cols={cols} allDefs={ALL_STANDARD_KPIS} defaultIds={AQ_DEFAULTS}
+        cols={cols} allDefs={AQ_FETCHABLE} defaultIds={AQ_DEFAULTS}
         pickerOpen={pickerOpen} setPickerOpen={setPickerOpen} pickerRef={pickerRef}
         toggleCol={toggleCol} resetCols={resetCols}
       />
       <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm" ref={tableRef}>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
             <tr>
               <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Audience (Ad Set)</th>
               {cols.map((id, colIdx) => {
@@ -109,7 +115,7 @@ function AudienceQuality({ adsets, loading, currency }: { adsets: ReturnType<typ
                   <th key={id} className="px-3 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">
                     <ColHeader
                       colIdx={colIdx} currentId={id} label={k?.label ?? id}
-                      allDefs={ALL_STANDARD_KPIS} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol}
+                      allDefs={AQ_FETCHABLE} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol}
                     />
                   </th>
                 );
@@ -161,7 +167,7 @@ function CustomerValueSegmentation() {
       </div>
       <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm opacity-60">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
               <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Customer Segment</th>
               <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Customers</th>
@@ -214,7 +220,7 @@ function ProductAffinity() {
       </div>
       <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm opacity-60">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
               <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Audience</th>
               <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Top Product</th>
@@ -293,6 +299,17 @@ export default function AudienceQualityTab({ platform, dateRange, customStart, c
       {active === "customer" && <CustomerValueSegmentation />}
       {active === "affinity" && <ProductAffinity />}
 
+      <TabSummaryFooter
+        tabName="Audience Quality & Value"
+        lines={[
+          `${adsets.length} ad set${adsets.length !== 1 ? "s" : ""} analysed across audience quality dimensions.`,
+          `Total spend: ${adsets.reduce((s, a) => s + a.spend, 0).toLocaleString("en-US", { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 })} · ${adsets.reduce((s, a) => s + a.conversions, 0).toLocaleString()} conversions.`,
+          `Average ROAS: ${adsets.length > 0 ? (adsets.reduce((s, a) => s + (a.spend > 0 ? a.conversionValue / a.spend : 0), 0) / adsets.length).toFixed(2) : "—"}×.`,
+        ]}
+        context={{ adSetCount: adsets.length, totalSpend: adsets.reduce((s, a) => s + a.spend, 0) }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

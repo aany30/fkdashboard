@@ -10,14 +10,13 @@ import AboCboPerformance from "./AboCboPerformance";
  */
 function classifyStructure(c: CampaignData): "ABO" | "CBO" | "Unknown" {
   if (c.platform !== "meta") return "Unknown";
-  const hasCampaignBudget =
-    (c.dailyBudget !== undefined && c.dailyBudget > 0) ||
-    (c.lifetimeBudget !== undefined && c.lifetimeBudget > 0);
-  if (hasCampaignBudget) return "CBO";
-  const liveAdSets = (c.adSets || []).filter(
+  if (c.budgetLevel === "campaign") return "CBO";
+  if (c.budgetLevel === "adset") return "ABO";
+  const hasAdSets = (c.adSets || []).some(
     (a) => a.status !== "DELETED" && a.status !== "ARCHIVED"
   );
-  if (liveAdSets.length > 0) return "ABO";
+  if (hasAdSets) return "ABO";
+  if ((c.dailyBudget ?? 0) > 0 || (c.lifetimeBudget ?? 0) > 0) return "CBO";
   return "Unknown";
 }
 

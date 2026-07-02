@@ -8,13 +8,15 @@
  *   4. Funnel Stage — TOF / MOF / BOF / Loyalty grouped breakdown
  */
 
-import { useMemo, useState, useRef, useEffect } from "react";
+import React, { useMemo, useState, useRef, useEffect } from "react";
 import { BarChart2, AlertCircle, ChevronDown, ChevronRight } from "lucide-react";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useColPicker, ColumnPickerButton, ColHeader, ALL_STANDARD_KPIS, STD_KPI_MAP } from "@/components/shared/ColumnPicker";
 import { useAdSetInsights, type AdSetRow } from "@/hooks/useAdSetInsights";
+import { usePersistentColumns } from "@/hooks/useColumnPrefs";
 import { formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import {
   classifyAdSet,
   AUDIENCE_COLORS, STAGE_COLORS, INTENT_COLORS, TYPE_COLORS,
@@ -79,8 +81,11 @@ const FUNNEL_KPIS: KpiDef[] = [
 ];
 
 const DEFAULT_KPI_ORDER: KpiId[] = FUNNEL_KPIS.filter(k => k.defaultOn).map(k => k.id);
-const KPI_GROUPS = Array.from(new Set(FUNNEL_KPIS.map(k => k.group)));
 const KPI_MAP = new Map(FUNNEL_KPIS.map(k => [k.id, k]));
+
+// Only KPIs the funnel tables can populate — drops any that always render "—".
+const FUNNEL_SAMPLE = { spend: 5000, impressions: 100000, clicks: 1500, reach: 40000, frequency: 2.5, conversions: 80, conversionValue: 120000 } as AdSetRow;
+const FUNNEL_FETCHABLE = FUNNEL_KPIS.filter(k => k.fmt(FUNNEL_SAMPLE, "USD") !== "—");
 const NVE_DEFAULTS: KpiId[] = ["spend", "revenue", "orders", "roas", "cpa", "aov"];
 const FSA_DEFAULTS: KpiId[] = ["reach", "spend", "orders", "revenue", "roas", "cpa"];
 
@@ -117,58 +122,27 @@ function fmtAggKpi(id: KpiId, r: AggMetricRow, currency: string): string {
 // ─── Mini column picker used by funnel sub-tabs ──────────────────────────────
 
 function FunnelColPicker({
-  cols, setCols,
+  cols, setCols, defaultIds = DEFAULT_KPI_ORDER,
 }: {
   cols: KpiId[];
   setCols: React.Dispatch<React.SetStateAction<KpiId[]>>;
+  defaultIds?: KpiId[];
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [open]);
-  const toggle = (id: KpiId) => setCols(prev => prev.includes(id) ? prev.filter(k => k !== id) : [...prev, id]);
+  const toggleCol = (id: string) =>
+    setCols(prev => prev.includes(id as KpiId) ? prev.filter(k => k !== id) : [...prev, id as KpiId]);
   return (
-    <div className="flex justify-end" ref={ref}>
-      <div className="relative">
-        <button onClick={() => setOpen(v => !v)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 transition shadow-sm">
-          <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 4h12M4 8h8M6 12h4"/></svg>
-          Columns
-          <span className="ml-0.5 bg-gray-200 text-gray-700 rounded-full text-[10px] font-bold px-1.5 py-0.5 leading-none">{cols.length}</span>
-        </button>
-        {open && (
-          <div className="absolute right-0 top-full mt-1.5 z-50 w-56 bg-gray-900 text-white rounded-xl shadow-2xl overflow-hidden border border-gray-700">
-            <div className="px-4 py-2.5 border-b border-gray-700 flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-gray-300">Columns</span>
-              <button onClick={() => setCols([...DEFAULT_KPI_ORDER])} className="text-[10px] text-gray-400 hover:text-white transition">Reset</button>
-            </div>
-            <div className="max-h-80 overflow-y-auto py-1">
-              {KPI_GROUPS.map(group => (
-                <div key={group}>
-                  <div className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-500">{group}</div>
-                  {FUNNEL_KPIS.filter(k => k.group === group).map(k => {
-                    const on = cols.includes(k.id);
-                    return (
-                      <button key={k.id} onClick={() => toggle(k.id)}
-                        className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition ${on ? "bg-blue-600/20 text-blue-300" : "text-gray-200 hover:bg-gray-800"}`}>
-                        <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${on ? "bg-blue-600 border-blue-500" : "border-gray-600"}`}>
-                          {on && <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1.5 5l2.5 2.5 4.5-4.5"/></svg>}
-                        </span>
-                        {k.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+    <ColumnPickerButton
+      cols={cols}
+      allDefs={FUNNEL_FETCHABLE}
+      defaultIds={defaultIds}
+      pickerOpen={open}
+      setPickerOpen={setOpen}
+      pickerRef={ref}
+      toggleCol={toggleCol}
+      resetCols={(ids) => setCols([...ids] as KpiId[])}
+    />
   );
 }
 
@@ -240,6 +214,11 @@ function fmtKpi(id: string, r: AggRow, m: ReturnType<typeof deriveAgg>, cur: (n:
   }
 }
 
+// Only KPIs this table can populate — probe fmtKpi with a full row; anything
+// still "—" (Reach, Frequency, Views, CPV, Leads, …) is dropped from the picker.
+const AP_SAMPLE = { label: "", adSets: [], spend: 5000, impressions: 100000, clicks: 1500, conversions: 80, conversionValue: 120000 } as unknown as AggRow;
+const AP_FETCHABLE = ALL_STANDARD_KPIS.filter((k) => fmtKpi(k.id, AP_SAMPLE, deriveAgg(AP_SAMPLE), (n) => String(n), (n) => String(n)) !== "—");
+
 function DrillDownRow({ adSets, currency, colCount }: { adSets: AdSetRow[]; currency: string; colCount: number }) {
   const cur = (n: number) => formatMoney(n, currency, 0);
   const sorted = [...adSets].sort((a, b) => b.spend - a.spend);
@@ -248,7 +227,7 @@ function DrillDownRow({ adSets, currency, colCount }: { adSets: AdSetRow[]; curr
       <td colSpan={colCount + 2} className="px-0 py-0 bg-blue-50/40">
         <div className="overflow-x-auto">
           <table className="w-full text-xs border-t border-blue-100">
-            <thead>
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr className="bg-blue-50 border-b border-blue-100">
                 <th className="px-6 py-1.5 text-left font-semibold text-blue-700 uppercase text-[10px]">Ad Set</th>
                 <th className="px-4 py-1.5 text-right font-semibold text-blue-700 uppercase text-[10px]">Spend</th>
@@ -266,7 +245,7 @@ function DrillDownRow({ adSets, currency, colCount }: { adSets: AdSetRow[]; curr
                 const roas = a.spend > 0 ? a.conversionValue / a.spend : 0;
                 return (
                   <tr key={a.id} className="border-b border-blue-50 hover:bg-blue-50">
-                    <td className="px-6 py-1.5 text-gray-700 font-mono truncate max-w-[280px]" title={a.name}>{a.name}</td>
+                    <td className="px-6 py-1.5 text-gray-700 font-mono break-words max-w-[280px]" title={a.name}>{a.name}</td>
                     <td className="px-4 py-1.5 text-right font-semibold text-gray-700">{cur(a.spend)}</td>
                     <td className="px-4 py-1.5 text-right text-gray-600">{Math.round(a.impressions).toLocaleString("en-IN")}</td>
                     <td className="px-4 py-1.5 text-right text-gray-600">{Math.round(a.clicks).toLocaleString("en-IN")}</td>
@@ -294,7 +273,7 @@ function ByAudienceTab({ adsets, audienceMap, loading, currency, startDate, endD
   const [sortKey, setSortKey] = useState<SortKey>("spend");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(BY_AUD_DEFAULTS);
+  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(BY_AUD_DEFAULTS, "aud-perf-byaud");
 
   const rows = useMemo(() => {
     const agg = aggregate(adsets, audienceMap);
@@ -350,14 +329,14 @@ function ByAudienceTab({ adsets, audienceMap, loading, currency, startDate, endD
         />
       </div>
       <ColumnPickerButton
-        cols={cols} allDefs={ALL_STANDARD_KPIS} defaultIds={BY_AUD_DEFAULTS}
+        cols={cols} allDefs={AP_FETCHABLE} defaultIds={BY_AUD_DEFAULTS}
         pickerOpen={pickerOpen} setPickerOpen={setPickerOpen} pickerRef={pickerRef}
         toggleCol={toggleCol} resetCols={resetCols}
       />
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm" ref={tableRef}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
               <tr>
                 <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase w-8" />
                 <th onClick={() => toggleSort("spend")}
@@ -371,7 +350,7 @@ function ByAudienceTab({ adsets, audienceMap, loading, currency, startDate, endD
                     <th key={id} className="px-3 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">
                       <ColHeader
                         colIdx={colIdx} currentId={id} label={k?.label ?? id}
-                        allDefs={ALL_STANDARD_KPIS} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol}
+                        allDefs={AP_FETCHABLE} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol}
                         onSortClick={sk ? () => toggleSort(sk) : undefined}
                         sortIndicator={sk && sortKey === sk ? (sortDir === "desc" ? " ↓" : " ↑") : ""}
                       />
@@ -385,8 +364,8 @@ function ByAudienceTab({ adsets, audienceMap, loading, currency, startDate, endD
                 const m = deriveAgg(r);
                 const isOpen = expanded.has(r.label);
                 return (
-                  <>
-                    <tr key={r.label} onClick={() => toggleExpand(r.label)}
+                  <React.Fragment key={r.label}>
+                    <tr onClick={() => toggleExpand(r.label)}
                       className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer">
                       <td className="px-4 py-2.5 text-gray-400">
                         {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -401,8 +380,8 @@ function ByAudienceTab({ adsets, audienceMap, loading, currency, startDate, endD
                         </td>
                       ))}
                     </tr>
-                    {isOpen && <DrillDownRow key={`${r.label}-drill`} adSets={r.adSets} currency={currency} colCount={cols.length} />}
-                  </>
+                    {isOpen && <DrillDownRow adSets={r.adSets} currency={currency} colCount={cols.length} />}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -418,48 +397,112 @@ function ByAudienceTab({ adsets, audienceMap, loading, currency, startDate, endD
 
 // ─── Sub-tab: Intent Buckets ─────────────────────────────────────────────────
 
+type IntentSortKey = "name" | "intent" | "audience" | KpiId;
+
 function IntentTab({ adsets, audienceMap, loading, currency }: { adsets: AdSetRow[]; audienceMap: Map<string, CustomAudienceDetail>; loading: boolean; currency: string }) {
-  const rows = useMemo(() => [...adsets].sort((a, b) => b.spend - a.spend), [adsets]);
-  const [cols, setCols] = useState<KpiId[]>([...DEFAULT_KPI_ORDER]);
+  const [cols, setCols] = usePersistentColumns<KpiId>("aud-perf-intent", DEFAULT_KPI_ORDER);
+  const [sortKey, setSortKey] = useState<IntentSortKey>("spend");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  const toggleSort = (key: IntentSortKey) => {
+    if (sortKey === key) setSortDir(d => d === "desc" ? "asc" : "desc");
+    else { setSortKey(key); setSortDir("desc"); }
+  };
+  const sortIcon = (key: IntentSortKey) => sortKey === key ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
+
+  const rows = useMemo(() => {
+    const classified = adsets.map(a => ({ a, cls: classify(a, audienceMap) }));
+    return [...classified].sort(({ a: aa, cls: ca }, { a: ab, cls: cb }) => {
+      let va: string | number = 0;
+      let vb: string | number = 0;
+      if (sortKey === "name")     { va = aa.name; vb = ab.name; }
+      else if (sortKey === "intent")   { va = ca.intent; vb = cb.intent; }
+      else if (sortKey === "audience") { va = ca.cls; vb = cb.cls; }
+      else {
+        const getNum = (a: AdSetRow, k: KpiId) => {
+          switch(k) {
+            case "spend": return a.spend;
+            case "revenue": return a.conversionValue;
+            case "orders": case "sales": return a.conversions;
+            case "roas": return a.spend > 0 ? a.conversionValue / a.spend : 0;
+            case "cpa": case "cps": return a.conversions > 0 ? a.spend / a.conversions : 0;
+            case "cvr": case "convRate": case "saleConvRate": return a.clicks > 0 ? (a.conversions / a.clicks) * 100 : 0;
+            case "aov": return a.conversions > 0 ? a.conversionValue / a.conversions : 0;
+            case "impressions": return a.impressions;
+            case "reach": return a.reach;
+            case "cpm": return a.impressions > 0 ? (a.spend / a.impressions) * 1000 : 0;
+            case "frequency": return a.frequency;
+            case "ctr": return a.impressions > 0 ? (a.clicks / a.impressions) * 100 : 0;
+            case "clicks": return a.clicks;
+            case "cpc": return a.clicks > 0 ? a.spend / a.clicks : 0;
+            default: return 0;
+          }
+        };
+        va = getNum(aa, sortKey as KpiId);
+        vb = getNum(ab, sortKey as KpiId);
+      }
+      if (typeof va === "string" && typeof vb === "string") {
+        return sortDir === "desc" ? vb.localeCompare(va) : va.localeCompare(vb);
+      }
+      return sortDir === "desc" ? (vb as number) - (va as number) : (va as number) - (vb as number);
+    });
+  }, [adsets, audienceMap, sortKey, sortDir]);
 
   if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
   if (!adsets.length) return <EmptyState />;
 
+  const thBase = "px-3 py-2.5 text-[11px] font-semibold text-gray-600 uppercase cursor-pointer select-none hover:bg-gray-100 whitespace-nowrap";
+
   return (
     <div className="space-y-2">
       <FunnelColPicker cols={cols} setCols={setCols} />
-      <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm">
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Campaign / Ad Set</th>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Intent</th>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Audience</th>
+              <th onClick={() => toggleSort("name")}
+                className={`${thBase} text-left px-4 min-w-[200px]`}>
+                Campaign / Ad Set{sortIcon("name")}
+              </th>
+              <th onClick={() => toggleSort("intent")}
+                className={`${thBase} text-left`}>
+                Intent{sortIcon("intent")}
+              </th>
+              <th onClick={() => toggleSort("audience")}
+                className={`${thBase} text-left`}>
+                Audience{sortIcon("audience")}
+              </th>
               {cols.map((id) => {
                 const k = KPI_MAP.get(id)!;
-                return <th key={id} className="px-3 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">{k.label}</th>;
+                return (
+                  <th key={id} onClick={() => toggleSort(id as IntentSortKey)}
+                    className={`${thBase} text-right`}>
+                    {k.label}{sortIcon(id as IntentSortKey)}
+                  </th>
+                );
               })}
             </tr>
           </thead>
           <tbody>
-            {rows.map((a) => {
-              const cls = classify(a, audienceMap);
-              return (
-                <tr key={a.id} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="px-4 py-2.5 max-w-[220px]" title={a.name}>
-                    <div className="font-mono text-gray-900 truncate text-xs">{a.name}</div>
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${INTENT_COLORS[cls.intent]}`}>{cls.intent}</span>
-                  </td>
-                  <td className="px-4 py-2.5 whitespace-nowrap">{audienceBadge(cls)}</td>
-                  {cols.map((id) => {
-                    const k = KPI_MAP.get(id)!;
-                    return <td key={id} className="px-3 py-2.5 text-right text-gray-700 whitespace-nowrap">{k.fmt(a, currency)}</td>;
-                  })}
-                </tr>
-              );
-            })}
+            {rows.map(({ a, cls }) => (
+              <tr key={a.id} className="border-b border-gray-100 hover:bg-gray-50">
+                <td className="px-4 py-2.5 max-w-[260px]">
+                  <div className="font-mono text-gray-900 break-words text-xs">{a.name}</div>
+                  {a.campaignName && <div className="text-[10px] text-gray-400 mt-0.5 break-words">{a.campaignName}</div>}
+                </td>
+                <td className="px-4 py-2.5">
+                  {cls.cls === "Unclassified"
+                    ? <span className="text-gray-400 font-mono text-sm" title="No targeting data and no recognisable name keywords — bucket unknown">—</span>
+                    : <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${INTENT_COLORS[cls.intent]}`}>{cls.intent}</span>
+                  }
+                </td>
+                <td className="px-4 py-2.5">{audienceBadge(cls)}</td>
+                {cols.map((id) => {
+                  const k = KPI_MAP.get(id)!;
+                  return <td key={id} className="px-3 py-2.5 text-right text-gray-700 whitespace-nowrap">{k.fmt(a, currency)}</td>;
+                })}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -472,51 +515,120 @@ function IntentTab({ adsets, audienceMap, loading, currency }: { adsets: AdSetRo
 function NewVsExistingTab({ adsets, audienceMap, loading, currency }: { adsets: AdSetRow[]; audienceMap: Map<string, CustomAudienceDetail>; loading: boolean; currency: string }) {
   const rows = useMemo(() => {
     const map = new Map<AudienceType, AdSetRow[]>();
+    const unknownSets: AdSetRow[] = [];
     for (const a of adsets) {
-      const k = classify(a, audienceMap).newVsExisting;
+      const cls = classify(a, audienceMap);
+      if (cls.cls === "Unclassified") { unknownSets.push(a); continue; }
+      const k = cls.newVsExisting;
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(a);
     }
     // Always emit all three buckets so an empty group surfaces as a 0 row
     // rather than disappearing — useful to see "no Existing audiences running".
-    return (["New", "Engaged", "Existing"] as AudienceType[]).map(k => {
-      const g = map.get(k) ?? [];
-      return {
-        group: k, adSetNames: g.map(r => r.name),
-        spend: g.reduce((s, r) => s + r.spend, 0),
-        conversions: g.reduce((s, r) => s + r.conversions, 0),
-        conversionValue: g.reduce((s, r) => s + r.conversionValue, 0),
-        impressions: g.reduce((s, r) => s + r.impressions, 0),
-        clicks: g.reduce((s, r) => s + r.clicks, 0),
-        reach: g.reduce((s, r) => s + r.reach, 0),
-      };
-    });
+    const result: Array<{ group: AudienceType | "Unknown"; adSetNames: string[]; spend: number; conversions: number; conversionValue: number; impressions: number; clicks: number; reach: number }> =
+      (["New", "Engaged", "Existing"] as AudienceType[]).map(k => {
+        const g = map.get(k) ?? [];
+        return {
+          group: k, adSetNames: g.map(r => r.name),
+          spend: g.reduce((s, r) => s + r.spend, 0),
+          conversions: g.reduce((s, r) => s + r.conversions, 0),
+          conversionValue: g.reduce((s, r) => s + r.conversionValue, 0),
+          impressions: g.reduce((s, r) => s + r.impressions, 0),
+          clicks: g.reduce((s, r) => s + r.clicks, 0),
+          reach: g.reduce((s, r) => s + r.reach, 0),
+        };
+      });
+    if (unknownSets.length > 0) {
+      result.push({
+        group: "Unknown", adSetNames: unknownSets.map(r => r.name),
+        spend: unknownSets.reduce((s, r) => s + r.spend, 0),
+        conversions: unknownSets.reduce((s, r) => s + r.conversions, 0),
+        conversionValue: unknownSets.reduce((s, r) => s + r.conversionValue, 0),
+        impressions: unknownSets.reduce((s, r) => s + r.impressions, 0),
+        clicks: unknownSets.reduce((s, r) => s + r.clicks, 0),
+        reach: unknownSets.reduce((s, r) => s + r.reach, 0),
+      });
+    }
+    return result;
   }, [adsets, audienceMap]);
 
-  const [cols, setCols] = useState<KpiId[]>([...NVE_DEFAULTS]);
+  const [cols, setCols] = usePersistentColumns<KpiId>("aud-perf-nve", NVE_DEFAULTS);
+  const [sortKey, setSortKey] = useState<"group" | KpiId>("spend");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  const toggleSort = (key: "group" | KpiId) => {
+    if (sortKey === key) setSortDir(d => d === "desc" ? "asc" : "desc");
+    else { setSortKey(key); setSortDir("desc"); }
+  };
+  const sortIcon = (key: "group" | KpiId) => sortKey === key ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
+
+  const sortedRows = useMemo(() => {
+    const ORDER: Record<string, number> = { New: 0, Engaged: 1, Existing: 2, Unknown: 3 };
+    return [...rows].sort((a, b) => {
+      if (sortKey === "group") {
+        const va = ORDER[a.group] ?? 99;
+        const vb = ORDER[b.group] ?? 99;
+        return sortDir === "desc" ? vb - va : va - vb;
+      }
+      const getVal = (r: typeof a): number => {
+        const roas = r.spend > 0 ? r.conversionValue / r.spend : 0;
+        switch (sortKey) {
+          case "spend":   return r.spend;
+          case "revenue": return r.conversionValue;
+          case "orders": case "sales": return r.conversions;
+          case "roas":    return roas;
+          case "cpa": case "cps": return r.conversions > 0 ? r.spend / r.conversions : 0;
+          case "aov":     return r.conversions > 0 ? r.conversionValue / r.conversions : 0;
+          case "cvr": case "convRate": case "saleConvRate": return r.clicks > 0 ? (r.conversions / r.clicks) * 100 : 0;
+          case "impressions": return r.impressions;
+          case "reach":   return r.reach;
+          case "cpm":     return r.impressions > 0 ? (r.spend / r.impressions) * 1000 : 0;
+          case "frequency": return r.reach > 0 ? r.impressions / r.reach : 0;
+          case "ctr":     return r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0;
+          case "clicks":  return r.clicks;
+          case "cpc":     return r.clicks > 0 ? r.spend / r.clicks : 0;
+          default:        return 0;
+        }
+      };
+      return sortDir === "desc" ? getVal(b) - getVal(a) : getVal(a) - getVal(b);
+    });
+  }, [rows, sortKey, sortDir]);
 
   if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
   if (!adsets.length) return <EmptyState />;
 
+  const thBase = "px-3 py-2.5 text-[11px] font-semibold text-gray-600 uppercase cursor-pointer select-none hover:bg-gray-100 whitespace-nowrap";
+
   return (
     <div className="space-y-2">
-      <FunnelColPicker cols={cols} setCols={setCols} />
+      <FunnelColPicker cols={cols} setCols={setCols} defaultIds={NVE_DEFAULTS} />
       <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Audience Type</th>
+              <th onClick={() => toggleSort("group")}
+                className={`${thBase} text-left px-4`}>
+                Audience Type{sortIcon("group")}
+              </th>
               {cols.map((id) => {
                 const k = KPI_MAP.get(id)!;
-                return <th key={id} className="px-3 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">{k.label}</th>;
+                return (
+                  <th key={id} onClick={() => toggleSort(id)}
+                    className={`${thBase} text-right`}>
+                    {k.label}{sortIcon(id)}
+                  </th>
+                );
               })}
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {sortedRows.map((r) => (
               <tr key={r.group} className="border-b border-gray-100 hover:bg-gray-50">
                 <td className="px-4 py-2.5">
-                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${TYPE_COLORS[r.group as AudienceType]}`}>{r.group}</span>
+                  {r.group === "Unknown"
+                    ? <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-500 border border-dashed border-gray-400" title="No targeting data and no recognisable name keywords — these ad sets couldn't be classified">— Unknown</span>
+                    : <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${TYPE_COLORS[r.group as AudienceType]}`}>{r.group}</span>
+                  }
                   <span className="ml-2 text-xs text-gray-500">{r.adSetNames.length} ad set{r.adSetNames.length !== 1 ? "s" : ""}</span>
                 </td>
                 {cols.map((id) => (
@@ -536,12 +648,12 @@ function NewVsExistingTab({ adsets, audienceMap, loading, currency }: { adsets: 
 // ─── Sub-tab: Funnel Stage ───────────────────────────────────────────────────
 
 interface FunnelGroupRow {
-  stage: FunnelStage; audienceLabel: string; classification: AudienceClassification;
+  stage: FunnelStage | "Unknown"; audienceLabel: string; classification: AudienceClassification;
   adSetNames: string[]; campaignNames: string[];
   spend: number; conversions: number; conversionValue: number; impressions: number; clicks: number; reach: number;
 }
 interface FunnelStageGroup {
-  stage: FunnelStage; children: FunnelGroupRow[];
+  stage: FunnelStage | "Unknown"; children: FunnelGroupRow[];
   spend: number; conversions: number; conversionValue: number; impressions: number; clicks: number; reach: number;
 }
 
@@ -549,7 +661,10 @@ function buildFunnelGroups(adsets: AdSetRow[], audienceMap: Map<string, CustomAu
   const pairMap = new Map<string, { rows: AdSetRow[]; classification: AudienceClassification }>();
   for (const a of adsets) {
     const cls = classify(a, audienceMap);
-    const key = `${cls.funnelStage}|||${cls.cls}`;
+    // Unclassified ad sets are tracked under a sentinel stage so they never
+    // silently fall into TOF (which CLASS_TO_STAGE maps them to by default).
+    const stageKey = cls.cls === "Unclassified" ? "Unknown" : cls.funnelStage;
+    const key = `${stageKey}|||${cls.cls}`;
     if (!pairMap.has(key)) pairMap.set(key, { rows: [], classification: cls });
     pairMap.get(key)!.rows.push(a);
   }
@@ -574,7 +689,7 @@ function buildFunnelGroups(adsets: AdSetRow[], audienceMap: Map<string, CustomAu
       });
     }
   }
-  return (["TOF", "MOF", "BOF", "Loyalty"] as FunnelStage[]).filter(s => stageMap.has(s)).map(stage => {
+  const result: FunnelStageGroup[] = (["TOF", "MOF", "BOF", "Loyalty"] as FunnelStage[]).filter(s => stageMap.has(s)).map(stage => {
     const children = stageMap.get(stage)!;
     return {
       stage, children,
@@ -586,48 +701,131 @@ function buildFunnelGroups(adsets: AdSetRow[], audienceMap: Map<string, CustomAu
       reach: children.reduce((s, r) => s + r.reach, 0),
     };
   });
+  // Collect ad sets that couldn't be classified — don't let them silently land in TOF.
+  const unknownEntries = [...pairMap.entries()].filter(([k]) => k.startsWith("Unknown|||"));
+  if (unknownEntries.length > 0) {
+    const children: FunnelGroupRow[] = unknownEntries.map(([key, entry]) => {
+      const rows = entry.rows;
+      const uniqueCampaigns = [...new Set(rows.map(r => r.campaignName).filter(Boolean) as string[])];
+      return {
+        stage: "Unknown" as const, audienceLabel: key.split("|||")[1], classification: entry.classification,
+        adSetNames: rows.map(r => r.name), campaignNames: uniqueCampaigns,
+        spend: rows.reduce((s, r) => s + r.spend, 0),
+        conversions: rows.reduce((s, r) => s + r.conversions, 0),
+        conversionValue: rows.reduce((s, r) => s + r.conversionValue, 0),
+        impressions: rows.reduce((s, r) => s + r.impressions, 0),
+        clicks: rows.reduce((s, r) => s + r.clicks, 0),
+        reach: rows.reduce((s, r) => s + r.reach, 0),
+      };
+    });
+    result.push({
+      stage: "Unknown",
+      children,
+      spend: children.reduce((s, r) => s + r.spend, 0),
+      conversions: children.reduce((s, r) => s + r.conversions, 0),
+      conversionValue: children.reduce((s, r) => s + r.conversionValue, 0),
+      impressions: children.reduce((s, r) => s + r.impressions, 0),
+      clicks: children.reduce((s, r) => s + r.clicks, 0),
+      reach: children.reduce((s, r) => s + r.reach, 0),
+    });
+  }
+  return result;
 }
 
 function FunnelStageTab({ adsets, audienceMap, loading, currency }: { adsets: AdSetRow[]; audienceMap: Map<string, CustomAudienceDetail>; loading: boolean; currency: string }) {
   const groups = useMemo(() => buildFunnelGroups(adsets, audienceMap), [adsets, audienceMap]);
-  const [expanded, setExpanded] = useState<Set<FunnelStage>>(new Set());
-  const [cols, setCols] = useState<KpiId[]>([...FSA_DEFAULTS]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expandedAdSets, setExpandedAdSets] = useState<Set<string>>(new Set());
+  const [cols, setCols] = usePersistentColumns<KpiId>("aud-perf-fsa", FSA_DEFAULTS);
+  const [sortKey, setSortKey] = useState<KpiId>("spend");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  const toggle = (stage: FunnelStage) => setExpanded(prev => {
-    const next = new Set(prev);
-    if (next.has(stage)) next.delete(stage); else next.add(stage);
-    return next;
+  const toggleSort = (key: KpiId) => {
+    if (sortKey === key) setSortDir(d => d === "desc" ? "asc" : "desc");
+    else { setSortKey(key); setSortDir("desc"); }
+  };
+  const sortIcon = (key: KpiId) => sortKey === key ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
+
+  const toggle = (stage: FunnelStage | "Unknown") => setExpanded(prev => {
+    const next = new Set(prev); if (next.has(stage)) next.delete(stage); else next.add(stage); return next;
   });
+  const toggleAdSets = (key: string) => setExpandedAdSets(prev => {
+    const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next;
+  });
+
+  const getAggVal = (r: { spend: number; conversions: number; conversionValue: number; impressions: number; clicks: number; reach: number }, k: KpiId): number => {
+    switch (k) {
+      case "spend":   return r.spend;
+      case "revenue": return r.conversionValue;
+      case "orders": case "sales": return r.conversions;
+      case "roas":    return r.spend > 0 ? r.conversionValue / r.spend : 0;
+      case "cpa": case "cps": return r.conversions > 0 ? r.spend / r.conversions : 0;
+      case "aov":     return r.conversions > 0 ? r.conversionValue / r.conversions : 0;
+      case "cvr": case "convRate": case "saleConvRate": return r.clicks > 0 ? (r.conversions / r.clicks) * 100 : 0;
+      case "impressions": return r.impressions;
+      case "reach":   return r.reach;
+      case "cpm":     return r.impressions > 0 ? (r.spend / r.impressions) * 1000 : 0;
+      case "frequency": return r.reach > 0 ? r.impressions / r.reach : 0;
+      case "ctr":     return r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0;
+      case "clicks":  return r.clicks;
+      case "cpc":     return r.clicks > 0 ? r.spend / r.clicks : 0;
+      default:        return 0;
+    }
+  };
+
+  const sortedGroups = useMemo(() => {
+    const cmp = (a: typeof groups[0], b: typeof groups[0]) => {
+      const va = getAggVal(a, sortKey), vb = getAggVal(b, sortKey);
+      return sortDir === "desc" ? vb - va : va - vb;
+    };
+    return [...groups].sort(cmp).map(g => ({
+      ...g,
+      children: [...g.children].sort((a, b) => {
+        const va = getAggVal(a, sortKey), vb = getAggVal(b, sortKey);
+        return sortDir === "desc" ? vb - va : va - vb;
+      }),
+    }));
+  }, [groups, sortKey, sortDir]);
 
   if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
   if (!adsets.length) return <EmptyState />;
 
+  const thBase = "px-3 py-2.5 text-[11px] font-semibold text-gray-600 uppercase cursor-pointer select-none hover:bg-gray-100 whitespace-nowrap";
+
   return (
     <div className="space-y-2">
-      <FunnelColPicker cols={cols} setCols={setCols} />
+      <FunnelColPicker cols={cols} setCols={setCols} defaultIds={FSA_DEFAULTS} />
       <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
             <tr>
               <th className="px-4 py-2.5 w-8" />
               <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Stage</th>
               {cols.map((id) => {
                 const k = KPI_MAP.get(id)!;
-                return <th key={id} className="px-3 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">{k.label}</th>;
+                return (
+                  <th key={id} onClick={() => toggleSort(id)}
+                    className={`${thBase} text-right`}>
+                    {k.label}{sortIcon(id)}
+                  </th>
+                );
               })}
             </tr>
           </thead>
           <tbody>
-            {groups.map((g) => {
+            {sortedGroups.map((g) => {
               const isOpen = expanded.has(g.stage);
               return (
-                <>
-                  <tr key={g.stage} onClick={() => toggle(g.stage)} className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer">
+                <React.Fragment key={g.stage}>
+                  <tr onClick={() => toggle(g.stage)} className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer">
                     <td className="px-4 py-2.5 text-gray-400">
                       {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${STAGE_COLORS[g.stage]}`}>{g.stage}</span>
+                      {g.stage === "Unknown"
+                        ? <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-500 border border-dashed border-gray-400" title="No targeting data and no recognisable name keywords — funnel stage unknown">— Unknown</span>
+                        : <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${STAGE_COLORS[g.stage]}`}>{g.stage}</span>
+                      }
                       <span className="ml-2 text-xs text-gray-400">{g.children.length} audience{g.children.length !== 1 ? "s" : ""}</span>
                     </td>
                     {cols.map((id) => (
@@ -636,26 +834,41 @@ function FunnelStageTab({ adsets, audienceMap, loading, currency }: { adsets: Ad
                       </td>
                     ))}
                   </tr>
-                  {isOpen && g.children.map((r, i) => (
-                    <tr key={`${g.stage}-${i}`} className="border-b border-blue-50 bg-blue-50/30 hover:bg-blue-50">
-                      <td className="px-4 py-2" />
-                      <td className="px-6 py-2">
-                        <div>{audienceBadge(r.classification)}</div>
-                        {r.campaignNames.length > 0 && (
-                          <div className="text-[10px] text-gray-500 mt-0.5 truncate max-w-[200px]" title={r.campaignNames.join(", ")}>
-                            {r.campaignNames[0]}{r.campaignNames.length > 1 ? ` +${r.campaignNames.length - 1}` : ""}
-                          </div>
-                        )}
-                        {r.adSetNames.length > 1 && <div className="text-[10px] text-gray-400">{r.adSetNames.length} ad sets</div>}
-                      </td>
-                      {cols.map((id) => (
-                        <td key={id} className="px-3 py-2 text-right text-gray-600 text-xs whitespace-nowrap">
-                          {fmtAggKpi(id, r, currency)}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </>
+                  {isOpen && g.children.map((r, i) => {
+                    const adSetsKey = `${g.stage}-${i}`;
+                    const adSetsOpen = expandedAdSets.has(adSetsKey);
+                    return (
+                      <React.Fragment key={adSetsKey}>
+                        <tr onClick={() => toggleAdSets(adSetsKey)}
+                          className="border-b border-blue-50 bg-blue-50/30 hover:bg-blue-50 cursor-pointer">
+                          <td className="px-4 py-2 text-gray-400 pl-8">
+                            {adSetsOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                          </td>
+                          <td className="px-6 py-2">
+                            <div className="flex items-center gap-1.5">{audienceBadge(r.classification)}</div>
+                            {r.campaignNames.map((name, ci) => (
+                              <div key={ci} className="text-[10px] text-gray-500 mt-0.5 break-words max-w-[280px]">{name}</div>
+                            ))}
+                            <div className="text-[10px] text-blue-500 mt-0.5">{r.adSetNames.length} ad set{r.adSetNames.length !== 1 ? "s" : ""} · click to {adSetsOpen ? "collapse" : "expand"}</div>
+                          </td>
+                          {cols.map((id) => (
+                            <td key={id} className="px-3 py-2 text-right text-gray-600 text-xs whitespace-nowrap">
+                              {fmtAggKpi(id, r, currency)}
+                            </td>
+                          ))}
+                        </tr>
+                        {adSetsOpen && r.adSetNames.map((name, ni) => (
+                          <tr key={`${adSetsKey}-${ni}`} className="border-b border-indigo-50/50 bg-indigo-50/20">
+                            <td className="px-4 py-1" />
+                            <td className="px-10 py-1.5" colSpan={cols.length + 1}>
+                              <span className="text-[10px] text-gray-600 font-mono break-all">{name}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
+                </React.Fragment>
               );
             })}
           </tbody>
@@ -752,6 +965,33 @@ export default function AudiencePerformanceTab({ platform, dateRange, customStar
           Classification reads Meta&apos;s actual targeting setup (interests, custom audiences, Advantage+ flags). Badges with a dotted border were inferred from the ad-set name because Meta didn&apos;t expose the targeting (typically Advantage+ Shopping).
         </p>
       )}
+
+      <TabSummaryFooter
+        tabName="Audience Performance"
+        lines={[
+          `${adsets.length} ad set${adsets.length !== 1 ? "s" : ""} loaded across all audience types.`,
+          `Total spend: ${adsets.reduce((s, a) => s + a.spend, 0).toLocaleString("en-US", { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 })} · ${adsets.reduce((s, a) => s + a.conversions, 0).toLocaleString()} conversions in window.`,
+          `Average ROAS: ${adsets.length > 0 ? (adsets.reduce((s, a) => s + (a.spend > 0 ? a.conversionValue / a.spend : 0), 0) / adsets.length).toFixed(2) : "—"}×.`,
+        ]}
+        context={{
+          adSetCount: adsets.length,
+          totalSpend: adsets.reduce((s, a) => s + a.spend, 0),
+          startDate,
+          endDate,
+          adSets: adsets.map(a => ({
+            name: a.name,
+            spend: a.spend,
+            impressions: a.impressions,
+            clicks: a.clicks,
+            conversions: a.conversions,
+            conversionValue: a.conversionValue,
+            roas: a.spend > 0 ? +(a.conversionValue / a.spend).toFixed(4) : 0,
+            cpa: a.conversions > 0 ? +(a.spend / a.conversions).toFixed(4) : 0,
+          })),
+        }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

@@ -10,14 +10,20 @@
  * and the Model Comparison chart — all were client-side math, not Meta data.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { GitBranch, Info, TrendingUp, ArrowRight } from "lucide-react";
+import { ColumnPickerButton, ALL_STANDARD_KPIS } from "@/components/shared/ColumnPicker";
+import { formatStandardKpi } from "@/lib/standard-kpis";
+import { usePersistentColumns } from "@/hooks/useColumnPrefs";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from "recharts";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import SharedSortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { detectCurrency, formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import type { CampaignData } from "@/types";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -122,75 +128,110 @@ function FullFunnelView({ campaigns }: { campaigns: CampaignData[] }) {
 
 // ─── §2 Campaign Performance (Last-Click, Meta Reported) ─────────────────────
 
-type SortKey = "spend" | "conversions" | "roas" | "cpa" | "ctr";
+interface CampColDef { id: string; label: string; group: string; fmt: "money" | "int" | "pct" | "x"; defaultOn: boolean; lowerIsBetter?: boolean; }
+const CAMP_ALL_COLS: CampColDef[] = [
+  { id: "impressions",     label: "Impressions", group: "Display",    fmt: "int",   defaultOn: false },
+  { id: "cpm",             label: "CPM",         group: "Display",    fmt: "money", defaultOn: false, lowerIsBetter: true },
+  { id: "clicks",          label: "Clicks",      group: "Engagement", fmt: "int",   defaultOn: false },
+  { id: "ctr",             label: "CTR",         group: "Engagement", fmt: "pct",   defaultOn: true  },
+  { id: "cpc",             label: "CPC",         group: "Engagement", fmt: "money", defaultOn: false, lowerIsBetter: true },
+  { id: "spend",           label: "Spend",       group: "Engagement", fmt: "money", defaultOn: true  },
+  { id: "conversions",     label: "Conv.",       group: "Conversion", fmt: "int",   defaultOn: true  },
+  { id: "conversionValue", label: "Revenue",     group: "Conversion", fmt: "money", defaultOn: false },
+  { id: "roas",            label: "ROAS",        group: "Conversion", fmt: "x",     defaultOn: true  },
+  { id: "cpa",             label: "CPA",         group: "Conversion", fmt: "money", defaultOn: true, lowerIsBetter: true },
+  { id: "cvr",             label: "CVR",         group: "Conversion", fmt: "pct",   defaultOn: false },
+  { id: "aov",             label: "AOV",         group: "Conversion", fmt: "money", defaultOn: false },
+];
+const CAMP_DEFAULT_COLS = CAMP_ALL_COLS.filter(c => c.defaultOn).map(c => c.id);
+
+function CampColPicker({ cols, setCols }: { cols: string[]; setCols: (c: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const toggleCol = (id: string) => {
+    if (cols.includes(id)) { if (cols.length > 1) setCols(cols.filter(c => c !== id)); }
+    else setCols([...cols, id]);
+  };
+  return (
+    <ColumnPickerButton
+      cols={cols}
+      allDefs={CAMP_ALL_COLS}
+      defaultIds={CAMP_DEFAULT_COLS}
+      pickerOpen={open}
+      setPickerOpen={setOpen}
+      pickerRef={ref}
+      toggleCol={toggleCol}
+      resetCols={(ids) => setCols([...ids])}
+    />
+  );
+}
 
 function CampaignPerformanceTable({ campaigns, currency }: { campaigns: CampaignData[]; currency: string }) {
-  const [sort, setSort] = useState<SortKey>("spend");
-  const [dir, setDir]   = useState<"desc" | "asc">("desc");
+  const [cols, setCols] = usePersistentColumns("attr-camp", CAMP_DEFAULT_COLS);
   const cur = (n: number) => formatMoney(n, currency, 0);
 
-  const sorted = useMemo(() => {
-    return [...campaigns].sort((a, b) => {
-      const val = (c: CampaignData): number => {
-        if (sort === "spend")       return c.spend || 0;
-        if (sort === "conversions") return c.conversions || 0;
-        if (sort === "roas")        return (c.spend || 0) > 0 ? (c.conversionValue || 0) / (c.spend || 1) : 0;
-        if (sort === "cpa")         return (c.conversions || 0) > 0 ? (c.spend || 0) / (c.conversions || 1) : Infinity;
-        if (sort === "ctr")         return (c.impressions || 0) > 0 ? (c.clicks || 0) / (c.impressions || 1) : 0;
-        return 0;
-      };
-      return dir === "desc" ? val(b) - val(a) : val(a) - val(b);
-    });
-  }, [campaigns, sort, dir]);
+  const enriched = useMemo(() => campaigns.map(c => {
+    const spend = c.spend || 0;
+    const imps = c.impressions || 0;
+    const clicks = c.clicks || 0;
+    const conversions = c.conversions || 0;
+    const conversionValue = c.conversionValue || 0;
+    return {
+      ...c,
+      spend, impressions: imps, clicks, conversions, conversionValue,
+      ctr:  imps > 0 ? (clicks / imps) * 100 : 0,
+      cpm:  imps > 0 ? (spend / imps) * 1000 : 0,
+      cpc:  clicks > 0 ? spend / clicks : 0,
+      roas: spend > 0 ? conversionValue / spend : 0,
+      cpa:  conversions > 0 ? spend / conversions : 0,
+      cvr:  clicks > 0 ? (conversions / clicks) * 100 : 0,
+      aov:  conversions > 0 ? conversionValue / conversions : 0,
+    };
+  }), [campaigns]);
+  const { sorted, sort, toggle } = useSort(enriched, "spend", "desc");
 
-  const toggleSort = (key: SortKey) => {
-    if (sort === key) setDir(d => d === "desc" ? "asc" : "desc");
-    else { setSort(key); setDir("desc"); }
+  const maxSpend = Math.max(...enriched.map(c => c.spend), 1);
+
+  const fmtVal = (id: string, v: number): string => {
+    const def = CAMP_ALL_COLS.find(c => c.id === id)!;
+    if (!Number.isFinite(v) || v === 0) return id === "spend" || id === "conversions" ? (v === 0 ? (def.fmt === "money" ? cur(0) : "0") : "—") : "—";
+    if (def.fmt === "money") return cur(v);
+    if (def.fmt === "pct")   return `${v.toFixed(2)}%`;
+    if (def.fmt === "x")     return `${v.toFixed(2)}×`;
+    return Math.round(v).toLocaleString("en-IN");
   };
-
-  const SortTh = ({ id, label }: { id: SortKey; label: string }) => (
-    <th
-      onClick={() => toggleSort(id)}
-      className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase cursor-pointer select-none hover:bg-gray-100 whitespace-nowrap"
-    >
-      {label}{sort === id ? (dir === "desc" ? " ↓" : " ↑") : ""}
-    </th>
-  );
-
-  const maxSpend = Math.max(...campaigns.map(c => c.spend || 0), 1);
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
-      <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
+      <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h3 className="text-sm font-bold text-gray-900">Campaign Performance</h3>
           <p className="text-xs text-gray-500 mt-0.5">
             Conversions as reported by Meta (last-click, account default window) · Click headers to sort
           </p>
         </div>
-        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-50 text-green-700 border border-green-200 shrink-0">
-          Meta API
-        </span>
+        <div className="flex items-center gap-2">
+          <CampColPicker cols={cols} setCols={setCols} />
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-50 text-green-700 border border-green-200 shrink-0">
+            Meta API
+          </span>
+        </div>
       </div>
-      <div className="overflow-x-auto">
+      <div>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Campaign</th>
-              <SortTh id="spend"       label="Spend" />
-              <SortTh id="conversions" label="Conv." />
-              <SortTh id="roas"        label="ROAS" />
-              <SortTh id="cpa"         label="CPA" />
-              <SortTh id="ctr"         label="CTR" />
+              <SharedSortTh col="name" sort={sort} onToggle={toggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Campaign</SharedSortTh>
+              {cols.map(id => {
+                const def = CAMP_ALL_COLS.find(c => c.id === id)!;
+                return <SharedSortTh key={id} col={id} sort={sort} onToggle={toggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap" align="right">{def.label}</SharedSortTh>;
+              })}
               <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Window</th>
             </tr>
           </thead>
           <tbody>
             {sorted.map(c => {
-              const roas = (c.spend || 0) > 0 ? (c.conversionValue || 0) / (c.spend || 1) : 0;
-              const cpa  = (c.conversions || 0) > 0 ? (c.spend || 0) / (c.conversions || 1) : 0;
-              const ctr  = (c.impressions || 0) > 0 ? ((c.clicks || 0) / (c.impressions || 1)) * 100 : 0;
-              const spendPct = maxSpend > 0 ? ((c.spend || 0) / maxSpend) * 100 : 0;
+              const spendPct = maxSpend > 0 ? (c.spend / maxSpend) * 100 : 0;
               return (
                 <tr key={c.id} className="border-b border-gray-100 hover:bg-gray-50">
                   <td className="px-4 py-2.5 max-w-[260px]">
@@ -199,13 +240,16 @@ function CampaignPerformanceTable({ campaigns, currency }: { campaigns: Campaign
                       <div className="h-1 rounded-full bg-blue-400" style={{ width: `${spendPct}%` }} />
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right font-semibold text-gray-900 tabular-nums">{cur(c.spend || 0)}</td>
-                  <td className="px-4 py-2.5 text-right text-gray-700 tabular-nums">{Math.round(c.conversions || 0).toLocaleString("en-IN")}</td>
-                  <td className="px-4 py-2.5 text-right font-semibold tabular-nums" style={{ color: roas >= 2 ? "#059669" : roas >= 1 ? "#d97706" : "#dc2626" }}>
-                    {roas > 0 ? `${roas.toFixed(2)}×` : "—"}
-                  </td>
-                  <td className="px-4 py-2.5 text-right text-gray-700 tabular-nums">{cpa > 0 ? cur(cpa) : "—"}</td>
-                  <td className="px-4 py-2.5 text-right text-gray-700 tabular-nums">{ctr > 0 ? `${ctr.toFixed(2)}%` : "—"}</td>
+                  {cols.map(id => {
+                    const v = (c as unknown as Record<string, number>)[id] ?? 0;
+                    const cellClass = id === "roas"
+                      ? `px-4 py-2.5 text-right font-semibold tabular-nums`
+                      : id === "spend"
+                        ? "px-4 py-2.5 text-right font-semibold text-gray-900 tabular-nums"
+                        : "px-4 py-2.5 text-right text-gray-700 tabular-nums";
+                    const roasColor = id === "roas" ? (v >= 2 ? "#059669" : v >= 1 ? "#d97706" : v > 0 ? "#dc2626" : undefined) : undefined;
+                    return <td key={id} className={cellClass} style={roasColor ? { color: roasColor } : undefined}>{fmtVal(id, v)}</td>;
+                  })}
                   <td className="px-4 py-2.5">
                     <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-gray-100 text-gray-600">
                       {c.effectiveAttribution || "acct default"}
@@ -223,68 +267,134 @@ function CampaignPerformanceTable({ campaigns, currency }: { campaigns: Campaign
 
 // ─── §3 Attribution Windows ───────────────────────────────────────────────────
 
+const WIN_ALL_COLS: { id: string; label: string; group: string; defaultOn: boolean }[] = [
+  { id: "campaigns",       label: "Camps",       group: "Core",       defaultOn: true  },
+  { id: "spend",           label: "Spend",       group: "Engagement", defaultOn: true  },
+  { id: "conversions",     label: "Conv.",       group: "Conversion", defaultOn: true  },
+  { id: "roas",            label: "ROAS",        group: "Conversion", defaultOn: true  },
+  { id: "impressions",     label: "Impressions", group: "Display",    defaultOn: false },
+  { id: "reach",           label: "Reach",       group: "Display",    defaultOn: false },
+  { id: "cpm",             label: "CPM",         group: "Display",    defaultOn: false },
+  { id: "clicks",          label: "Clicks",      group: "Engagement", defaultOn: false },
+  { id: "ctr",             label: "CTR",         group: "Engagement", defaultOn: false },
+  { id: "cpc",             label: "CPC",         group: "Engagement", defaultOn: false },
+  { id: "conversionValue", label: "Revenue",     group: "Conversion", defaultOn: false },
+  { id: "cpa",             label: "CPA",         group: "Conversion", defaultOn: false },
+  { id: "cvr",             label: "CVR",         group: "Conversion", defaultOn: false },
+  { id: "aov",             label: "AOV",         group: "Conversion", defaultOn: false },
+];
+const WIN_DEFAULT_COLS = WIN_ALL_COLS.filter(c => c.defaultOn).map(c => c.id);
+
 function AttributionWindowsSection({ campaigns, currency }: { campaigns: CampaignData[]; currency: string }) {
   const cur = (n: number) => formatMoney(n, currency, 0);
+  const [cols, setCols] = usePersistentColumns("attr-win", WIN_DEFAULT_COLS);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const toggleCol = (id: string) => {
+    if (cols.includes(id)) { if (cols.length > 1) setCols(cols.filter(c => c !== id)); }
+    else setCols([...cols, id]);
+  };
 
   const windowRows = useMemo(() => {
-    const map = new Map<string, { window: string; campaigns: number; spend: number; conversions: number; conversionValue: number }>();
+    const map = new Map<string, { window: string; campaigns: number; spend: number; impressions: number; clicks: number; reach: number; conversions: number; conversionValue: number }>();
     campaigns.forEach(c => {
       const w = c.effectiveAttribution || "Account default";
-      const row = map.get(w) || { window: w, campaigns: 0, spend: 0, conversions: 0, conversionValue: 0 };
-      row.campaigns++; row.spend += c.spend || 0;
-      row.conversions += c.conversions || 0; row.conversionValue += c.conversionValue || 0;
+      const row = map.get(w) || { window: w, campaigns: 0, spend: 0, impressions: 0, clicks: 0, reach: 0, conversions: 0, conversionValue: 0 };
+      row.campaigns++;
+      row.spend += c.spend || 0;
+      row.impressions += c.impressions || 0;
+      row.clicks += c.clicks || 0;
+      row.reach += c.reach || 0;
+      row.conversions += c.conversions || 0;
+      row.conversionValue += c.conversionValue || 0;
       map.set(w, row);
     });
-    return [...map.values()].sort((a, b) => b.spend - a.spend);
+    return [...map.values()].map(r => ({
+      ...r,
+      ctr:  r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0,
+      cpm:  r.impressions > 0 ? (r.spend / r.impressions) * 1000 : 0,
+      cpc:  r.clicks > 0 ? r.spend / r.clicks : 0,
+      cpa:  r.conversions > 0 ? r.spend / r.conversions : 0,
+      roas: r.spend > 0 ? r.conversionValue / r.spend : 0,
+      cvr:  r.clicks > 0 ? (r.conversions / r.clicks) * 100 : 0,
+      aov:  r.conversions > 0 ? r.conversionValue / r.conversions : 0,
+    })).sort((a, b) => b.spend - a.spend);
   }, [campaigns]);
 
   const chartData = windowRows.map(r => ({ name: r.window, Spend: r.spend, Conversions: r.conversions }));
+
+  const fmtVal = (id: string, v: number): string => {
+    if (!Number.isFinite(v)) return "—";
+    if (id === "campaigns") return String(v);
+    if (id === "spend" || id === "conversionValue" || id === "cpm" || id === "cpc" || id === "cpa" || id === "aov") return v > 0 ? cur(v) : "—";
+    if (id === "ctr" || id === "cvr") return v > 0 ? `${v.toFixed(2)}%` : "—";
+    if (id === "roas") return v > 0 ? `${v.toFixed(2)}×` : "—";
+    if (id === "conversions" || id === "clicks" || id === "impressions" || id === "reach") return v > 0 ? Math.round(v).toLocaleString("en-IN") : "0";
+    return String(v);
+  };
 
   if (windowRows.length === 0) return null;
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
-      <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
+      <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h3 className="text-sm font-bold text-gray-900">Attribution Windows in Use</h3>
           <p className="text-xs text-gray-500 mt-0.5">
             Effective attribution window per campaign group — from Meta campaign settings
           </p>
         </div>
-        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-50 text-green-700 border border-green-200 shrink-0">
-          Meta API
-        </span>
+        <div className="flex items-center gap-2">
+          <ColumnPickerButton
+            cols={cols}
+            allDefs={WIN_ALL_COLS}
+            defaultIds={WIN_DEFAULT_COLS}
+            pickerOpen={pickerOpen}
+            setPickerOpen={setPickerOpen}
+            pickerRef={pickerRef}
+            toggleCol={toggleCol}
+            resetCols={(ids) => setCols([...ids])}
+          />
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-50 text-green-700 border border-green-200 shrink-0">
+            Meta API
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 divide-y lg:divide-y-0 lg:divide-x divide-gray-100">
         {/* Table */}
-        <div className="overflow-x-auto">
+        <div>
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr>
                 <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Window</th>
-                <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Camps</th>
-                <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Spend</th>
-                <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Conv.</th>
-                <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">ROAS</th>
+                {cols.map(id => {
+                  const def = WIN_ALL_COLS.find(c => c.id === id) ?? ALL_STANDARD_KPIS.find(c => c.id === id);
+                  return <th key={id} className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">{def?.label ?? id}</th>;
+                })}
               </tr>
             </thead>
             <tbody>
-              {windowRows.map(r => {
-                const roas = r.spend > 0 ? r.conversionValue / r.spend : 0;
-                return (
-                  <tr key={r.window} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="px-4 py-2.5">
-                      <div className="font-mono text-xs text-gray-900">{r.window}</div>
-                      <div className="text-[10px] text-gray-400 mt-0.5">{WINDOW_NOTES[r.window] || "—"}</div>
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-gray-700">{r.campaigns}</td>
-                    <td className="px-4 py-2.5 text-right font-semibold text-gray-900">{cur(r.spend)}</td>
-                    <td className="px-4 py-2.5 text-right text-gray-700">{Math.round(r.conversions).toLocaleString("en-IN")}</td>
-                    <td className="px-4 py-2.5 text-right font-semibold text-blue-700">{roas > 0 ? `${roas.toFixed(2)}×` : "—"}</td>
-                  </tr>
-                );
-              })}
+              {windowRows.map(r => (
+                <tr key={r.window} className="border-b border-gray-100 hover:bg-gray-50">
+                  <td className="px-4 py-2.5">
+                    <div className="font-mono text-xs text-gray-900">{r.window}</div>
+                    <div className="text-[10px] text-gray-400 mt-0.5">{WINDOW_NOTES[r.window] || "—"}</div>
+                  </td>
+                  {cols.map(id => {
+                    const isLocal = WIN_ALL_COLS.some(c => c.id === id);
+                    const v = (r as unknown as Record<string, number>)[id] ?? 0;
+                    const cell = isLocal ? fmtVal(id, v) : formatStandardKpi(r, id, currency);
+                    const isCore = id === "spend";
+                    const isRoas = id === "roas";
+                    return (
+                      <td key={id} className={`px-4 py-2.5 text-right tabular-nums ${isCore ? "font-semibold text-gray-900" : isRoas ? "font-semibold text-blue-700" : "text-gray-700"}`}>
+                        {cell}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -327,9 +437,11 @@ function ConversionWindowComparison({ campaigns, currency }: { campaigns: Campai
         conv7dClick: c.conv7dClick ?? 0,
         conv1dView:  c.conv1dView  ?? 0,
         reported:    c.conversions  ?? 0,
-      }))
-      .sort((a, b) => b.spend - a.spend);
+        ratio:       (c.conv1dClick ?? 0) > 0 ? (c.conv7dClick ?? 0) / (c.conv1dClick ?? 1) : 0,
+      }));
   }, [campaigns]);
+
+  const { sorted, sort, toggle } = useSort(rows, "spend", "desc");
 
   if (rows.length === 0) return null;
 
@@ -399,21 +511,21 @@ function ConversionWindowComparison({ campaigns, currency }: { campaigns: Campai
       </div>
 
       {/* Per-campaign table */}
-      <div className="overflow-x-auto">
+      <div>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Campaign</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Spend</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-indigo-600 uppercase">1d Click</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-emerald-600 uppercase">7d Click</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-amber-600 uppercase">1d View</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-blue-600 uppercase">Reported</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">7d/1d ratio</th>
+              <SharedSortTh col="name" sort={sort} onToggle={toggle} className="text-[11px] uppercase">Campaign</SharedSortTh>
+              <SharedSortTh col="spend" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Spend</SharedSortTh>
+              <SharedSortTh col="conv1dClick" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">1d Click</SharedSortTh>
+              <SharedSortTh col="conv7dClick" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">7d Click</SharedSortTh>
+              <SharedSortTh col="conv1dView" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">1d View</SharedSortTh>
+              <SharedSortTh col="reported" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Reported</SharedSortTh>
+              <SharedSortTh col="ratio" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">7d/1d ratio</SharedSortTh>
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => {
+            {sorted.map(r => {
               const ratio = r.conv1dClick > 0 ? r.conv7dClick / r.conv1dClick : null;
               return (
                 <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50">
@@ -530,9 +642,6 @@ export default function AttributionReport({ platform, dateRange, customStart, cu
               {/* §1 Full-Funnel View */}
               <FullFunnelView campaigns={metaCampaigns} />
 
-              {/* §2 Campaign Performance */}
-              <CampaignPerformanceTable campaigns={metaCampaigns} currency={currency} />
-
               {/* §3 Attribution Windows */}
               <AttributionWindowsSection campaigns={metaCampaigns} currency={currency} />
 
@@ -542,6 +651,28 @@ export default function AttributionReport({ platform, dateRange, customStart, cu
           )}
         </>
       )}
+
+      {metaCampaigns.length > 0 && platform !== "google" && (() => {
+        const cur = (n: number) => formatMoney(n, currency, 0);
+        const overallRoas = totalSpend > 0 ? metaCampaigns.reduce((s, c) => s + (c.conversionValue || 0), 0) / totalSpend : 0;
+        const topConv = [...metaCampaigns].sort((a, b) => (b.conversionValue || 0) - (a.conversionValue || 0))[0];
+        const zeroConv = metaCampaigns.filter(c => (c.conversions || 0) === 0 && (c.spend || 0) > 0).length;
+        return (
+          <TabSummaryFooter
+            lines={[
+              `${metaCampaigns.length} campaign${metaCampaigns.length !== 1 ? "s" : ""} · ${Math.round(totalConversions).toLocaleString()} conversions · ${cur(totalSpend)} total spend${overallRoas > 0 ? ` · ${overallRoas.toFixed(2)}× blended ROAS` : ""}.`,
+              topConv ? `Top revenue driver: "${topConv.name}" with ${cur(topConv.conversionValue || 0)} in conversion value.` : "No conversion value data available.",
+              zeroConv > 0
+                ? `${zeroConv} campaign${zeroConv !== 1 ? "s" : ""} spent with zero conversions — check attribution windows and pixel setup.`
+                : `All campaigns recorded conversions — pixel and attribution appear healthy.`,
+            ]}
+            tabName="Attribution"
+            context={{ campaignCount: metaCampaigns.length, totalConversions, totalSpend }}
+            platform="meta"
+            dateRange={String(dateRange)}
+          />
+        );
+      })()}
     </div>
   );
 }

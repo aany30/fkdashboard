@@ -7,6 +7,7 @@ import { useSort } from "@/hooks/useSort";
 import SortTh from "@/components/shared/SortTh";
 import { TermText } from "@/components/shared/Term";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform?: "meta" | "google" | "both";
@@ -47,15 +48,16 @@ export default function PixelHealthTab({ platform = "both", dateRange = "30d", c
   const pixels = meta?.pixels || [];
   const activePixels = pixels.filter((p) => p.status === "active").length;
   const totalEvents = pixels.reduce((s, p) => s + p.totalEvents, 0);
-  // Browser vs Server (CAPI) totals — the only event-quality data Meta's Graph
-  // API actually exposes (via aggregation=event_source). Exact dedup % and EMQ
-  // score are Events-Manager-only, so they are intentionally not shown here.
-  const totalBrowser = pixels.reduce(
-    (s, p) => s + p.eventBreakdown.reduce((a, e) => a + e.browserCount, 0),
+  // Browser vs Server (CAPI) totals — sourced from pixel-level capi.browserShare /
+  // serverShare which come from aggregation=event_source. Per-event browserCount/
+  // serverCount are always 0 (Meta doesn't expose that breakdown), so we compute
+  // absolute counts by applying the share percentages to the pixel's totalEvents.
+  const totalServer = pixels.reduce(
+    (s, p) => s + Math.round((p.capi.serverShare / 100) * p.totalEvents),
     0
   );
-  const totalServer = pixels.reduce(
-    (s, p) => s + p.eventBreakdown.reduce((a, e) => a + e.serverCount, 0),
+  const totalBrowser = pixels.reduce(
+    (s, p) => s + Math.round((p.capi.browserShare / 100) * p.totalEvents),
     0
   );
   const capiSharePct = totalEvents > 0 ? Math.round((totalServer / totalEvents) * 100) : 0;
@@ -307,6 +309,31 @@ export default function PixelHealthTab({ platform = "both", dateRange = "30d", c
         </div>
       ))}
 
+      <TabSummaryFooter
+        tabName="Pixel Health"
+        lines={[
+          `${pixels.length} pixel${pixels.length !== 1 ? "s" : ""} found, ${activePixels} active — ${totalEvents.toLocaleString()} total events in the selected window.`,
+          `CAPI (server-side) share: ${capiSharePct}% — ${capiSharePct >= 50 ? "good server-side coverage" : capiSharePct > 0 ? "browser events dominate; consider expanding CAPI" : "no server-side events detected — CAPI may not be configured"}.`,
+          `${activePixels < pixels.length ? `${pixels.length - activePixels} pixel(s) inactive — verify they are still needed or pause them.` : "All pixels are active and firing."}`,
+        ]}
+        context={{
+          pixelCount: pixels.length,
+          activePixels,
+          totalEvents,
+          capiSharePct,
+          pixels: pixels.map(p => ({
+            pixelName: p.name,
+            pixelId: p.pixelId,
+            status: p.status,
+            totalEvents: p.totalEvents,
+            capiShare: p.capi.serverShare,
+            browserShare: p.capi.browserShare,
+            eventBreakdown: p.eventBreakdown.map(e => ({ event: e.event, count: e.count })),
+          })),
+        }}
+        platform={platform === "both" ? "meta" : (platform ?? "meta")}
+        dateRange={String(dateRange ?? "30d")}
+      />
     </div>
   );
 }

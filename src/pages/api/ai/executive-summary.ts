@@ -125,7 +125,7 @@ export default async function handler(
     };
 
     const response = await client.messages.create({
-      model: "claude-haiku-4-5",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
       system: [
         {
@@ -134,12 +134,6 @@ export default async function handler(
           cache_control: { type: "ephemeral" },
         },
       ],
-      output_config: {
-        format: {
-          type: "json_schema",
-          schema: OUTPUT_SCHEMA,
-        },
-      },
       messages: [
         {
           role: "user",
@@ -151,7 +145,9 @@ export default async function handler(
     const textBlock = response.content.find((b) => b.type === "text");
     if (!textBlock || textBlock.type !== "text") throw new Error("No text block");
 
-    const parsed = JSON.parse(textBlock.text) as Omit<SummaryResponse, "source" | "creditsUsedUsd">;
+    // Strip markdown code fences if the model wrapped the JSON (e.g. ```json ... ```)
+    const rawText = textBlock.text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+    const parsed = JSON.parse(rawText) as Omit<SummaryResponse, "source" | "creditsUsedUsd">;
     const creditsUsedUsd = calcCost(response.usage);
 
     return res.status(200).json({ ...parsed, source: "ai", creditsUsedUsd });

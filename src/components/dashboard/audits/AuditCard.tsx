@@ -103,7 +103,7 @@ export function AuditTable({ columns, rows, emptyMessage = "No data available" }
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
-        <thead className="bg-gray-50 border-b border-gray-200">
+        <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
           <tr>
             {columns.map((col, i) => (
               <th key={i} className="px-4 py-2 text-left font-semibold text-gray-700">

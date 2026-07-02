@@ -10,6 +10,7 @@ import LearningPhaseAudit from "./audits/LearningPhaseAudit";
 import AboCboAudit from "./audits/AboCboAudit";
 import VerificationBanner from "@/components/shared/VerificationBanner";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -49,7 +50,10 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
     googleCustomerId,
     googleAdsDeveloperToken,
     googleAdsLoginCustomerId,
+    demoMode,
   } = useAuthStore();
+  const effectiveMetaToken = demoMode ? "demo-meta-token" : metaAccessToken;
+  const effectiveMetaBiz = demoMode ? "demo-business-123" : metaBusinessId;
   const [campaigns, setCampaigns] = useState<CampaignData[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -75,11 +79,11 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
       const startDate = winStart;
       const endDate = winEnd;
       try {
-        if ((platform === "meta" || platform === "both") && metaAccessToken && metaBusinessId) {
+        if ((platform === "meta" || platform === "both") && effectiveMetaToken && effectiveMetaBiz) {
           const r = await fetch("/api/naming/campaigns/meta", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ accessToken: metaAccessToken, businessId: metaBusinessId, startDate, endDate }),
+            body: JSON.stringify({ accessToken: effectiveMetaToken, businessId: effectiveMetaBiz, startDate, endDate }),
           });
           if (r.ok) {
             all.push(...(await r.json()));
@@ -121,7 +125,7 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
     return () => {
       cancelled = true;
     };
-  }, [platform, winStart, winEnd, metaAccessToken, metaBusinessId, googleAccessToken, googleCustomerId, googleAdsDeveloperToken, googleAdsLoginCustomerId]);
+  }, [platform, winStart, winEnd, effectiveMetaToken, effectiveMetaBiz, googleAccessToken, googleCustomerId, googleAdsDeveloperToken, googleAdsLoginCustomerId]);
 
   // Keep draft inputs in sync when the effective window changes (e.g. global picker moves while no override is set).
   useEffect(() => {
@@ -257,6 +261,80 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
       {active === "learning" && <LearningPhaseAudit {...auditProps} />}
       {active === "abo-cbo" && <AboCboAudit {...auditProps} />}
 
+      <TabSummaryFooter
+        lines={(() => {
+          const base = `${filteredCampaigns.length} campaign${filteredCampaigns.length !== 1 ? "s" : ""} in scope — ${activeCount} active, ${pausedCount} paused or archived.`;
+          if (active === "naming") {
+            const nonCompliant = filteredCampaigns.filter(c => !c.name?.includes(">>") && !c.name?.includes("|") && !c.name?.includes("_")).length;
+            return [
+              base,
+              `Naming check: ${filteredCampaigns.length - nonCompliant} of ${filteredCampaigns.length} campaigns match a structured separator pattern.`,
+              nonCompliant > 0 ? `${nonCompliant} campaign${nonCompliant !== 1 ? "s" : ""} lack a clear naming separator — use Renaming Agent to fix.` : "All campaigns have structured names.",
+            ];
+          }
+          if (active === "budget") {
+            const totalSpend = filteredCampaigns.reduce((s, c) => s + (c.spend || 0), 0);
+            const top = [...filteredCampaigns].sort((a, b) => (b.spend || 0) - (a.spend || 0))[0];
+            const zeroCPA = filteredCampaigns.filter(c => (c.conversions || 0) === 0 && (c.spend || 0) > 0).length;
+            return [
+              base,
+              top ? `Top spender: "${top.name}" at ₹${(top.spend || 0).toLocaleString("en-IN")} (${(((top.spend || 0) / Math.max(totalSpend, 1)) * 100).toFixed(0)}% of total).` : base,
+              zeroCPA > 0 ? `${zeroCPA} campaign${zeroCPA !== 1 ? "s" : ""} spent budget with 0 conversions — review or pause these.` : "All active campaigns recorded at least one conversion.",
+            ];
+          }
+          if (active === "funnel-sep") {
+            const tof = filteredCampaigns.filter(c => ["AWARENESS", "REACH", "VIDEO_VIEWS", "STORE_VISITS", "BRAND_AWARENESS"].includes(c.objective || "")).length;
+            const mof = filteredCampaigns.filter(c => ["LINK_CLICKS", "POST_ENGAGEMENT", "PAGE_LIKES", "TRAFFIC", "ENGAGED_USERS"].includes(c.objective || "")).length;
+            const bof = filteredCampaigns.filter(c => ["CONVERSIONS", "CATALOG_SALES", "LEAD_GENERATION", "APP_INSTALLS", "PRODUCT_CATALOG_SALES", "OUTCOME_SALES", "OUTCOME_LEADS"].includes(c.objective || "")).length;
+            const totalSpend = filteredCampaigns.reduce((s, c) => s + (c.spend || 0), 0);
+            const missingStages = [tof === 0 && "TOF", mof === 0 && "MOF", bof === 0 && "BOF"].filter(Boolean).join(", ");
+            return [
+              `${filteredCampaigns.length} campaign${filteredCampaigns.length !== 1 ? "s" : ""} across TOF: ${tof}, MOF: ${mof}, BOF: ${bof} — ${windowDays}-day window.`,
+              totalSpend > 0 ? `Funnel spend split — TOF: ${((filteredCampaigns.filter(c => ["AWARENESS","REACH","VIDEO_VIEWS","STORE_VISITS","BRAND_AWARENESS"].includes(c.objective||"")).reduce((s,c)=>s+(c.spend||0),0)/Math.max(totalSpend,1))*100).toFixed(0)}% · MOF: ${((filteredCampaigns.filter(c=>["LINK_CLICKS","POST_ENGAGEMENT","PAGE_LIKES","TRAFFIC","ENGAGED_USERS"].includes(c.objective||"")).reduce((s,c)=>s+(c.spend||0),0)/Math.max(totalSpend,1))*100).toFixed(0)}% · BOF: ${((filteredCampaigns.filter(c=>["CONVERSIONS","CATALOG_SALES","LEAD_GENERATION","APP_INSTALLS","PRODUCT_CATALOG_SALES","OUTCOME_SALES","OUTCOME_LEADS"].includes(c.objective||"")).reduce((s,c)=>s+(c.spend||0),0)/Math.max(totalSpend,1))*100).toFixed(0)}%.` : "No spend data available for this window.",
+              missingStages ? `Missing funnel stages: ${missingStages} — full-funnel coverage improves retargeting and reduces CPAs.` : "All three funnel stages present — healthy full-funnel structure.",
+            ];
+          }
+          if (active === "learning") {
+            const learning = filteredCampaigns.filter(c => c.status === "LEARNING" || c.status === "LEARNING_LIMITED");
+            return [
+              base,
+              `${learning.length} campaign${learning.length !== 1 ? "s" : ""} currently in Learning phase.`,
+              learning.length > 0 ? "Avoid editing budgets or targeting on learning campaigns — wait for 50 optimisation events." : "No campaigns in Learning phase — account is stable.",
+            ];
+          }
+          return [
+            base,
+            `Currently viewing the ${SUB_TABS.find((t) => t.id === active)?.label ?? active} sub-audit across a ${windowDays}-day window.`,
+            filteredCampaigns.length > 0 ? `Account currency: ${acctCurrency}.` : "No campaign data loaded yet — connect your ad account to begin.",
+          ];
+        })()}
+        tabName="Account Structure"
+        context={{
+          activeAudit: active,
+          platform,
+          dateRange,
+          campaignCount: filteredCampaigns.length,
+          activeCount,
+          pausedCount,
+          currency: acctCurrency,
+          totalSpend: filteredCampaigns.reduce((s, c) => s + (c.spend || 0), 0),
+          totalConversions: filteredCampaigns.reduce((s, c) => s + (c.conversions || 0), 0),
+          campaigns: filteredCampaigns.map(c => ({
+            name: c.name,
+            objective: c.objective ?? null,
+            status: c.status,
+            spend: c.spend ?? 0,
+            conversions: c.conversions ?? 0,
+            conversionValue: c.conversionValue ?? 0,
+            roas: (c.spend ?? 0) > 0 ? (c.conversionValue ?? 0) / (c.spend ?? 1) : 0,
+            impressions: c.impressions ?? 0,
+            clicks: c.clicks ?? 0,
+          })),
+          zeroCPACampaigns: filteredCampaigns.filter(c => (c.conversions || 0) === 0 && (c.spend || 0) > 0).map(c => c.name),
+        }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

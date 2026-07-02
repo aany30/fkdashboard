@@ -8,6 +8,7 @@ import { RefreshCw, Bot, Filter, TrendingUp, Users, Image as ImageIcon, BarChart
 import AnimatedNumber from "@/components/shared/AnimatedNumber";
 import { useSort } from "@/hooks/useSort";
 import SortTh from "@/components/shared/SortTh";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform?: "meta" | "google" | "both";
@@ -434,7 +435,7 @@ export default function RecommendationsTab({ platform = "both", dateRange = "30d
             )}
           </div>
         </div>
-        <div className="overflow-x-auto">
+        <div>
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr>
@@ -487,6 +488,18 @@ export default function RecommendationsTab({ platform = "both", dateRange = "30d
           {dataLoading && <span className="flex items-center gap-1 text-blue-500"><RefreshCw className="w-3 h-3 animate-spin" /> Loading audience &amp; campaign insights…</span>}
         </div>
       </div>
+
+      <TabSummaryFooter
+        tabName="Recommendations"
+        lines={[
+          `${allRecs.length} recommendation${allRecs.length !== 1 ? "s" : ""} generated — ${allRecs.filter(r => r.priority === "Critical").length} critical, ${allRecs.filter(r => r.priority === "High").length} high priority.`,
+          `Potential total lift: ${totalLift}% — average confidence: ${avgConfidence}%.`,
+          `${filtered.length} recommendation${filtered.length !== 1 ? "s" : ""} match current filters.`,
+        ]}
+        context={{ totalRecs: allRecs.length, filtered: filtered.length, totalLift, avgConfidence }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

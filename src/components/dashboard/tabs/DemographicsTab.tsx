@@ -12,10 +12,13 @@
 import { useEffect, useState } from "react";
 import { Globe, AlertCircle } from "lucide-react";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 import { useAuthStore } from "@/store/auth";
 import { formatMoney } from "@/lib/currency";
 import { rangeToDates } from "@/lib/date-range";
 import type { DateRange } from "@/components/shared/DateRangePicker";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -85,7 +88,7 @@ function useBreakdown(breakdown: string, platform: string, dateRange: DateRange,
 // ─── Shared table ───────────────────────────────────────────────────────────
 
 function DemoTable({
-  rows, loading, error, currency, labelHeader, showAov,
+  rows, loading, error, currency, labelHeader, showAov, platform, dateRange,
 }: {
   rows: BreakdownRow[];
   loading: boolean;
@@ -93,9 +96,18 @@ function DemoTable({
   currency: string;
   labelHeader: string;
   showAov?: boolean;
+  platform: "meta" | "google" | "both";
+  dateRange: DateRange;
 }) {
   const cur = (n: number) => formatMoney(n, currency, 0);
-  const sorted = [...rows].sort((a, b) => b.spend - a.spend);
+  // Precompute derived metrics so the table can sort by any column.
+  const withDerived = rows.map((r) => ({
+    ...r,
+    roas: r.spend > 0 ? r.conversionValue / r.spend : 0,
+    cpa: r.conversions > 0 ? r.spend / r.conversions : 0,
+    aov: r.conversions > 0 ? r.conversionValue / r.conversions : 0,
+  }));
+  const { sorted, sort, toggle } = useSort(withDerived, "spend", "desc");
 
   if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
   if (error) return (
@@ -109,39 +121,54 @@ function DemoTable({
     </div>
   );
 
+  const totalSpend = rows.reduce((s, r) => s + r.spend, 0);
+  const topByRoas = [...withDerived].filter((r) => r.roas > 0).sort((a, b) => b.roas - a.roas)[0];
+  const topBySpend = [...withDerived].sort((a, b) => b.spend - a.spend)[0];
+
   return (
-    <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm">
-      <table className="w-full text-sm">
-        <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
-          <tr>
-            <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">{labelHeader}</th>
-            <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Spend</th>
-            <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Revenue</th>
-            <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Orders</th>
-            <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">ROAS</th>
-            <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">CPA</th>
-            {showAov && <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">AOV</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((r) => {
-            const roas = r.spend > 0 ? r.conversionValue / r.spend : 0;
-            const cpa = r.conversions > 0 ? r.spend / r.conversions : 0;
-            const aov = r.conversions > 0 ? r.conversionValue / r.conversions : 0;
-            return (
+    <div className="space-y-4">
+      <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
+            <tr>
+              <SortTh col="label" sort={sort} onToggle={toggle} className="text-[11px] uppercase">{labelHeader}</SortTh>
+              <SortTh col="spend" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Spend</SortTh>
+              <SortTh col="conversionValue" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Revenue</SortTh>
+              <SortTh col="conversions" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Orders</SortTh>
+              <SortTh col="roas" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">ROAS</SortTh>
+              <SortTh col="cpa" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">CPA</SortTh>
+              {showAov && <SortTh col="aov" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">AOV</SortTh>}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => (
               <tr key={r.label} className="border-b border-gray-100 hover:bg-gray-50">
                 <td className="px-4 py-2.5 text-gray-900 font-medium">{r.label}</td>
                 <td className="px-4 py-2.5 text-right font-semibold text-gray-900">{cur(r.spend)}</td>
                 <td className="px-4 py-2.5 text-right text-gray-700">{cur(r.conversionValue)}</td>
                 <td className="px-4 py-2.5 text-right text-gray-700">{Math.round(r.conversions).toLocaleString("en-IN")}</td>
-                <td className="px-4 py-2.5 text-right text-gray-700">{roas > 0 ? `${roas.toFixed(2)}×` : "—"}</td>
-                <td className="px-4 py-2.5 text-right text-gray-700">{cpa > 0 ? cur(cpa) : "—"}</td>
-                {showAov && <td className="px-4 py-2.5 text-right text-gray-700">{aov > 0 ? cur(aov) : "—"}</td>}
+                <td className="px-4 py-2.5 text-right text-gray-700">{r.roas > 0 ? `${r.roas.toFixed(2)}×` : "—"}</td>
+                <td className="px-4 py-2.5 text-right text-gray-700">{r.cpa > 0 ? cur(r.cpa) : "—"}</td>
+                {showAov && <td className="px-4 py-2.5 text-right text-gray-700">{r.aov > 0 ? cur(r.aov) : "—"}</td>}
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <TabSummaryFooter
+        lines={[
+          `${rows.length} ${labelHeader.toLowerCase()} segment${rows.length !== 1 ? "s" : ""} — total spend ${cur(totalSpend)}.`,
+          topBySpend ? `Highest spend: "${topBySpend.label}" at ${cur(topBySpend.spend)}${topBySpend.roas > 0 ? ` (${topBySpend.roas.toFixed(2)}× ROAS)` : ""}.` : `No segments with spend found.`,
+          topByRoas && topByRoas.label !== topBySpend?.label
+            ? `Best ROAS: "${topByRoas.label}" at ${topByRoas.roas.toFixed(2)}× — consider increasing budget here.`
+            : `Top spender is also your best performer — budget allocation looks efficient.`,
+        ]}
+        tabName={`Demographics — ${labelHeader}`}
+        context={{ segmentCount: rows.length, labelHeader }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }
@@ -150,17 +177,17 @@ function DemoTable({
 
 function AgeAnalysis({ platform, dateRange, customStart, customEnd }: Props) {
   const { rows, loading, error, currency } = useBreakdown("age", platform, dateRange, customStart, customEnd);
-  return <DemoTable rows={rows} loading={loading} error={error} currency={currency} labelHeader="Age Group" showAov />;
+  return <DemoTable rows={rows} loading={loading} error={error} currency={currency} labelHeader="Age Group" showAov platform={platform} dateRange={dateRange} />;
 }
 
 function GenderAnalysis({ platform, dateRange, customStart, customEnd }: Props) {
   const { rows, loading, error, currency } = useBreakdown("gender", platform, dateRange, customStart, customEnd);
-  return <DemoTable rows={rows} loading={loading} error={error} currency={currency} labelHeader="Gender" />;
+  return <DemoTable rows={rows} loading={loading} error={error} currency={currency} labelHeader="Gender" platform={platform} dateRange={dateRange} />;
 }
 
 function GeoAnalysis({ platform, dateRange, customStart, customEnd }: Props) {
   const { rows, loading, error, currency } = useBreakdown("country", platform, dateRange, customStart, customEnd);
-  return <DemoTable rows={rows} loading={loading} error={error} currency={currency} labelHeader="Country" showAov />;
+  return <DemoTable rows={rows} loading={loading} error={error} currency={currency} labelHeader="Country" showAov platform={platform} dateRange={dateRange} />;
 }
 
 // ─── Main tab ───────────────────────────────────────────────────────────────

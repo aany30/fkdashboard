@@ -22,6 +22,9 @@ import { Target, MapPin, Users as UsersIcon, Smartphone, TrendingUp, TrendingDow
 import { useAuthStore } from "@/store/auth";
 import type { AuditProps } from "./types";
 import { detectCurrency, formatMoney } from "@/lib/currency";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 type Dim = "age" | "gender" | "country" | "impression_device" | "publisher_platform" | "age,gender";
 
@@ -57,7 +60,7 @@ function deriveRow(row: Omit<Row, "roas" | "cpa" | "ctr">): Row {
   };
 }
 
-export default function TargetingInsightsAudit({ campaigns: _campaigns, dateRange, customStart, customEnd }: AuditProps) {
+export default function TargetingInsightsAudit({ campaigns: _campaigns, dateRange, customStart, customEnd, platform = "meta" }: AuditProps) {
   const { metaAccessToken, metaBusinessId, demoMode } = useAuthStore();
   const [activeDim, setActiveDim] = useState<Dim>("age");
   const [data, setData] = useState<Record<Dim, Row[] | null>>({
@@ -118,6 +121,7 @@ export default function TargetingInsightsAudit({ campaigns: _campaigns, dateRang
   }, [startDate, endDate]);
 
   const rows = data[activeDim] || [];
+  const { sorted: sortedRows, sort, toggle } = useSort(rows, "spend", "desc");
 
   // Rank: best ROAS at top, but require at least 5% of total spend to avoid
   // tiny-sample winners (e.g. a country with ₹100 spend and 1 conversion).
@@ -267,20 +271,20 @@ export default function TargetingInsightsAudit({ campaigns: _campaigns, dateRang
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+                <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
                   <tr>
-                    <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase">{dim.label}</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">Spend</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">Impr</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">Clicks</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">CTR</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">Conv</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">CPA</th>
-                    <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">ROAS</th>
+                    <SortTh col="label" sort={sort} onToggle={toggle} className="text-[11px] uppercase">{dim.label}</SortTh>
+                    <SortTh col="spend" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Spend</SortTh>
+                    <SortTh col="impressions" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Impr</SortTh>
+                    <SortTh col="clicks" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Clicks</SortTh>
+                    <SortTh col="ctr" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">CTR</SortTh>
+                    <SortTh col="conversions" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">Conv</SortTh>
+                    <SortTh col="cpa" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">CPA</SortTh>
+                    <SortTh col="roas" sort={sort} onToggle={toggle} className="text-[11px] uppercase" align="right">ROAS</SortTh>
                   </tr>
                 </thead>
                 <tbody>
-                  {[...rows].sort((a, b) => b.spend - a.spend).map((r) => (
+                  {sortedRows.map((r) => (
                     <tr key={r.label} className="border-b border-gray-100 hover:bg-gray-50">
                       <td className="px-4 py-2 font-mono text-gray-900">{r.label}</td>
                       <td className="px-4 py-2 text-right font-semibold text-gray-900">{cur(r.spend)}</td>
@@ -309,6 +313,25 @@ export default function TargetingInsightsAudit({ campaigns: _campaigns, dateRang
           </div>
         </>
       )}
+
+      <TabSummaryFooter
+        lines={(() => {
+          if (!rows.length) return ["No targeting data loaded for the selected dimension and date range."];
+          const topWinner = ranked.top[0];
+          const topLoser = ranked.bottom[0];
+          return [
+            `Analysed ${rows.length} ${dim.label.toLowerCase()} segment${rows.length !== 1 ? "s" : ""} — total spend ${cur(totalSpend)}.`,
+            topWinner ? `Best performer: "${topWinner.label}" (${cur(topWinner.spend)} spend, ${topWinner.roas.toFixed(2)}× ROAS).` : `No eligible winner segment found (try a wider date range).`,
+            topLoser && topLoser.label !== topWinner?.label
+              ? `Lowest ROAS: "${topLoser.label}" at ${topLoser.roas.toFixed(2)}× — consider excluding or reducing budget here.`
+              : `Spend is fairly concentrated — monitor for segment fatigue over time.`,
+          ];
+        })()}
+        tabName="Targeting Insights"
+        context={{ dimension: activeDim, segmentCount: rows.length, totalSpend }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

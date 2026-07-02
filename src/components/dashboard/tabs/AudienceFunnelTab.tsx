@@ -8,12 +8,16 @@
 
 import { useMemo, useState, useRef, useEffect } from "react";
 import { Filter, AlertCircle, ChevronDown, ChevronRight } from "lucide-react";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useColPicker, ColumnPickerButton, ColHeader } from "@/components/shared/ColumnPicker";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 
 const ChevronDownIcon = () => <ChevronDown className="w-4 h-4" />;
 const ChevronRightIcon = () => <ChevronRight className="w-4 h-4" />;
 import { useAdSetInsights, type AdSetRow } from "@/hooks/useAdSetInsights";
+import { usePersistentColumns } from "@/hooks/useColumnPrefs";
 import { formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 
@@ -274,6 +278,11 @@ const ALL_KPIS: KpiDef[] = [
   { id: "acos",           label: "ACOS",            group: "Purchase",         fmt: (a) => a.conversionValue > 0 ? `${((a.spend / a.conversionValue) * 100).toFixed(1)}%` : "—" },
 ];
 
+// Only KPIs this table can populate — probe each fmt with a full row; anything
+// still "—" (Views, CPV, VTR, Leads, …) is dropped from the column picker.
+const FUNNEL_SAMPLE = { spend: 5000, impressions: 100000, clicks: 1500, reach: 40000, frequency: 2.5, conversions: 80, conversionValue: 120000 } as AdSetRow;
+const FUNNEL_FETCHABLE: KpiDef[] = ALL_KPIS.filter((k) => k.fmt(FUNNEL_SAMPLE, "USD") !== "—");
+
 const DEFAULT_KPI_ORDER: KpiId[] = ALL_KPIS.filter((k) => k.defaultOn).map((k) => k.id);
 const KPI_GROUPS = Array.from(new Set(ALL_KPIS.map((k) => k.group)));
 const KPI_MAP = new Map(ALL_KPIS.map((k) => [k.id, k]));
@@ -320,10 +329,18 @@ function fmtAggKpi(id: KpiId, r: AggMetricRow, currency: string): string {
 // ─── Sub-tab: Intent Analysis (§1) ─────────────────────────────────────────
 
 function IntentAnalysis({ adsets, loading, currency }: { adsets: AdSetRow[]; loading: boolean; currency: string }) {
-  const rows = useMemo(() => [...adsets].sort((a, b) => b.spend - a.spend), [adsets]);
+  const enrichedAdsets = useMemo(() =>
+    adsets.map((a) => ({
+      ...a,
+      intentBucket: parseIntentBucket(a.name),
+      audienceLabel: parseAudienceLabel(a.name),
+    })),
+    [adsets]
+  );
+  const { sorted: rows, sort: intentSort, toggle: intentToggle } = useSort(enrichedAdsets, "spend", "desc");
 
   // Ordered array so we can swap by position
-  const [colOrder, setColOrder] = useState<KpiId[]>(() => [...DEFAULT_KPI_ORDER]);
+  const [colOrder, setColOrder] = usePersistentColumns<KpiId>("funnel-intent", DEFAULT_KPI_ORDER);
 
   // Top-right picker open state
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -431,11 +448,11 @@ function IntentAnalysis({ adsets, loading, currency }: { adsets: AdSetRow[]; loa
 
       <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm" ref={swapRef}>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Campaign / Ad Set</th>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Intent Bucket</th>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Audience</th>
+              <SortTh col="name" sort={intentSort} onToggle={intentToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap">Campaign / Ad Set</SortTh>
+              <SortTh col="intentBucket" sort={intentSort} onToggle={intentToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap">Intent Bucket</SortTh>
+              <SortTh col="audienceLabel" sort={intentSort} onToggle={intentToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap">Audience</SortTh>
               {colOrder.map((id, colIdx) => {
                 const k = KPI_MAP.get(id)!;
                 return (
@@ -456,7 +473,7 @@ function IntentAnalysis({ adsets, loading, currency }: { adsets: AdSetRow[]; loa
                           <div className="px-3 py-2 border-b border-gray-700 text-[10px] font-bold uppercase tracking-wider text-gray-400">
                             Change column
                           </div>
-                          <div className="max-h-72 overflow-y-auto py-1">
+                          <div className="max-h-[500px] overflow-y-auto py-1">
                             {KPI_GROUPS.map((group) => (
                               <div key={group}>
                                 <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-600">{group}</div>
@@ -486,8 +503,8 @@ function IntentAnalysis({ adsets, loading, currency }: { adsets: AdSetRow[]; loa
           </thead>
           <tbody>
             {rows.map((a) => {
-              const intent = parseIntentBucket(a.name);
-              const audience = parseAudienceLabel(a.name);
+              const intent = a.intentBucket;
+              const audience = a.audienceLabel;
               return (
                 <tr key={a.id} className="border-b border-gray-100 hover:bg-gray-50">
                   <td className="px-4 py-2.5 max-w-[220px]" title={a.name}>
@@ -518,7 +535,7 @@ function IntentAnalysis({ adsets, loading, currency }: { adsets: AdSetRow[]; loa
 // ─── Sub-tab: New vs Existing vs Engaged (§2) ───────────────────────────────
 
 function NewVsExisting({ adsets, loading, currency }: { adsets: AdSetRow[]; loading: boolean; currency: string }) {
-  const rows = useMemo(() => {
+  const rawRows = useMemo(() => {
     const grouped = groupBy(adsets, (a) => parseAudienceType(a.name));
     return (["New", "Engaged", "Existing"] as AudienceType[])
       .filter((k) => grouped.has(k))
@@ -536,8 +553,9 @@ function NewVsExisting({ adsets, loading, currency }: { adsets: AdSetRow[]; load
         };
       });
   }, [adsets]);
+  const { sorted: rows, sort: nveSort, toggle: nveToggle } = useSort(rawRows, "spend", "desc");
 
-  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(NVE_DEFAULTS);
+  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(NVE_DEFAULTS, "funnel-nve");
 
   if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
   if (!adsets.length) return <EmptyState />;
@@ -545,20 +563,20 @@ function NewVsExisting({ adsets, loading, currency }: { adsets: AdSetRow[]; load
   return (
     <div className="space-y-2">
       <ColumnPickerButton
-        cols={cols} allDefs={ALL_KPIS} defaultIds={NVE_DEFAULTS}
+        cols={cols} allDefs={FUNNEL_FETCHABLE} defaultIds={NVE_DEFAULTS}
         pickerOpen={pickerOpen} setPickerOpen={setPickerOpen} pickerRef={pickerRef}
         toggleCol={toggleCol} resetCols={resetCols}
       />
       <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm" ref={tableRef}>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Audience Type</th>
+              <SortTh col="group" sort={nveSort} onToggle={nveToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap">Audience Type</SortTh>
               {(cols as KpiId[]).map((id, colIdx) => {
                 const k = KPI_MAP.get(id)!;
                 return (
                   <th key={id} className="px-3 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">
-                    <ColHeader colIdx={colIdx} currentId={id} label={k.label} allDefs={ALL_KPIS} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol} />
+                    <ColHeader colIdx={colIdx} currentId={id} label={k.label} allDefs={FUNNEL_FETCHABLE} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol} />
                   </th>
                 );
               })}
@@ -627,10 +645,11 @@ function buildFunnelGroups(adsets: AdSetRow[]): FunnelStageGroup[] {
 }
 
 function FunnelStageAnalysis({ adsets, loading, currency }: { adsets: AdSetRow[]; loading: boolean; currency: string }) {
-  const groups = useMemo(() => buildFunnelGroups(adsets), [adsets]);
+  const rawGroups = useMemo(() => buildFunnelGroups(adsets), [adsets]);
+  const { sorted: groups, sort: fsaSort, toggle: fsaToggle } = useSort(rawGroups, "spend", "desc");
   const [expanded, setExpanded] = useState<Set<FunnelStage>>(new Set());
 
-  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(FSA_DEFAULTS);
+  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(FSA_DEFAULTS, "funnel-fsa");
 
   const toggle = (stage: FunnelStage) => setExpanded(prev => {
     const next = new Set(prev);
@@ -644,21 +663,21 @@ function FunnelStageAnalysis({ adsets, loading, currency }: { adsets: AdSetRow[]
   return (
     <div className="space-y-2">
       <ColumnPickerButton
-        cols={cols} allDefs={ALL_KPIS} defaultIds={FSA_DEFAULTS}
+        cols={cols} allDefs={FUNNEL_FETCHABLE} defaultIds={FSA_DEFAULTS}
         pickerOpen={pickerOpen} setPickerOpen={setPickerOpen} pickerRef={pickerRef}
         toggleCol={toggleCol} resetCols={resetCols}
       />
       <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm" ref={tableRef}>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
             <tr>
               <th className="px-4 py-2.5 w-8" />
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Funnel Stage</th>
+              <SortTh col="stage" sort={fsaSort} onToggle={fsaToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap">Funnel Stage</SortTh>
               {(cols as KpiId[]).map((id, colIdx) => {
                 const k = KPI_MAP.get(id)!;
                 return (
                   <th key={id} className="px-3 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">
-                    <ColHeader colIdx={colIdx} currentId={id} label={k.label} allDefs={ALL_KPIS} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol} />
+                    <ColHeader colIdx={colIdx} currentId={id} label={k.label} allDefs={FUNNEL_FETCHABLE} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol} />
                   </th>
                 );
               })}
@@ -726,6 +745,12 @@ function AdSetDetail<K extends string>({
   currency: string;
 }) {
   const [open, setOpen] = useState(false);
+  const enrichedAdsetRows = useMemo(() =>
+    adsets.map((a) => ({ ...a, roas: a.spend > 0 ? a.conversionValue / a.spend : 0 })),
+    [adsets]
+  );
+  const { sorted, sort: detailSort, toggle: detailToggle } = useSort(enrichedAdsetRows, "spend", "desc");
+
   if (!open) {
     return (
       <button onClick={() => setOpen(true)} className="text-xs text-blue-600 hover:underline font-semibold">
@@ -733,7 +758,6 @@ function AdSetDetail<K extends string>({
       </button>
     );
   }
-  const sorted = [...adsets].sort((a, b) => b.spend - a.spend);
   return (
     <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
       <div className="px-4 py-2.5 border-b border-gray-200 flex items-center justify-between">
@@ -742,20 +766,19 @@ function AdSetDetail<K extends string>({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
-          <thead className="bg-gray-50 border-b border-gray-100">
+          <thead className="bg-gray-50 border-b border-gray-100 sticky top-0 z-20 shadow-sm">
             <tr>
-              <th className="px-4 py-2 text-left font-semibold text-gray-600 uppercase text-[10px]">Ad Set</th>
-              <th className="px-4 py-2 text-left font-semibold text-gray-600 uppercase text-[10px]">Group</th>
-              <th className="px-4 py-2 text-right font-semibold text-gray-600 uppercase text-[10px]">Spend</th>
-              <th className="px-4 py-2 text-right font-semibold text-gray-600 uppercase text-[10px]">Revenue</th>
-              <th className="px-4 py-2 text-right font-semibold text-gray-600 uppercase text-[10px]">Orders</th>
-              <th className="px-4 py-2 text-right font-semibold text-gray-600 uppercase text-[10px]">ROAS</th>
+              <SortTh col="name" sort={detailSort} onToggle={detailToggle} className="px-4 py-2 text-[10px] uppercase font-semibold text-gray-600">Ad Set</SortTh>
+              <SortTh col="name" sort={detailSort} onToggle={detailToggle} className="px-4 py-2 text-[10px] uppercase font-semibold text-gray-600">Group</SortTh>
+              <SortTh col="spend" sort={detailSort} onToggle={detailToggle} className="px-4 py-2 text-[10px] uppercase font-semibold text-gray-600" align="right">Spend</SortTh>
+              <SortTh col="conversionValue" sort={detailSort} onToggle={detailToggle} className="px-4 py-2 text-[10px] uppercase font-semibold text-gray-600" align="right">Revenue</SortTh>
+              <SortTh col="conversions" sort={detailSort} onToggle={detailToggle} className="px-4 py-2 text-[10px] uppercase font-semibold text-gray-600" align="right">Orders</SortTh>
+              <SortTh col="roas" sort={detailSort} onToggle={detailToggle} className="px-4 py-2 text-[10px] uppercase font-semibold text-gray-600" align="right">ROAS</SortTh>
             </tr>
           </thead>
           <tbody>
             {sorted.map((a) => {
               const k = keyFn(a);
-              const roas = a.spend > 0 ? a.conversionValue / a.spend : 0;
               return (
                 <tr key={a.id} className="border-b border-gray-50 hover:bg-gray-50">
                   <td className="px-4 py-2 font-mono text-gray-800 truncate max-w-[260px]" title={a.name}>{a.name}</td>
@@ -765,7 +788,7 @@ function AdSetDetail<K extends string>({
                   <td className="px-4 py-2 text-right font-semibold text-gray-900">{fmtMoney(a.spend, currency)}</td>
                   <td className="px-4 py-2 text-right text-gray-700">{fmtMoney(a.conversionValue, currency)}</td>
                   <td className="px-4 py-2 text-right text-gray-700">{fmtInt(a.conversions)}</td>
-                  <td className="px-4 py-2 text-right text-gray-700">{roas > 0 ? `${roas.toFixed(2)}×` : "—"}</td>
+                  <td className="px-4 py-2 text-right text-gray-700">{a.roas > 0 ? `${a.roas.toFixed(2)}×` : "—"}</td>
                 </tr>
               );
             })}
@@ -853,6 +876,30 @@ export default function AudienceFunnelTab({ platform, dateRange, customStart, cu
         Stage classification uses ad-set name parsing (keywords: broad/interest/lal = TOF; visitor/video/engaged = MOF; atc/checkout = BOF; customer/loyal = Loyalty). Rename ad sets to match naming conventions for accurate grouping.
       </p>
 
+      <TabSummaryFooter
+        tabName="Audience Funnel"
+        lines={[
+          `${adsets.length} ad set${adsets.length !== 1 ? "s" : ""} analysed across audience funnel stages.`,
+          `Total spend: ${adsets.reduce((s, a) => s + a.spend, 0).toLocaleString("en-US", { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 })} · ${adsets.reduce((s, a) => s + a.conversions, 0).toLocaleString()} conversions.`,
+          `Average ROAS: ${adsets.length > 0 ? (adsets.reduce((s, a) => s + (a.spend > 0 ? a.conversionValue / a.spend : 0), 0) / adsets.length).toFixed(2) : "—"}×.`,
+        ]}
+        context={{
+          adSetCount: adsets.length,
+          totalSpend: adsets.reduce((s, a) => s + a.spend, 0),
+          adSets: adsets.map(a => ({
+            name: a.name,
+            spend: a.spend,
+            impressions: a.impressions,
+            clicks: a.clicks,
+            conversions: a.conversions,
+            conversionValue: a.conversionValue,
+            roas: a.spend > 0 ? +(a.conversionValue / a.spend).toFixed(4) : 0,
+            cpa: a.conversions > 0 ? +(a.spend / a.conversions).toFixed(4) : 0,
+          })),
+        }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

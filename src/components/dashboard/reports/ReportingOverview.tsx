@@ -11,16 +11,18 @@
  *    via the daily breakdown — we sum ad-set reach for a reasonable estimate).
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, ChevronDown, TrendingUp, TrendingDown } from "lucide-react";
 import {
   ResponsiveContainer, LineChart, Line, ComposedChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, Area, AreaChart,
 } from "recharts";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useAdSetInsights } from "@/hooks/useAdSetInsights";
 import { useMetaDailyVsPrev, type DailyPoint } from "@/hooks/useMetaDailyVsPrev";
+import { usePersistentColumns, usePersistentValue } from "@/hooks/useColumnPrefs";
 import { detectCurrency, formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 
@@ -33,22 +35,30 @@ interface Props {
 }
 
 type MetricId =
-  | "spend" | "impressions" | "clicks" | "conversions" | "conversionValue"
+  | "spend" | "impressions" | "reach" | "frequency" | "clicks" | "conversions" | "conversionValue"
   | "ctr" | "cpc" | "cpm" | "cpa" | "roas" | "cvr" | "aov";
 
-const METRICS: { id: MetricId; label: string; fmt: "money" | "int" | "pct" | "x" }[] = [
+const METRICS: { id: MetricId; label: string; fmt: "money" | "int" | "pct" | "x" | "decimal"; lowerIsBetter?: boolean }[] = [
   { id: "spend",           label: "Spend",           fmt: "money" },
   { id: "impressions",     label: "Impressions",     fmt: "int"   },
+  { id: "reach",           label: "Reach",           fmt: "int"   },
+  { id: "frequency",       label: "Frequency",       fmt: "decimal", lowerIsBetter: true },
   { id: "clicks",          label: "Clicks",          fmt: "int"   },
   { id: "conversions",     label: "Conversions",     fmt: "int"   },
   { id: "conversionValue", label: "Revenue",         fmt: "money" },
   { id: "ctr",             label: "CTR",             fmt: "pct"   },
-  { id: "cpc",             label: "CPC",             fmt: "money" },
-  { id: "cpm",             label: "CPM",             fmt: "money" },
-  { id: "cpa",             label: "CPA",             fmt: "money" },
+  { id: "cpc",             label: "CPC",             fmt: "money", lowerIsBetter: true },
+  { id: "cpm",             label: "CPM",             fmt: "money", lowerIsBetter: true },
+  { id: "cpa",             label: "CPA",             fmt: "money", lowerIsBetter: true },
   { id: "roas",            label: "ROAS",            fmt: "x"     },
   { id: "cvr",             label: "CVR",             fmt: "pct"   },
   { id: "aov",             label: "AOV",             fmt: "money" },
+];
+
+const KPI_SWAP_GROUPS: { label: string; ids: MetricId[] }[] = [
+  { label: "Display",    ids: ["impressions", "reach", "frequency", "cpm"] },
+  { label: "Engagement", ids: ["clicks", "ctr", "cpc", "spend"] },
+  { label: "Conversion", ids: ["conversions", "conversionValue", "roas", "cpa", "cvr", "aov"] },
 ];
 
 function deriveRow(r: { spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number }) {
@@ -68,7 +78,7 @@ function deriveRow(r: { spend: number; impressions: number; clicks: number; conv
   };
 }
 
-function fmt(v: number, kind: "money" | "int" | "pct" | "x" | "k", currency: string): string {
+function fmt(v: number, kind: "money" | "int" | "pct" | "x" | "k" | "decimal", currency: string): string {
   if (!Number.isFinite(v)) return "—";
   if (kind === "money") {
     if (Math.abs(v) >= 1_000_000) return formatMoney(v / 1_000_000, currency, 2).replace(/(\.\d+)?$/, m => m) + "M";
@@ -77,6 +87,12 @@ function fmt(v: number, kind: "money" | "int" | "pct" | "x" | "k", currency: str
   }
   if (kind === "pct") return `${v.toFixed(2)}%`;
   if (kind === "x")   return `${v.toFixed(2)}×`;
+  if (kind === "decimal") return v.toFixed(2);
+  if (kind === "int") {
+    if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+    if (Math.abs(v) >= 10_000)    return `${(v / 1_000).toFixed(1)}k`;
+    return Math.round(v).toLocaleString("en-IN");
+  }
   if (kind === "k") {
     if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
     if (Math.abs(v) >= 1_000)     return `${(v / 1_000).toFixed(1)}k`;
@@ -105,36 +121,76 @@ function DeltaBadge({ delta, lowerIsBetter = false }: { delta: number | null; lo
 }
 
 function KpiCard({
-  label, value, delta, lowerIsBetter, spark,
+  metric, value, delta, spark, onSwap,
 }: {
-  label: string;
+  metric: MetricId;
   value: string;
   delta: number | null;
-  lowerIsBetter?: boolean;
   spark: number[];
+  onSwap?: (next: MetricId) => void;
 }) {
+  const def = METRICS.find(m => m.id === metric)!;
   const sparkData = spark.map((v, i) => ({ i, v }));
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-      <div className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide">{label}</div>
+    <div className={`bg-white rounded-xl border border-gray-200 p-4 shadow-sm relative ${open ? "z-[200]" : ""}`} ref={ref}>
+      <div className="flex items-start justify-between gap-1">
+        <div className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide truncate">{def.label}</div>
+        {onSwap && (
+          <button onClick={() => setOpen(v => !v)} className="text-gray-400 hover:text-gray-700 transition shrink-0" title="Change metric">
+            <svg className="w-3 h-3" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 2v6M2 5l3 3 3-3"/></svg>
+          </button>
+        )}
+      </div>
       <div className="text-2xl font-bold text-gray-900 mt-1.5 truncate" title={value}>{value}</div>
       <div className="flex items-center gap-1.5 mt-0.5">
-        <DeltaBadge delta={delta} lowerIsBetter={lowerIsBetter} />
+        <DeltaBadge delta={delta} lowerIsBetter={def.lowerIsBetter} />
         <span className="text-[10px] text-gray-400">vs prev period</span>
       </div>
       <div className="h-9 mt-1 -mx-1">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={sparkData}>
             <defs>
-              <linearGradient id={`grad-${label}`} x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id={`grad-${metric}`} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#6366f1" stopOpacity={0.4} />
                 <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <Area type="monotone" dataKey="v" stroke="#6366f1" strokeWidth={1.5} fill={`url(#grad-${label})`} />
+            <Area type="monotone" dataKey="v" stroke="#6366f1" strokeWidth={1.5} fill={`url(#grad-${metric})`} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
+      {open && onSwap && (
+        <div className="absolute right-0 top-full mt-1 w-52 bg-white text-gray-800 rounded-xl shadow-xl overflow-hidden border border-gray-200 z-[210]">
+          <div className="px-3 py-2 border-b border-gray-100 text-[10px] font-bold uppercase tracking-wider text-gray-500">Change metric</div>
+          <div className="max-h-[500px] overflow-y-auto py-1">
+            {KPI_SWAP_GROUPS.map(g => (
+              <div key={g.label}>
+                <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-blue-600">{g.label}</div>
+                {g.ids.map(id => {
+                  const m = METRICS.find(x => x.id === id)!;
+                  const isCur = id === metric;
+                  return (
+                    <button key={id}
+                      onClick={() => { if (!isCur) { onSwap(id); setOpen(false); } }}
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition ${isCur ? "text-blue-700 font-semibold bg-blue-50 cursor-default" : "text-gray-700 hover:bg-blue-50 hover:text-blue-700"}`}>
+                      {isCur && <svg className="w-2.5 h-2.5 shrink-0" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1.5 5l2.5 2.5 4.5-4.5"/></svg>}
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -142,6 +198,7 @@ function KpiCard({
 function MetricPicker({ value, onChange, label }: { value: MetricId; onChange: (v: MetricId) => void; label: string }) {
   const [open, setOpen] = useState(false);
   const current = METRICS.find(m => m.id === value)!;
+  const pickable = METRICS.filter(m => m.id !== "reach" && m.id !== "frequency");
   return (
     <div className="relative inline-block">
       <button
@@ -157,7 +214,7 @@ function MetricPicker({ value, onChange, label }: { value: MetricId; onChange: (
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute left-0 top-full mt-1.5 z-50 w-44 bg-white text-gray-800 rounded-xl shadow-xl border border-gray-200 overflow-hidden">
             <div className="px-3 py-2 border-b border-gray-100 text-[10px] font-bold uppercase tracking-wider text-gray-500">{label}</div>
-            {METRICS.map(m => (
+            {pickable.map(m => (
               <button
                 key={m.id}
                 onClick={() => { onChange(m.id); setOpen(false); }}
@@ -211,18 +268,76 @@ export default function ReportingOverview({ platform, dateRange, customStart, cu
 
   const sortedCur = useMemo(() => [...current].sort((a, b) => a.label.localeCompare(b.label)), [current]);
 
-  const sparkSeries = useMemo(() => ({
-    spend: sortedCur.map(d => d.spend),
-    impressions: sortedCur.map(d => d.impressions),
-    reach: sortedCur.map(d => d.impressions),     // proxy — daily reach not in payload
-    frequency: sortedCur.map(d => d.impressions), // proxy — frequency derived metric
-    cpm: sortedCur.map(d => d.impressions > 0 ? (d.spend / d.impressions) * 1000 : 0),
+  const sparkSeries: Record<MetricId, number[]> = useMemo(() => ({
+    spend:           sortedCur.map(d => d.spend),
+    impressions:     sortedCur.map(d => d.impressions),
+    reach:           sortedCur.map(d => d.impressions),    // daily reach not in payload — proxy
+    frequency:       sortedCur.map(d => d.impressions),    // derived — proxy
+    clicks:          sortedCur.map(d => d.clicks),
+    conversions:     sortedCur.map(d => d.conversions),
+    conversionValue: sortedCur.map(d => d.conversionValue),
+    ctr:             sortedCur.map(d => d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0),
+    cpc:             sortedCur.map(d => d.clicks > 0 ? d.spend / d.clicks : 0),
+    cpm:             sortedCur.map(d => d.impressions > 0 ? (d.spend / d.impressions) * 1000 : 0),
+    cpa:             sortedCur.map(d => d.conversions > 0 ? d.spend / d.conversions : 0),
+    roas:            sortedCur.map(d => d.spend > 0 ? d.conversionValue / d.spend : 0),
+    cvr:             sortedCur.map(d => d.clicks > 0 ? (d.conversions / d.clicks) * 100 : 0),
+    aov:             sortedCur.map(d => d.conversions > 0 ? d.conversionValue / d.conversions : 0),
   }), [sortedCur]);
+
+  const totalsCurMap: Record<MetricId, number> = useMemo(() => ({
+    spend: totalsCur.spend,
+    impressions: totalsCur.impressions,
+    reach: reachPeriod,
+    frequency: frequencyCur,
+    clicks: totalsCur.clicks,
+    conversions: totalsCur.conversions,
+    conversionValue: totalsCur.conversionValue,
+    ctr:  totalsCur.impressions > 0 ? (totalsCur.clicks / totalsCur.impressions) * 100 : 0,
+    cpc:  totalsCur.clicks > 0 ? totalsCur.spend / totalsCur.clicks : 0,
+    cpm:  cpmCur,
+    cpa:  totalsCur.conversions > 0 ? totalsCur.spend / totalsCur.conversions : 0,
+    roas: totalsCur.spend > 0 ? totalsCur.conversionValue / totalsCur.spend : 0,
+    cvr:  totalsCur.clicks > 0 ? (totalsCur.conversions / totalsCur.clicks) * 100 : 0,
+    aov:  totalsCur.conversions > 0 ? totalsCur.conversionValue / totalsCur.conversions : 0,
+  }), [totalsCur, reachPeriod, frequencyCur, cpmCur]);
+
+  const totalsPrevMap: Record<MetricId, number> = useMemo(() => ({
+    spend: totalsPrev.spend,
+    impressions: totalsPrev.impressions,
+    reach: reachPrev,
+    frequency: freqPrev,
+    clicks: totalsPrev.clicks,
+    conversions: totalsPrev.conversions,
+    conversionValue: totalsPrev.conversionValue,
+    ctr:  totalsPrev.impressions > 0 ? (totalsPrev.clicks / totalsPrev.impressions) * 100 : 0,
+    cpc:  totalsPrev.clicks > 0 ? totalsPrev.spend / totalsPrev.clicks : 0,
+    cpm:  cpmPrev,
+    cpa:  totalsPrev.conversions > 0 ? totalsPrev.spend / totalsPrev.conversions : 0,
+    roas: totalsPrev.spend > 0 ? totalsPrev.conversionValue / totalsPrev.spend : 0,
+    cvr:  totalsPrev.clicks > 0 ? (totalsPrev.conversions / totalsPrev.clicks) * 100 : 0,
+    aov:  totalsPrev.conversions > 0 ? totalsPrev.conversionValue / totalsPrev.conversions : 0,
+  }), [totalsPrev, reachPrev, freqPrev, cpmPrev]);
+
+  const [slotMetrics, setSlotMetrics] = usePersistentColumns<MetricId>(
+    "overview-kpi-slots",
+    ["reach", "frequency", "impressions", "spend", "cpm"]
+  );
+
+  function valueFor(id: MetricId): string {
+    const def = METRICS.find(m => m.id === id)!;
+    const v = totalsCurMap[id];
+    if (id === "frequency") return v > 0 ? v.toFixed(2) : "—";
+    if (id === "cpm")       return v > 0 ? formatMoney(v, currency, 2) : "—";
+    if (def.fmt === "money") return fmt(v, "money", currency);
+    if (def.fmt === "int")   return fmt(v, "k", currency);
+    return fmt(v, def.fmt, currency);
+  }
 
   const chartData = useMemo(() => sortedCur.map(r => ({ date: r.label.slice(5), ...deriveRow(r) })), [sortedCur]);
 
-  const [primary, setPrimary]   = useState<MetricId>("impressions");
-  const [secondary, setSecondary] = useState<MetricId>("ctr");
+  const [primary, setPrimary]   = usePersistentValue<MetricId>("overview-trend-primary", "impressions");
+  const [secondary, setSecondary] = usePersistentValue<MetricId>("overview-trend-secondary", "ctr");
   const primaryDef   = METRICS.find(m => m.id === primary)!;
   const secondaryDef = METRICS.find(m => m.id === secondary)!;
 
@@ -259,38 +374,16 @@ export default function ReportingOverview({ platform, dateRange, customStart, cu
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-        <KpiCard
-          label="Reach"
-          value={fmt(reachPeriod, "k", currency)}
-          delta={pctDelta(reachPeriod, reachPrev)}
-          spark={sparkSeries.reach}
-        />
-        <KpiCard
-          label="Frequency"
-          value={frequencyCur > 0 ? frequencyCur.toFixed(2) : "—"}
-          delta={pctDelta(frequencyCur, freqPrev)}
-          lowerIsBetter
-          spark={sparkSeries.frequency}
-        />
-        <KpiCard
-          label="Impressions"
-          value={fmt(totalsCur.impressions, "k", currency)}
-          delta={pctDelta(totalsCur.impressions, totalsPrev.impressions)}
-          spark={sparkSeries.impressions}
-        />
-        <KpiCard
-          label="Spend"
-          value={fmt(totalsCur.spend, "money", currency)}
-          delta={pctDelta(totalsCur.spend, totalsPrev.spend)}
-          spark={sparkSeries.spend}
-        />
-        <KpiCard
-          label="CPM"
-          value={cpmCur > 0 ? formatMoney(cpmCur, currency, 2) : "—"}
-          delta={pctDelta(cpmCur, cpmPrev)}
-          lowerIsBetter
-          spark={sparkSeries.cpm}
-        />
+        {slotMetrics.map((m, i) => (
+          <KpiCard
+            key={`${m}-${i}`}
+            metric={m}
+            value={valueFor(m)}
+            delta={pctDelta(totalsCurMap[m], totalsPrevMap[m])}
+            spark={sparkSeries[m]}
+            onSwap={(next) => setSlotMetrics(prev => prev.map((x, j) => j === i ? next : x))}
+          />
+        ))}
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
@@ -343,6 +436,28 @@ export default function ReportingOverview({ platform, dateRange, customStart, cu
           )}
         </div>
       </div>
+
+      <TabSummaryFooter
+        lines={[
+          `Period: ${startDate} → ${endDate} — ${totalsCur.impressions.toLocaleString("en-IN")} impressions with ${reachPeriod > 0 ? reachPeriod.toLocaleString("en-IN") + " unique reach" : "reach data loading"}.`,
+          `Frequency: ${frequencyCur > 0 ? frequencyCur.toFixed(2) + "× avg per user" : "—"} — CPM: ${cpmCur > 0 ? formatMoney(cpmCur, currency, 2) : "—"}.`,
+          `Total spend: ${formatMoney(totalsCur.spend, currency, 0)} across the reporting window.`,
+        ]}
+        tabName="Reporting Overview"
+        context={{
+          startDate,
+          endDate,
+          totalSpend: totalsCur.spend,
+          totalImpressions: totalsCur.impressions,
+          reach: reachPeriod,
+          frequency: frequencyCur,
+          cpm: cpmCur,
+          platform,
+          dateRange,
+        }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

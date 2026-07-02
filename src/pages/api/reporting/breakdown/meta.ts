@@ -106,6 +106,37 @@ function getDemoBreakdown(breakdown: string): Row[] {
       }
       return rows;
     })(),
+    "region,city": [
+      // Maharashtra cities
+      { label: "Maharashtra · Mumbai",       breakdownValues: { region: "Maharashtra",   city: "Mumbai" },       spend: 18500, impressions: 460000, clicks: 6900,  conversions: 128, conversionValue: 92000 },
+      { label: "Maharashtra · Pune",         breakdownValues: { region: "Maharashtra",   city: "Pune" },         spend: 11200, impressions: 270000, clicks: 4100,  conversions: 72,  conversionValue: 51000 },
+      { label: "Maharashtra · Nagpur",       breakdownValues: { region: "Maharashtra",   city: "Nagpur" },       spend:  5300, impressions: 125000, clicks: 1850,  conversions: 33,  conversionValue: 19000 },
+      { label: "Maharashtra · Nashik",       breakdownValues: { region: "Maharashtra",   city: "Nashik" },       spend:  3000, impressions:  65000, clicks:  950,  conversions: 12,  conversionValue:  6000 },
+      // Karnataka
+      { label: "Karnataka · Bengaluru",      breakdownValues: { region: "Karnataka",     city: "Bengaluru" },    spend: 19000, impressions: 470000, clicks: 6800,  conversions: 125, conversionValue: 88000 },
+      { label: "Karnataka · Mysuru",         breakdownValues: { region: "Karnataka",     city: "Mysuru" },       spend:  4500, impressions: 110000, clicks: 1650,  conversions: 28,  conversionValue: 17500 },
+      { label: "Karnataka · Mangalore",      breakdownValues: { region: "Karnataka",     city: "Mangalore" },    spend:  2500, impressions:  50000, clicks:   950, conversions: 15,  conversionValue:  9500 },
+      // Delhi
+      { label: "Delhi · New Delhi",          breakdownValues: { region: "Delhi",         city: "New Delhi" },    spend: 14000, impressions: 340000, clicks: 5300,  conversions: 95,  conversionValue: 62000 },
+      { label: "Delhi · Delhi",              breakdownValues: { region: "Delhi",         city: "Delhi" },        spend:  8000, impressions: 200000, clicks: 2800,  conversions: 49,  conversionValue: 36000 },
+      // Tamil Nadu
+      { label: "Tamil Nadu · Chennai",       breakdownValues: { region: "Tamil Nadu",    city: "Chennai" },      spend: 12000, impressions: 290000, clicks: 4500,  conversions: 78,  conversionValue: 56000 },
+      { label: "Tamil Nadu · Coimbatore",    breakdownValues: { region: "Tamil Nadu",    city: "Coimbatore" },   spend:  4200, impressions: 100000, clicks: 1500,  conversions: 25,  conversionValue: 17000 },
+      { label: "Tamil Nadu · Madurai",       breakdownValues: { region: "Tamil Nadu",    city: "Madurai" },      spend:  1800, impressions:  50000, clicks:   600, conversions: 14,  conversionValue:  7000 },
+      // Telangana
+      { label: "Telangana · Hyderabad",      breakdownValues: { region: "Telangana",     city: "Hyderabad" },    spend: 10500, impressions: 250000, clicks: 3800,  conversions: 67,  conversionValue: 47000 },
+      { label: "Telangana · Warangal",       breakdownValues: { region: "Telangana",     city: "Warangal" },     spend:  1500, impressions:  40000, clicks:   550, conversions: 11,  conversionValue:  6000 },
+      // Uttar Pradesh
+      { label: "Uttar Pradesh · Lucknow",    breakdownValues: { region: "Uttar Pradesh", city: "Lucknow" },      spend:  3200, impressions:  78000, clicks: 1170,  conversions: 21,  conversionValue: 14400 },
+      { label: "Uttar Pradesh · Kanpur",     breakdownValues: { region: "Uttar Pradesh", city: "Kanpur" },       spend:  1800, impressions:  44000, clicks:   650, conversions: 12,  conversionValue:  8000 },
+      { label: "Uttar Pradesh · Noida",      breakdownValues: { region: "Uttar Pradesh", city: "Noida" },        spend:   800, impressions:  19000, clicks:   300, conversions:  5,  conversionValue:  3600 },
+      // Gujarat
+      { label: "Gujarat · Ahmedabad",        breakdownValues: { region: "Gujarat",       city: "Ahmedabad" },    spend:  2400, impressions:  58000, clicks:   880, conversions: 16,  conversionValue: 10500 },
+      { label: "Gujarat · Surat",            breakdownValues: { region: "Gujarat",       city: "Surat" },        spend:  1800, impressions:  44000, clicks:   650, conversions: 11,  conversionValue:  8000 },
+      // West Bengal
+      { label: "West Bengal · Kolkata",      breakdownValues: { region: "West Bengal",   city: "Kolkata" },      spend:  5500, impressions: 132000, clicks: 1980,  conversions: 36,  conversionValue: 24000 },
+      { label: "West Bengal · Howrah",       breakdownValues: { region: "West Bengal",   city: "Howrah" },       spend:  2000, impressions:  50000, clicks:   750, conversions: 13,  conversionValue:  9000 },
+    ],
     "age,gender": [
       { label: "25-34 · female", breakdownValues: { age: "25-34", gender: "female" }, spend: 32000, impressions: 750000, clicks: 11500, conversions: 240, conversionValue: 145000 },
       { label: "35-44 · female", breakdownValues: { age: "35-44", gender: "female" }, spend: 28000, impressions: 640000, clicks: 9200,  conversions: 215, conversionValue: 178000 },
@@ -134,7 +165,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const ALLOWED = new Set([
     "age", "gender", "country", "region", "impression_device",
     "device_platform", "publisher_platform", "platform_position",
-    "age,gender", "daily",
+    "age,gender", "daily", "region,city",
   ]);
   if (!ALLOWED.has(breakdown)) {
     res.status(400).json({ error: `Unsupported breakdown "${breakdown}"` });

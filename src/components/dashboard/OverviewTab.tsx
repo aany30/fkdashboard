@@ -7,6 +7,9 @@ import type { DateRange } from "@/components/shared/DateRangePicker";
 import SourceBadge from "@/components/shared/SourceBadge";
 import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
 import { CheckCircle2, AlertCircle, Activity, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 
 interface OverviewTabProps {
   platform: "meta" | "google" | "both";
@@ -62,7 +65,8 @@ export default function OverviewTab({ platform, dateRange, customStart, customEn
     : 0;
 
   const allRecs = [...(meta?.recommendations || []), ...(google?.recommendations || [])];
-  const topRecs = allRecs.slice(0, 5);
+  const rawTopRecs = allRecs.slice(0, 5);
+  const { sorted: topRecs, sort: recSort, toggle: recToggle } = useSort(rawTopRecs, "impact", "desc");
   const criticalCount = allRecs.filter((r) => r.priority === "Critical").length;
   const totalLift = allRecs.reduce((s, r) => s + r.impact, 0).toFixed(1);
 
@@ -158,13 +162,13 @@ export default function OverviewTab({ platform, dateRange, customStart, customEn
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
                 <tr>
-                  <th className="px-6 py-3 text-left font-semibold text-gray-700">Priority</th>
-                  <th className="px-6 py-3 text-left font-semibold text-gray-700">Platform</th>
-                  <th className="px-6 py-3 text-left font-semibold text-gray-700">Issue</th>
-                  <th className="px-6 py-3 text-right font-semibold text-gray-700">Confidence</th>
-                  <th className="px-6 py-3 text-right font-semibold text-gray-700">Impact</th>
+                  <SortTh col="priority" sort={recSort} onToggle={recToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Priority</SortTh>
+                  <SortTh col="platform" sort={recSort} onToggle={recToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Platform</SortTh>
+                  <SortTh col="issue" sort={recSort} onToggle={recToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600">Issue</SortTh>
+                  <SortTh col="confidence" sort={recSort} onToggle={recToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="right">Confidence</SortTh>
+                  <SortTh col="impact" sort={recSort} onToggle={recToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="right">Impact</SortTh>
                 </tr>
               </thead>
               <tbody>
@@ -243,6 +247,18 @@ export default function OverviewTab({ platform, dateRange, customStart, customEn
           <p className="text-xs text-gray-500 mt-2">In current date range — real pixel/GA4 count</p>
         </div>
       </div>
+
+      <TabSummaryFooter
+        tabName="Overview"
+        lines={[
+          `${allRecs.length} recommendation${allRecs.length !== 1 ? "s" : ""} found — ${criticalCount} critical issue${criticalCount !== 1 ? "s" : ""} requiring immediate attention.`,
+          `Meta tracking health score: ${metaHealth}${googleHealth > 0 ? ` · Google: ${googleHealth}` : ""}.`,
+          `Potential lift from addressing all recommendations: ${totalLift}%.`,
+        ]}
+        context={{ metaHealth, googleHealth, criticalCount, totalRecs: allRecs.length, totalLift }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

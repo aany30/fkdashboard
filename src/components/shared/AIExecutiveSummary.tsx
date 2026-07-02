@@ -11,15 +11,7 @@ import { Sparkles, Loader2, ChevronDown, ChevronUp, BookOpen, Lightbulb, X } fro
 import { useAuthStore } from "@/store/auth";
 import { isDemoCredential } from "@/lib/demo-data";
 import { toDisplayCredits } from "@/lib/ai-cost";
-
-interface SummaryResponse {
-  headline: string;
-  overview: string;
-  keyFindings: string[];
-  recommendations: string[];
-  source: "ai" | "fallback";
-  creditsUsedUsd?: number;
-}
+import { AI_SUMMARY_CACHE, summaryKey, type SummaryResponse } from "@/lib/ai-summary-cache";
 
 interface Props {
   tabName: string;
@@ -32,9 +24,7 @@ interface Props {
 }
 
 // ~1500 input tokens + 800 output ≈ $0.0044 raw → displayed at toDisplayCredits
-const SUMMARY_ESTIMATE_DISPLAY = `~$${toDisplayCredits(0.0044).toFixed(2)}`;
-
-const SESSION_CACHE = new Map<string, SummaryResponse>();
+const SUMMARY_ESTIMATE_DISPLAY = `~${toDisplayCredits(0.0044).toFixed(2)}`;
 
 export default function AIExecutiveSummary({ tabName, context, platform, dateRange, inline }: Props) {
   const [open, setOpen] = useState(false);
@@ -52,7 +42,7 @@ export default function AIExecutiveSummary({ tabName, context, platform, dateRan
   );
 
   const cacheKey = useMemo(
-    () => `exec-${tabName}-${platform ?? "any"}-${dateRange ?? ""}`,
+    () => summaryKey(tabName, platform ?? "any", dateRange),
     [tabName, platform, dateRange]
   );
 
@@ -69,7 +59,7 @@ export default function AIExecutiveSummary({ tabName, context, platform, dateRan
   }, [inline, open]);
 
   const fetchSummary = useCallback(async () => {
-    const cached = SESSION_CACHE.get(cacheKey);
+    const cached = AI_SUMMARY_CACHE.get(cacheKey);
     if (cached) { setData(cached); return; }
     setLoading(true);
     setError(null);
@@ -84,7 +74,7 @@ export default function AIExecutiveSummary({ tabName, context, platform, dateRan
         throw new Error(errBody?.error || `HTTP ${res.status}`);
       }
       const json = (await res.json()) as SummaryResponse;
-      SESSION_CACHE.set(cacheKey, json);
+      AI_SUMMARY_CACHE.set(cacheKey, json);
       setData(json);
       if (json.creditsUsedUsd) addAiCredits(json.creditsUsedUsd);
     } catch (e) {

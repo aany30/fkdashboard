@@ -11,8 +11,10 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart2, LineChart as LineIcon, Grid, Sparkles, Check,
-  ArrowUpDown, LayersIcon, Image as ImageIcon,
+  LayersIcon, Image as ImageIcon,
 } from "lucide-react";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 import {
   ResponsiveContainer, ComposedChart, BarChart, LineChart,
   Bar, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid,
@@ -24,6 +26,35 @@ import { detectCurrency, formatMoney } from "@/lib/currency";
 import { rangeToDates } from "@/lib/date-range";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import type { AdInsightRow } from "@/pages/api/reporting/ad-insights/meta";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import { ColumnPickerButton, ALL_STANDARD_KPIS } from "@/components/shared/ColumnPicker";
+import { formatStandardKpi, FETCHABLE_KPIS } from "@/lib/standard-kpis";
+import { usePersistentColumns, usePersistentValue } from "@/hooks/useColumnPrefs";
+
+function CreativeColPicker<T extends string>({ cols, setCols, defaultIds, colOpen, setColOpen }: {
+  cols: string[]; setCols: (c: string[]) => void;
+  allCols: { id: T; label: string }[];
+  defaultIds: readonly T[];
+  colOpen: boolean; setColOpen: (v: boolean) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const toggleCol = (id: string) => {
+    if (cols.includes(id)) { if (cols.length > 1) setCols(cols.filter(c => c !== id)); }
+    else setCols([...cols, id]);
+  };
+  return (
+    <ColumnPickerButton
+      cols={cols}
+      allDefs={FETCHABLE_KPIS}
+      defaultIds={[...defaultIds]}
+      pickerOpen={colOpen}
+      setPickerOpen={setColOpen}
+      pickerRef={ref}
+      toggleCol={toggleCol}
+      resetCols={(ids) => setCols([...ids])}
+    />
+  );
+}
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -77,8 +108,8 @@ function detectFormat(row: AdInsightRow, idx: number): CFormat {
 
 interface EnrichedAd {
   id: string; name: string; format: CFormat; language: string;
-  spend: number; impressions: number; clicks: number; conversions: number;
-  ctr: number; cpm: number; cpc: number; roas: number;
+  spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number;
+  ctr: number; cpm: number; cpc: number; roas: number; cpa: number; cvr: number; aov: number;
 }
 
 interface FormatRow {
@@ -95,7 +126,7 @@ const COUNT_METRIC_LABELS: Record<CountMetric, string> = {
 };
 
 function FormatCountPanel({ rows, currency }: { rows: FormatRow[]; currency: string }) {
-  const [metric, setMetric] = useState<CountMetric>("count");
+  const [metric, setMetric] = usePersistentValue<CountMetric>("creative-format-count-metric", "count");
   const [open, setOpen] = useState(false);
 
   const valueOf = (r: FormatRow): number => {
@@ -185,8 +216,12 @@ function formatPerfVal(v: number, m: PerfMetric, currency: string): string {
 }
 
 function FormatPerformancePanel({ rows, currency }: { rows: FormatRow[]; currency: string }) {
-  const [primY, setPrimY] = useState<PerfMetric>("impressions");
-  const [secY, setSecY]   = useState<PerfMetric | null>("ctr");
+  const [primY, setPrimY] = usePersistentValue<PerfMetric>("creative-format-perf-primary", "impressions");
+  // Secondary Y can be turned off — persisted as the "none" sentinel since
+  // usePersistentValue stores plain strings, then mapped back to null here.
+  const [secYRaw, setSecYRaw] = usePersistentValue<PerfMetric | "none">("creative-format-perf-secondary", "ctr");
+  const secY = secYRaw === "none" ? null : secYRaw;
+  const setSecY = (m: PerfMetric | null) => setSecYRaw(m ?? "none");
   const [primOpen, setPrimOpen] = useState(false);
   const [secOpen, setSecOpen]   = useState(false);
 
@@ -315,10 +350,23 @@ function buildFatigueRows(ads: EnrichedAd[]): FatigueRow[] {
 
 const WEEK_LINE_COLORS = ["#3b82f6", "#8b5cf6", "#06b6d4", "#f59e0b", "#10b981"];
 
+const FATIGUE_COL_KEYS = ["wk1", "wk2_3", "wk4_6", "wk7_10", "wk11p"] as const;
+
 function CreativeFatigueSection({ rows }: { rows: FatigueRow[] }) {
   const [view, setView] = useState<FatigueView>("table");
 
-  const lineData = FATIGUE_WEEKS.map((wk, wi) => {
+  const flatRows = useMemo(() => rows.map(r => ({
+    id: r.id, name: r.name, baseCtr: r.baseCtr,
+    wk1:    r.weeks["WK 1"],
+    wk2_3:  r.weeks["WK 2–3"],
+    wk4_6:  r.weeks["WK 4–6"],
+    wk7_10: r.weeks["WK 7–10"],
+    wk11p:  r.weeks["WK 11+"],
+    weeks:  r.weeks,
+  })), [rows]);
+  const { sorted: sortedRows, sort: fatSort, toggle: fatToggle } = useSort(flatRows, "wk11p", "asc");
+
+  const lineData = FATIGUE_WEEKS.map((wk) => {
     const obj: Record<string, number | string> = { week: wk };
     rows.forEach((r, ri) => { obj[`c${ri}`] = r.weeks[wk]; });
     return obj;
@@ -331,7 +379,7 @@ function CreativeFatigueSection({ rows }: { rows: FatigueRow[] }) {
   });
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
       <div className="px-5 py-4 border-b border-gray-100">
         <div className="flex items-start justify-between gap-2">
           <div>
@@ -367,19 +415,19 @@ function CreativeFatigueSection({ rows }: { rows: FatigueRow[] }) {
           <div className="h-32 flex items-center justify-center text-xs text-gray-400">No creative data.</div>
         ) : view === "table" ? (
           <table className="w-full text-sm">
-            <thead>
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr className="border-b border-gray-100">
-                <th className="py-2 text-left text-[11px] font-semibold text-gray-500 uppercase">Creative</th>
-                {FATIGUE_WEEKS.map(wk => (
-                  <th key={wk} className="py-2 px-3 text-right text-[11px] font-semibold text-gray-500 uppercase">{wk}</th>
+                <SortTh col="name" sort={fatSort} onToggle={fatToggle} className="py-2 text-[11px] uppercase font-semibold text-gray-500">Creative</SortTh>
+                {FATIGUE_WEEKS.map((wk, i) => (
+                  <SortTh key={wk} col={FATIGUE_COL_KEYS[i]} sort={fatSort} onToggle={fatToggle} className="py-2 px-3 text-[11px] uppercase font-semibold text-gray-500" align="right">{wk}</SortTh>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => (
+              {sortedRows.map(r => (
                 <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
                   <td className="py-3 text-xs text-gray-800 font-medium max-w-[220px] truncate" title={r.name}>{r.name}</td>
-                  {FATIGUE_WEEKS.map((wk, wi) => {
+                  {FATIGUE_WEEKS.map(wk => {
                     const v = r.weeks[wk];
                     const isRed = v < r.baseCtr * 0.7;
                     return (
@@ -434,85 +482,76 @@ function CreativeFatigueSection({ rows }: { rows: FatigueRow[] }) {
 
 // ─── Section 3a: Best 5 Working Creatives ────────────────────────────────────
 
-type BestCol = "impressions" | "clicks" | "ctr" | "spend" | "cpm" | "cpc";
+type BestCol = "impressions" | "clicks" | "ctr" | "spend" | "cpm" | "cpc" | "conversions" | "conversionValue" | "roas" | "cpa" | "cvr" | "aov";
 const BEST_COLS: { id: BestCol; label: string }[] = [
-  { id: "impressions", label: "Impressions" }, { id: "clicks", label: "Clicks" },
-  { id: "ctr",         label: "CTR" },         { id: "spend",  label: "Spend" },
-  { id: "cpm",         label: "CPM" },         { id: "cpc",    label: "CPC" },
+  { id: "impressions",     label: "Impressions" },
+  { id: "clicks",          label: "Clicks" },
+  { id: "ctr",             label: "CTR" },
+  { id: "spend",           label: "Spend" },
+  { id: "cpm",             label: "CPM" },
+  { id: "cpc",             label: "CPC" },
+  { id: "conversions",     label: "Conversions" },
+  { id: "conversionValue", label: "Revenue" },
+  { id: "roas",            label: "ROAS" },
+  { id: "cpa",             label: "CPA" },
+  { id: "cvr",             label: "CVR" },
+  { id: "aov",             label: "AOV" },
 ];
 const BEST_DEFAULT: BestCol[] = ["impressions", "clicks", "ctr", "spend"];
 
 function BestCreativesPanel({ ads, currency }: { ads: EnrichedAd[]; currency: string }) {
-  const [columns, setColumns] = useState<BestCol[]>(BEST_DEFAULT);
+  const [columns, setColumns] = usePersistentColumns<BestCol>("creative-best", BEST_DEFAULT);
   const [colOpen, setColOpen] = useState(false);
 
   const best5 = useMemo(() =>
     [...ads].filter(a => a.impressions > 1000).sort((a, b) => b.ctr - a.ctr).slice(0, 5),
     [ads]
   );
+  const { sorted: best5Sorted, sort: bestSort, toggle: bestToggle } = useSort(best5, "ctr", "desc");
 
-  const fmtCell = (a: EnrichedAd, c: BestCol): string => {
-    if (c === "impressions") return compact(a.impressions);
-    if (c === "clicks")      return compact(a.clicks);
-    if (c === "ctr")         return pct(a.ctr);
-    if (c === "spend")       return formatMoney(a.spend, currency, 0);
-    if (c === "cpm")         return formatMoney(a.cpm, currency, 0);
-    return formatMoney(a.cpc, currency, 0);
+  const fmtCell = (a: EnrichedAd, c: string): string => {
+    if (c === "impressions")     return compact(a.impressions);
+    if (c === "clicks")          return compact(a.clicks);
+    if (c === "ctr")             return pct(a.ctr);
+    if (c === "spend")           return formatMoney(a.spend, currency, 0);
+    if (c === "cpm")             return formatMoney(a.cpm, currency, 0);
+    if (c === "cpc")             return formatMoney(a.cpc, currency, 0);
+    if (c === "conversions")     return String(a.conversions);
+    if (c === "conversionValue") return formatMoney(a.conversionValue, currency, 0);
+    if (c === "roas")            return a.roas > 0 ? `${a.roas.toFixed(2)}×` : "—";
+    if (c === "cpa")             return a.cpa > 0 ? formatMoney(a.cpa, currency, 0) : "—";
+    if (c === "cvr")             return a.cvr > 0 ? pct(a.cvr) : "—";
+    if (c === "aov")             return a.aov > 0 ? formatMoney(a.aov, currency, 0) : "—";
+    return formatStandardKpi(a, c, currency);
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
       <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-2">
         <div>
           <h3 className="font-bold text-gray-900 text-base">Best 5 Working Creatives</h3>
           <p className="text-xs text-gray-400 mt-0.5">Top performers by CTR (min. 1,000 impressions).</p>
         </div>
-        <div className="relative shrink-0">
-          <button onClick={() => setColOpen(v => !v)} className={btnCls}>
-            <LayersIcon className="w-3.5 h-3.5 text-blue-500" /> Columns
-          </button>
-          {colOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setColOpen(false)} />
-              <div className="absolute right-0 top-full mt-1 z-50 w-44 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
-                <div className="px-3 py-2 border-b border-gray-100 flex justify-between items-center">
-                  <span className="text-xs font-bold text-gray-600 uppercase">Columns</span>
-                  <button onClick={() => setColumns(BEST_DEFAULT)} className="text-[10px] text-blue-500 font-medium">Reset</button>
-                </div>
-                {BEST_COLS.map(col => {
-                  const on = columns.includes(col.id);
-                  return (
-                    <button key={col.id} onClick={() => {
-                      const next = on ? columns.filter(c => c !== col.id) : [...columns, col.id];
-                      if (next.length > 0) setColumns(next);
-                    }} className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left ${on ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"}`}>
-                      <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${on ? "bg-blue-600 border-blue-500" : "border-gray-300"}`}>
-                        {on && <Check className="w-2.5 h-2.5 text-white" />}
-                      </span>
-                      {col.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
+        <CreativeColPicker cols={columns} setCols={(c) => setColumns(c as BestCol[])} allCols={BEST_COLS} defaultIds={BEST_DEFAULT} colOpen={colOpen} setColOpen={setColOpen} />
       </div>
-      <div className="overflow-x-auto">
+      <div>
         <table className="w-full text-sm">
-          <thead>
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr className="border-b border-gray-100">
               <th className="py-2 pl-5 text-left text-[11px] font-semibold text-gray-500 uppercase">#</th>
-              <th className="py-2 text-left text-[11px] font-semibold text-gray-500 uppercase">Creative</th>
-              {columns.map(c => (
-                <th key={c} className="py-2 px-3 text-right text-[11px] font-semibold text-gray-500 uppercase">
-                  {BEST_COLS.find(d => d.id === c)!.label}
-                </th>
-              ))}
+              <SortTh col="name" sort={bestSort} onToggle={bestToggle} className="py-2 text-[11px] uppercase font-semibold text-gray-500">Creative</SortTh>
+              {columns.map(c => {
+                const def = BEST_COLS.find(d => d.id === c) ?? ALL_STANDARD_KPIS.find(d => d.id === c);
+                return (
+                  <SortTh key={c} col={c} sort={bestSort} onToggle={bestToggle} className="py-2 px-3 text-[11px] uppercase font-semibold text-gray-500" align="right">
+                    {def?.label ?? c}
+                  </SortTh>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
-            {best5.map((a, i) => (
+            {best5Sorted.map((a, i) => (
               <tr key={a.id} className="border-b border-gray-50 hover:bg-gray-50">
                 <td className="py-3 pl-5">
                   <span className={`inline-flex w-5 h-5 rounded-full items-center justify-center text-[10px] font-bold ${i === 0 ? "bg-green-500 text-white" : "bg-gray-200 text-gray-600"}`}>{i + 1}</span>
@@ -545,7 +584,7 @@ function LanguagesPanel({ ads }: { ads: EnrichedAd[] }) {
   const langs = Array.from(langMap.entries()).sort((a, b) => b[1] - a[1]);
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
       <div className="px-5 py-4 border-b border-gray-100">
         <h3 className="font-bold text-gray-900 text-base">Creatives by Language</h3>
         <p className="text-xs text-gray-400 mt-0.5">Running creatives per language, by count and share.</p>
@@ -565,22 +604,30 @@ function LanguagesPanel({ ads }: { ads: EnrichedAd[] }) {
 
 // ─── Section 4: Top 50 Creatives ─────────────────────────────────────────────
 
-type TopCol = "language" | "impressions" | "clicks" | "ctr" | "spend" | "cpm" | "cpc" | "conversions";
+type TopCol = "language" | "impressions" | "clicks" | "ctr" | "spend" | "cpm" | "cpc" | "conversions" | "conversionValue" | "roas" | "cpa" | "cvr" | "aov";
 const TOP_COLS: { id: TopCol; label: string }[] = [
-  { id: "language",    label: "Language" },    { id: "impressions", label: "Impressions" },
-  { id: "clicks",      label: "Clicks" },      { id: "ctr",         label: "CTR" },
-  { id: "spend",       label: "Spend" },       { id: "cpm",         label: "CPM" },
-  { id: "cpc",         label: "CPC" },         { id: "conversions", label: "Conversions" },
+  { id: "language",        label: "Language" },
+  { id: "impressions",     label: "Impressions" },
+  { id: "clicks",          label: "Clicks" },
+  { id: "ctr",             label: "CTR" },
+  { id: "spend",           label: "Spend" },
+  { id: "cpm",             label: "CPM" },
+  { id: "cpc",             label: "CPC" },
+  { id: "conversions",     label: "Conversions" },
+  { id: "conversionValue", label: "Revenue" },
+  { id: "roas",            label: "ROAS" },
+  { id: "cpa",             label: "CPA" },
+  { id: "cvr",             label: "CVR" },
+  { id: "aov",             label: "AOV" },
 ];
 const TOP_DEFAULT: TopCol[] = ["language", "impressions", "clicks", "ctr", "spend"];
 
 function TopCreativesTable({ ads, currency }: { ads: EnrichedAd[]; currency: string }) {
-  const [columns, setColumns] = useState<TopCol[]>(TOP_DEFAULT);
+  const [columns, setColumns] = usePersistentColumns<TopCol>("creative-top", TOP_DEFAULT);
   const [colOpen, setColOpen] = useState(false);
-  const [sortKey, setSortKey] = useState<TopCol>("impressions");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [swapIdx, setSwapIdx] = useState<number | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const { sorted, sort: topSort, toggle: topToggle } = useSort(ads, "impressions", "desc");
 
   useEffect(() => {
     if (swapIdx === null) return;
@@ -589,27 +636,25 @@ function TopCreativesTable({ ads, currency }: { ads: EnrichedAd[]; currency: str
     return () => document.removeEventListener("mousedown", h);
   }, [swapIdx]);
 
-  const sorted = useMemo(() => {
-    if (sortKey === "language") {
-      return [...ads].sort((a, b) => sortDir === "asc" ? a.language.localeCompare(b.language) : b.language.localeCompare(a.language));
-    }
-    const k = sortKey as Exclude<TopCol, "language">;
-    return [...ads].sort((a, b) => sortDir === "desc" ? b[k] - a[k] : a[k] - b[k]);
-  }, [ads, sortKey, sortDir]);
-
-  const fmtCell = (a: EnrichedAd, c: TopCol): string => {
-    if (c === "language")    return a.language;
-    if (c === "impressions") return compact(a.impressions);
-    if (c === "clicks")      return compact(a.clicks);
-    if (c === "ctr")         return pct(a.ctr);
-    if (c === "spend")       return formatMoney(a.spend, currency, 0);
-    if (c === "cpm")         return formatMoney(a.cpm, currency, 0);
-    if (c === "cpc")         return formatMoney(a.cpc, currency, 0);
-    return String(a.conversions);
+  const fmtCell = (a: EnrichedAd, c: string): string => {
+    if (c === "language")        return a.language;
+    if (c === "impressions")     return compact(a.impressions);
+    if (c === "clicks")          return compact(a.clicks);
+    if (c === "ctr")             return pct(a.ctr);
+    if (c === "spend")           return formatMoney(a.spend, currency, 0);
+    if (c === "cpm")             return formatMoney(a.cpm, currency, 0);
+    if (c === "cpc")             return formatMoney(a.cpc, currency, 0);
+    if (c === "conversions")     return String(a.conversions);
+    if (c === "conversionValue") return formatMoney(a.conversionValue, currency, 0);
+    if (c === "roas")            return a.roas > 0 ? `${a.roas.toFixed(2)}×` : "—";
+    if (c === "cpa")             return a.cpa > 0 ? formatMoney(a.cpa, currency, 0) : "—";
+    if (c === "cvr")             return a.cvr > 0 ? pct(a.cvr) : "—";
+    if (c === "aov")             return a.aov > 0 ? formatMoney(a.aov, currency, 0) : "—";
+    return formatStandardKpi(a, c, currency);
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden" ref={ref}>
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm" ref={ref}>
       <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-2">
         <div>
           <h3 className="font-bold text-gray-900 text-base">Top 50 Creatives</h3>
@@ -617,56 +662,21 @@ function TopCreativesTable({ ads, currency }: { ads: EnrichedAd[]; currency: str
             Showing {Math.min(ads.length, 50)} of {ads.length} creatives, ranked by impressions
           </p>
         </div>
-        <div className="relative shrink-0">
-          <button onClick={() => setColOpen(v => !v)} className={btnCls}>
-            <LayersIcon className="w-3.5 h-3.5 text-blue-500" /> Columns
-            <span className="ml-0.5 bg-blue-100 text-blue-700 rounded-full text-[10px] font-bold px-1.5 py-0.5 leading-none">{columns.length}</span>
-          </button>
-          {colOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setColOpen(false)} />
-              <div className="absolute right-0 top-full mt-1 z-50 w-48 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
-                <div className="px-3 py-2.5 border-b border-gray-100 flex justify-between items-center">
-                  <span className="text-xs font-bold text-gray-600 uppercase">Columns</span>
-                  <button onClick={() => setColumns(TOP_DEFAULT)} className="text-[10px] text-blue-500 font-medium">Reset</button>
-                </div>
-                {TOP_COLS.map(col => {
-                  const on = columns.includes(col.id);
-                  return (
-                    <button key={col.id} onClick={() => {
-                      const next = on ? columns.filter(c => c !== col.id) : [...columns, col.id];
-                      if (next.length > 0) setColumns(next);
-                    }} className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left ${on ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"}`}>
-                      <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${on ? "bg-blue-600 border-blue-500" : "border-gray-300"}`}>
-                        {on && <Check className="w-2.5 h-2.5 text-white" />}
-                      </span>
-                      {col.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
+        <CreativeColPicker cols={columns} setCols={(c) => setColumns(c as TopCol[])} allCols={TOP_COLS} defaultIds={TOP_DEFAULT} colOpen={colOpen} setColOpen={setColOpen} />
       </div>
 
-      <div className="overflow-x-auto">
+      <div>
         <table className="w-full text-sm">
-          <thead>
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr className="border-b border-gray-100">
-              <th className="py-2 pl-5 text-left text-[11px] font-semibold text-gray-500 uppercase">Creative</th>
+              <SortTh col="name" sort={topSort} onToggle={topToggle} className="py-2 pl-5 text-[11px] uppercase font-semibold text-gray-500">Creative</SortTh>
               {columns.map((c, ci) => {
-                const def = TOP_COLS.find(d => d.id === c)!;
-                const isSorted = sortKey === c;
+                const def = TOP_COLS.find(d => d.id === c) ?? ALL_STANDARD_KPIS.find(d => d.id === c);
+                const isText = c === "language";
                 return (
                   <th key={c} className="py-2 px-3 text-right text-[11px] font-semibold text-gray-500 uppercase whitespace-nowrap">
                     <div className="relative inline-flex items-center gap-1 justify-end">
-                      <button onClick={() => { setSortKey(c); setSortDir(d => isSorted ? (d === "asc" ? "desc" : "asc") : "desc"); }}
-                        className="hover:text-gray-800 flex items-center gap-1">
-                        {def.label}
-                        {isSorted ? <span className="text-blue-500 text-[10px]">{sortDir === "asc" ? "↑" : "↓"}</span>
-                          : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                      </button>
+                      <SortTh col={c} sort={topSort} onToggle={topToggle} className="text-[11px] uppercase font-semibold text-gray-500" align={isText ? undefined : "right"}>{def?.label ?? c}</SortTh>
                       <button onClick={() => setSwapIdx(swapIdx === ci ? null : ci)}
                         className="text-gray-300 hover:text-gray-500 ml-0.5" title="Change column">
                         <svg className="w-2.5 h-2.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 2v6M2 5l3 3 3-3"/></svg>
@@ -750,11 +760,14 @@ export default function CreativeReport({ platform, dateRange, customStart, custo
       id: a.id, name: a.name,
       format: detectFormat(a, i),
       language: a.language ?? "All Languages",
-      spend: a.spend, impressions: a.impressions, clicks: a.clicks, conversions: a.conversions,
+      spend: a.spend, impressions: a.impressions, clicks: a.clicks, conversions: a.conversions, conversionValue: a.conversionValue,
       ctr: a.impressions > 0 ? (a.clicks / a.impressions) * 100 : 0,
       cpm: a.impressions > 0 ? (a.spend / a.impressions) * 1000 : 0,
       cpc: a.clicks > 0 ? a.spend / a.clicks : 0,
       roas: a.spend > 0 ? a.conversionValue / a.spend : 0,
+      cpa: a.conversions > 0 ? a.spend / a.conversions : 0,
+      cvr: a.clicks > 0 ? (a.conversions / a.clicks) * 100 : 0,
+      aov: a.conversions > 0 ? a.conversionValue / a.conversions : 0,
     })),
     [rawAds]
   );
@@ -836,6 +849,18 @@ export default function CreativeReport({ platform, dateRange, customStart, custo
 
       {/* Section 4: Top 50 */}
       <TopCreativesTable ads={ads} currency={currency} />
+
+      <TabSummaryFooter
+        tabName="Creative Intelligence"
+        lines={[
+          `${ads.length} ad creative${ads.length !== 1 ? "s" : ""} analysed — ${formatRows.length} format${formatRows.length !== 1 ? "s" : ""} detected.`,
+          `${fatigueRows.length} ad set${fatigueRows.length !== 1 ? "s" : ""} showing creative fatigue signals.`,
+          `Date window: ${startDate} → ${endDate}.`,
+        ]}
+        context={{ adCount: ads.length, formatCount: formatRows.length, fatigueCount: fatigueRows.length, startDate, endDate }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

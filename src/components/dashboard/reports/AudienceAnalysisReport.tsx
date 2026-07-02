@@ -11,9 +11,15 @@
 
 import { useState, useMemo, useRef, useEffect } from "react";
 import {
-  MapPin, Download, ChevronDown, ChevronRight, ArrowUpDown, LayersIcon, Check,
+  MapPin, Download, ChevronDown, ChevronRight, LayersIcon, Check,
 } from "lucide-react";
+import { ColumnPickerButton, ALL_STANDARD_KPIS } from "@/components/shared/ColumnPicker";
+import { formatStandardKpi, FETCHABLE_KPIS } from "@/lib/standard-kpis";
+import { usePersistentColumns, usePersistentValue } from "@/hooks/useColumnPrefs";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import { useMetaBreakdown, type BreakdownRow } from "@/hooks/useMetaBreakdown";
 import { useAdSetInsights } from "@/hooks/useAdSetInsights";
 import { classifyAdSet, AUDIENCE_COLORS, type AudienceClass } from "@/lib/audience-classifier";
@@ -181,43 +187,81 @@ const btnCls = "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs 
 type GeoLevel = "country" | "region";
 const GEO_LEVEL_LABELS: Record<GeoLevel, string> = { country: "Country", region: "Region" };
 
+interface GeoColDef { id: string; label: string; group: string; fmt: "money" | "int" | "pct" | "x" | "decimal"; defaultOn: boolean; }
+const GEO_ALL_COLS: GeoColDef[] = [
+  { id: "impressions",     label: "Impressions", group: "Display",    fmt: "int",     defaultOn: true  },
+  { id: "reach",           label: "Reach",       group: "Display",    fmt: "int",     defaultOn: false },
+  { id: "frequency",       label: "Frequency",   group: "Display",    fmt: "decimal", defaultOn: false },
+  { id: "cpm",             label: "CPM",         group: "Display",    fmt: "money",   defaultOn: true  },
+  { id: "clicks",          label: "Clicks",      group: "Engagement", fmt: "int",     defaultOn: true  },
+  { id: "ctr",             label: "CTR",         group: "Engagement", fmt: "pct",     defaultOn: true  },
+  { id: "cpc",             label: "CPC",         group: "Engagement", fmt: "money",   defaultOn: true  },
+  { id: "spend",           label: "Spend",       group: "Engagement", fmt: "money",   defaultOn: true  },
+  { id: "conversions",     label: "Conversions", group: "Conversion", fmt: "int",     defaultOn: false },
+  { id: "conversionValue", label: "Revenue",     group: "Conversion", fmt: "money",   defaultOn: false },
+  { id: "roas",            label: "ROAS",        group: "Conversion", fmt: "x",       defaultOn: false },
+  { id: "cpa",             label: "CPA",         group: "Conversion", fmt: "money",   defaultOn: false },
+  { id: "cvr",             label: "CVR",         group: "Conversion", fmt: "pct",     defaultOn: false },
+  { id: "aov",             label: "AOV",         group: "Conversion", fmt: "money",   defaultOn: false },
+];
+const GEO_DEFAULT_COLS = GEO_ALL_COLS.filter(c => c.defaultOn).map(c => c.id);
+
+function GeoColPicker({ cols, setCols }: { cols: string[]; setCols: (c: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const toggleCol = (id: string) => {
+    if (cols.includes(id)) { if (cols.length > 1) setCols(cols.filter(c => c !== id)); }
+    else setCols([...cols, id]);
+  };
+  return (
+    <ColumnPickerButton
+      cols={cols}
+      allDefs={FETCHABLE_KPIS}
+      defaultIds={GEO_DEFAULT_COLS}
+      pickerOpen={open}
+      setPickerOpen={setOpen}
+      pickerRef={ref}
+      toggleCol={toggleCol}
+      resetCols={(ids) => setCols([...ids])}
+    />
+  );
+}
+
 function GeoExplorer({
-  countryRows, regionRows, loadingCountry, loadingRegion, currency,
+  countryRows, regionRows, cityRows, loadingCountry, loadingRegion, loadingCity, currency,
 }: {
   countryRows: BreakdownRow[];
   regionRows: BreakdownRow[];
+  cityRows: BreakdownRow[];
   loadingCountry: boolean;
   loadingRegion: boolean;
+  loadingCity: boolean;
   currency: string;
 }) {
   const [level, setLevel] = useState<GeoLevel>("country");
   const [levelOpen, setLevelOpen] = useState(false);
-  const [sortKey, setSortKey] = useState<"impressions" | "spend" | "clicks" | "ctr">("spend");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [cols, setCols] = usePersistentColumns("geo", GEO_DEFAULT_COLS);
 
   const rows = level === "country" ? countryRows : regionRows;
   const loading = level === "country" ? loadingCountry : loadingRegion;
 
   const enriched = useMemo(() => rows.map(r => ({
     ...r,
-    ctr: r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0,
-    cpm: r.impressions > 0 ? (r.spend / r.impressions) * 1000 : 0,
-    cpc: r.clicks > 0 ? r.spend / r.clicks : 0,
+    reach: r.reach ?? 0,
+    frequency: r.frequency ?? (r.reach && r.reach > 0 ? r.impressions / r.reach : 0),
+    ctr:  r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0,
+    cpm:  r.impressions > 0 ? (r.spend / r.impressions) * 1000 : 0,
+    cpc:  r.clicks > 0 ? r.spend / r.clicks : 0,
+    cpa:  r.conversions > 0 ? r.spend / r.conversions : 0,
+    roas: r.spend > 0 ? r.conversionValue / r.spend : 0,
+    cvr:  r.clicks > 0 ? (r.conversions / r.clicks) * 100 : 0,
+    aov:  r.conversions > 0 ? r.conversionValue / r.conversions : 0,
   })), [rows]);
 
-  const sorted = useMemo(() => {
-    const cp = [...enriched];
-    cp.sort((a, b) => sortDir === "desc" ? b[sortKey] - a[sortKey] : a[sortKey] - b[sortKey]);
-    return cp;
-  }, [enriched, sortKey, sortDir]);
+  const { sorted, sort: geoSort, toggle: geoToggle } = useSort(enriched, "spend", "desc");
 
   const top10 = useMemo(() => [...enriched].sort((a, b) => b.spend - a.spend).slice(0, 10), [enriched]);
-
-  const toggleSort = (k: typeof sortKey) => {
-    if (sortKey === k) setSortDir(d => d === "asc" ? "desc" : "asc");
-    else { setSortKey(k); setSortDir("desc"); }
-  };
 
   const downloadCsv = () => {
     const header = "Country,Impressions,Clicks,CTR,CPM,CPC,Spend\n";
@@ -231,7 +275,7 @@ function GeoExplorer({
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
       <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <MapPin className="w-4 h-4 text-blue-500" />
@@ -256,6 +300,7 @@ function GeoExplorer({
               </>
             )}
           </div>
+          <GeoColPicker cols={cols} setCols={setCols} />
           <button onClick={downloadCsv} className={btnCls}>
             <Download className="w-3.5 h-3.5" /> Download
           </button>
@@ -292,19 +337,15 @@ function GeoExplorer({
             </div>
 
             {/* Right: sortable table */}
-            <div className="flex-1 min-w-0 overflow-x-auto">
+            <div className="flex-1 min-w-0">
               <table className="w-full text-sm">
-                <thead>
+                <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
                   <tr className="border-b border-gray-100">
-                    <th className="py-2 text-left text-[11px] font-semibold text-gray-500 uppercase">Geo</th>
-                    {([["impressions", "Impr."], ["clicks", "Clicks"], ["ctr", "CTR"], ["spend", "Spend"]] as const).map(([k, lbl]) => (
-                      <th key={k} className="py-2 px-2 text-right text-[11px] font-semibold text-gray-500 uppercase cursor-pointer hover:text-gray-800 whitespace-nowrap"
-                        onClick={() => toggleSort(k as typeof sortKey)}>
-                        {lbl} {sortKey === k ? (sortDir === "desc" ? "↓" : "↑") : <ArrowUpDown className="w-2.5 h-2.5 inline opacity-40" />}
-                      </th>
-                    ))}
-                    <th className="py-2 px-2 text-right text-[11px] font-semibold text-gray-500 uppercase">CPM</th>
-                    <th className="py-2 px-2 text-right text-[11px] font-semibold text-gray-500 uppercase">CPC</th>
+                    <SortTh col="label" sort={geoSort} onToggle={geoToggle} className="py-2 text-[11px] uppercase font-semibold text-gray-500">Geo</SortTh>
+                    {cols.map(id => {
+                      const def = GEO_ALL_COLS.find(c => c.id === id) ?? ALL_STANDARD_KPIS.find(c => c.id === id);
+                      return <SortTh key={id} col={id} sort={geoSort} onToggle={geoToggle} className="py-2 px-2 text-[11px] uppercase font-semibold text-gray-500 whitespace-nowrap" align="right">{def?.label ?? id}</SortTh>;
+                    })}
                   </tr>
                 </thead>
                 <tbody>
@@ -320,20 +361,87 @@ function GeoExplorer({
                               {r.label}
                             </div>
                           </td>
-                          <td className="py-2.5 px-2 text-right text-xs text-gray-600 tabular-nums">{compact(r.impressions)}</td>
-                          <td className="py-2.5 px-2 text-right text-xs text-gray-600 tabular-nums">{compact(r.clicks)}</td>
-                          <td className="py-2.5 px-2 text-right text-xs text-gray-600 tabular-nums">{pct(r.ctr)}</td>
-                          <td className="py-2.5 px-2 text-right text-xs text-gray-600 tabular-nums">{formatMoney(r.spend, currency, 0)}</td>
-                          <td className="py-2.5 px-2 text-right text-xs text-gray-600 tabular-nums">{formatMoney(r.cpm, currency, 0)}</td>
-                          <td className="py-2.5 px-2 text-right text-xs text-gray-600 tabular-nums">{formatMoney(r.cpc, currency, 0)}</td>
+                          {cols.map(id => {
+                            const def = GEO_ALL_COLS.find(c => c.id === id);
+                            let cell = "—";
+                            if (def) {
+                              const v = (r as unknown as Record<string, number>)[id] ?? 0;
+                              if (Number.isFinite(v) && v !== 0) {
+                                if (def.fmt === "money")   cell = formatMoney(v, currency, 0);
+                                else if (def.fmt === "pct") cell = pct(v);
+                                else if (def.fmt === "x")   cell = `${v.toFixed(2)}×`;
+                                else if (def.fmt === "decimal") cell = v.toFixed(2);
+                                else                        cell = compact(v);
+                              } else if (v === 0) cell = "0";
+                            } else {
+                              cell = formatStandardKpi(r, id, currency);
+                            }
+                            return <td key={id} className="py-2.5 px-2 text-right text-xs text-gray-600 tabular-nums">{cell}</td>;
+                          })}
                         </tr>
-                        {isOpen && (
+                        {isOpen && level === "country" && (
                           <tr key={`${r.label}-exp`} className="border-b border-gray-50">
-                            <td colSpan={7} className="py-2 px-6 text-[11px] text-gray-400 italic bg-gray-50">
-                              {level === "country" ? "Switch to Region view for state/city breakdown." : "City-level drill-down requires additional API permissions."}
+                            <td colSpan={cols.length + 1} className="py-2 px-6 text-[11px] text-gray-400 italic bg-gray-50">
+                              Switch to Region view for state/city breakdown.
                             </td>
                           </tr>
                         )}
+                        {isOpen && level === "region" && (() => {
+                          const childCities = cityRows
+                            .filter(cr => (cr.breakdownValues.region ?? "").toLowerCase() === r.label.toLowerCase())
+                            .map(cr => ({
+                              ...cr,
+                              cityLabel: cr.breakdownValues.city || cr.label.split("·").pop()?.trim() || cr.label,
+                              reach: cr.reach ?? 0,
+                              frequency: cr.frequency ?? (cr.reach && cr.reach > 0 ? cr.impressions / cr.reach : 0),
+                              ctr:  cr.impressions > 0 ? (cr.clicks / cr.impressions) * 100 : 0,
+                              cpm:  cr.impressions > 0 ? (cr.spend / cr.impressions) * 1000 : 0,
+                              cpc:  cr.clicks > 0 ? cr.spend / cr.clicks : 0,
+                              cpa:  cr.conversions > 0 ? cr.spend / cr.conversions : 0,
+                              roas: cr.spend > 0 ? cr.conversionValue / cr.spend : 0,
+                              cvr:  cr.clicks > 0 ? (cr.conversions / cr.clicks) * 100 : 0,
+                              aov:  cr.conversions > 0 ? cr.conversionValue / cr.conversions : 0,
+                            }))
+                            .sort((a, b) => b.spend - a.spend);
+                          if (loadingCity) {
+                            return (
+                              <tr key={`${r.label}-loading`} className="border-b border-gray-50 bg-gray-50">
+                                <td colSpan={cols.length + 1} className="py-2 px-12 text-[11px] text-gray-400 italic">Loading cities…</td>
+                              </tr>
+                            );
+                          }
+                          if (childCities.length === 0) {
+                            return (
+                              <tr key={`${r.label}-empty`} className="border-b border-gray-50 bg-gray-50">
+                                <td colSpan={cols.length + 1} className="py-2 px-12 text-[11px] text-gray-400 italic">No city-level data reported by Meta for {r.label} in this window.</td>
+                              </tr>
+                            );
+                          }
+                          return childCities.map(city => (
+                            <tr key={`${r.label}-${city.cityLabel}`} className="border-b border-gray-50 bg-gray-50/70 hover:bg-gray-100">
+                              <td className="py-1.5 pl-10 text-gray-600 text-xs">
+                                <span className="text-[10px] text-gray-400 mr-2">↳</span>{city.cityLabel}
+                              </td>
+                              {cols.map(id => {
+                                const def = GEO_ALL_COLS.find(c => c.id === id);
+                                let cell = "—";
+                                if (def) {
+                                  const v = (city as unknown as Record<string, number>)[id] ?? 0;
+                                  if (Number.isFinite(v) && v !== 0) {
+                                    if (def.fmt === "money")   cell = formatMoney(v, currency, 0);
+                                    else if (def.fmt === "pct") cell = pct(v);
+                                    else if (def.fmt === "x")   cell = `${v.toFixed(2)}×`;
+                                    else if (def.fmt === "decimal") cell = v.toFixed(2);
+                                    else                        cell = compact(v);
+                                  } else if (v === 0) cell = "0";
+                                } else {
+                                  cell = formatStandardKpi(city, id, currency);
+                                }
+                                return <td key={id} className="py-1.5 px-2 text-right text-[11px] text-gray-600 tabular-nums">{cell}</td>;
+                              })}
+                            </tr>
+                          ));
+                        })()}
                       </>
                     );
                   })}
@@ -349,19 +457,58 @@ function GeoExplorer({
 
 // ─── Age Profile (March of Progress) ─────────────────────────────────────────
 
-type ChartMetric = "impressions" | "clicks" | "spend" | "conversions";
+type ChartMetric =
+  | "impressions" | "reach" | "frequency" | "cpm"
+  | "clicks" | "ctr" | "cpc" | "spend"
+  | "conversions" | "conversionValue" | "roas" | "cpa" | "cvr" | "aov";
 const CHART_METRIC_LABELS: Record<ChartMetric, string> = {
-  impressions: "Impressions", clicks: "Clicks", spend: "Spend", conversions: "Conversions",
+  impressions: "Impressions", reach: "Reach", frequency: "Frequency", cpm: "CPM",
+  clicks: "Clicks", ctr: "CTR", cpc: "CPC", spend: "Spend",
+  conversions: "Conversions", conversionValue: "Revenue", roas: "ROAS", cpa: "CPA", cvr: "CVR", aov: "AOV",
 };
 
+function formatChartMetric(v: number, m: ChartMetric, currency: string): string {
+  if (!Number.isFinite(v) || v === 0) return v === 0 ? (m === "ctr" || m === "cvr" ? "0%" : m === "roas" ? "0.00×" : "0") : "—";
+  if (m === "spend" || m === "conversionValue" || m === "cpm" || m === "cpc" || m === "cpa" || m === "aov") return formatMoney(v, currency, 0);
+  if (m === "ctr" || m === "cvr") return `${v.toFixed(2)}%`;
+  if (m === "roas") return `${v.toFixed(2)}×`;
+  if (m === "frequency") return v.toFixed(2);
+  return compact(v);
+}
+
+function chartMetricValue(r: BreakdownRow | undefined, m: ChartMetric): number {
+  if (!r) return 0;
+  const imps = r.impressions || 0;
+  const clicks = r.clicks || 0;
+  const spend = r.spend || 0;
+  const conversions = r.conversions || 0;
+  const conversionValue = r.conversionValue || 0;
+  const reach = r.reach ?? 0;
+  switch (m) {
+    case "impressions":     return imps;
+    case "reach":           return reach;
+    case "frequency":       return reach > 0 ? imps / reach : 0;
+    case "cpm":             return imps > 0 ? (spend / imps) * 1000 : 0;
+    case "clicks":          return clicks;
+    case "ctr":             return imps > 0 ? (clicks / imps) * 100 : 0;
+    case "cpc":             return clicks > 0 ? spend / clicks : 0;
+    case "spend":           return spend;
+    case "conversions":     return conversions;
+    case "conversionValue": return conversionValue;
+    case "roas":            return spend > 0 ? conversionValue / spend : 0;
+    case "cpa":             return conversions > 0 ? spend / conversions : 0;
+    case "cvr":             return clicks > 0 ? (conversions / clicks) * 100 : 0;
+    case "aov":             return conversions > 0 ? conversionValue / conversions : 0;
+  }
+}
+
 function AgeProfile({ rows, loading, currency }: { rows: BreakdownRow[]; loading: boolean; currency: string }) {
-  const [metric, setMetric] = useState<ChartMetric>("impressions");
+  const [metric, setMetric] = usePersistentValue<ChartMetric>("audience-age-metric", "impressions");
   const [metricOpen, setMetricOpen] = useState(false);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
 
-  const valueOf = (r: BreakdownRow): number =>
-    metric === "impressions" ? r.impressions : metric === "clicks" ? r.clicks : metric === "spend" ? r.spend : r.conversions;
+  const valueOf = (r: BreakdownRow): number => chartMetricValue(r, metric);
 
   const total = useMemo(() => rows.reduce((s, r) => s + valueOf(r), 0), [rows, metric]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -417,7 +564,7 @@ function AgeProfile({ rows, loading, currency }: { rows: BreakdownRow[]; loading
           March of Progress — figure height encodes share of {CHART_METRIC_LABELS[metric].toLowerCase()}; ape (left) → modern human (right).
           <span className="ml-2 not-italic text-gray-500">
             {activeIdx !== null && columns[activeIdx]
-              ? `${columns[activeIdx].row.label}: ${compact(columns[activeIdx].value)} ${metric} · ${pct(columns[activeIdx].share * 100)}`
+              ? `${columns[activeIdx].row.label}: ${formatChartMetric(columns[activeIdx].value, metric, currency)} ${CHART_METRIC_LABELS[metric].toLowerCase()} · ${pct(columns[activeIdx].share * 100)}`
               : "Hover or tap any figure to inspect."}
           </span>
         </p>
@@ -479,13 +626,10 @@ function AgeProfile({ rows, loading, currency }: { rows: BreakdownRow[]; loading
 // ─── Gender Split ─────────────────────────────────────────────────────────────
 
 function GenderSplit({ rows, loading }: { rows: BreakdownRow[]; loading: boolean }) {
-  const [metric, setMetric] = useState<ChartMetric>("impressions");
+  const [metric, setMetric] = usePersistentValue<ChartMetric>("audience-gender-metric", "impressions");
   const [metricOpen, setMetricOpen] = useState(false);
 
-  const valueOf = (r: BreakdownRow | undefined): number => {
-    if (!r) return 0;
-    return metric === "impressions" ? r.impressions : metric === "clicks" ? r.clicks : metric === "spend" ? r.spend : r.conversions;
-  };
+  const valueOf = (r: BreakdownRow | undefined): number => chartMetricValue(r, metric);
 
   const female = rows.find(r => /^f/i.test(r.label));
   const male   = rows.find(r => /^m/i.test(r.label));
@@ -605,9 +749,9 @@ function CustomCohorts({
   countryRows: BreakdownRow[];
   deviceRows: BreakdownRow[];
 }) {
-  const [xDim, setXDim] = useState<CohortDim>("impression_device");
-  const [yDim, setYDim] = useState<CohortDim>("age");
-  const [metricKey, setMetricKey] = useState<ChartMetric>("impressions");
+  const [xDim, setXDim] = usePersistentValue<CohortDim>("audience-cohort-xdim", "impression_device");
+  const [yDim, setYDim] = usePersistentValue<CohortDim>("audience-cohort-ydim", "age");
+  const [metricKey, setMetricKey] = usePersistentValue<ChartMetric>("audience-cohort-metric", "impressions");
   const [xOpen, setXOpen] = useState(false);
   const [yOpen, setYOpen] = useState(false);
   const [metricOpen, setMetricOpen] = useState(false);
@@ -721,9 +865,9 @@ function CustomCohorts({
             {sameAxis ? "Pick different dimensions for X and Y axes." : "No data for selected dimensions."}
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div>
             <table className="w-full text-xs border-separate" style={{ borderSpacing: "3px" }}>
-              <thead>
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
                 <tr>
                   <th className="pb-1 pr-2 text-left text-[10px] text-gray-500 font-bold uppercase whitespace-nowrap">
                     {DIM_LABELS[yDim]} ↓ / {DIM_LABELS[xDim]} →
@@ -786,12 +930,11 @@ const COHORT_COLS: { id: CohortCol; label: string }[] = [
 const COHORT_DEFAULT_COLS: CohortCol[] = ["impressions", "ctr", "convRate", "spend"];
 
 function CohortDetail({ rows, currency }: { rows: CohortRow[]; currency: string }) {
-  const [sortKey, setSortKey] = useState<CohortCol>("impressions");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [columns, setColumns] = useState<CohortCol[]>(COHORT_DEFAULT_COLS);
   const [colMenuOpen, setColMenuOpen] = useState(false);
   const [swapIdx, setSwapIdx] = useState<number | null>(null);
   const swapRef = useRef<HTMLDivElement>(null);
+  const { sorted, sort: cohortSort, toggle: cohortToggle } = useSort(rows, "impressions", "desc");
 
   useEffect(() => {
     if (swapIdx === null) return;
@@ -801,11 +944,6 @@ function CohortDetail({ rows, currency }: { rows: CohortRow[]; currency: string 
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, [swapIdx]);
-
-  const sorted = useMemo(() =>
-    [...rows].sort((a, b) => sortDir === "desc" ? b[sortKey] - a[sortKey] : a[sortKey] - b[sortKey]),
-    [rows, sortKey, sortDir]
-  );
 
   const fmtCell = (v: number, col: CohortCol) => {
     if (col === "ctr" || col === "convRate") return pct(v);
@@ -854,22 +992,17 @@ function CohortDetail({ rows, currency }: { rows: CohortRow[]; currency: string 
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div>
           <table className="w-full text-sm">
-            <thead>
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr className="border-b border-gray-100">
-                <th className="pb-2 text-left text-[11px] font-semibold text-gray-500 uppercase">Segment</th>
+                <SortTh col="segment" sort={cohortSort} onToggle={cohortToggle} className="pb-2 text-[11px] uppercase font-semibold text-gray-500">Segment</SortTh>
                 {columns.map((c, colIdx) => {
                   const def = COHORT_COLS.find(d => d.id === c)!;
-                  const isSorted = sortKey === c;
                   return (
                     <th key={c} className="pb-2 px-2 text-right text-[11px] font-semibold text-gray-500 uppercase whitespace-nowrap">
                       <div className="relative inline-flex items-center gap-1 justify-end">
-                        <button onClick={() => { setSortKey(c); setSortDir(d => isSorted ? (d === "asc" ? "desc" : "asc") : "desc"); }}
-                          className="hover:text-gray-800 flex items-center gap-1">
-                          {def.label}
-                          {isSorted ? <span className="text-blue-500 text-[10px]">{sortDir === "asc" ? "↑" : "↓"}</span> : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                        </button>
+                        <SortTh col={c} sort={cohortSort} onToggle={cohortToggle} className="text-[11px] uppercase font-semibold text-gray-500" align="right">{def.label}</SortTh>
                         <button onClick={() => setSwapIdx(swapIdx === colIdx ? null : colIdx)}
                           className="text-gray-300 hover:text-gray-500 transition shrink-0 ml-0.5" title="Change column">
                           <svg className="w-2.5 h-2.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 2v6M2 5l3 3 3-3"/></svg>
@@ -930,6 +1063,7 @@ export default function AudienceAnalysisReport({ platform, dateRange, customStar
   const { rows: genderRows,  loading: genLoading    } = useMetaBreakdown("gender",            dateRange, customStart, customEnd);
   const { rows: countryRows, loading: countryLoading } = useMetaBreakdown("country",          dateRange, customStart, customEnd);
   const { rows: regionRows,  loading: regionLoading  } = useMetaBreakdown("region",           dateRange, customStart, customEnd);
+  const { rows: cityRows,    loading: cityLoading    } = useMetaBreakdown("region,city",      dateRange, customStart, customEnd);
   const { rows: deviceRows                           } = useMetaBreakdown("impression_device", dateRange, customStart, customEnd);
 
   const { adsets, audienceMap, currency } = useAdSetInsights(effective, dateRange, customStart, customEnd);
@@ -975,8 +1109,10 @@ export default function AudienceAnalysisReport({ platform, dateRange, customStar
       <GeoExplorer
         countryRows={countryRows}
         regionRows={regionRows}
+        cityRows={cityRows}
         loadingCountry={countryLoading}
         loadingRegion={regionLoading}
+        loadingCity={cityLoading}
         currency={currency}
       />
       <AgeProfile rows={ageRows} loading={ageLoading} currency={currency} />
@@ -989,6 +1125,36 @@ export default function AudienceAnalysisReport({ platform, dateRange, customStar
           Audience Analysis uses Meta insights — switch Platform to Meta or Both for data.
         </div>
       )}
+
+      <TabSummaryFooter
+        tabName="Audience Analysis"
+        lines={[
+          `${ageRows.length} age group${ageRows.length !== 1 ? "s" : ""} · ${countryRows.length} countr${countryRows.length !== 1 ? "ies" : "y"} · ${genderRows.length} gender segment${genderRows.length !== 1 ? "s" : ""} in this window.`,
+          `${cohortRows.length} audience cohort${cohortRows.length !== 1 ? "s" : ""} identified from ad-set targeting.`,
+          `Date window: ${startDate} → ${endDate}.`,
+        ]}
+        context={{
+          ageGroups: ageRows.length,
+          countries: countryRows.length,
+          cohorts: cohortRows.length,
+          window: `${startDate} → ${endDate}`,
+          ageBreakdown: ageRows.map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions })),
+          genderBreakdown: genderRows.map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions })),
+          countryBreakdown: countryRows.map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions })),
+          cohortBreakdown: cohortRows.map(r => ({
+            segment: r.segment,
+            impressions: r.impressions,
+            clicks: r.clicks,
+            spend: r.spend,
+            conversions: r.conversions,
+            ctr: r.ctr,
+            convRate: r.convRate,
+            cpm: r.cpm,
+          })),
+        }}
+        platform="meta"
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

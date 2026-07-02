@@ -9,6 +9,7 @@ import ConnectCta from "@/components/shared/ConnectCta";
 import { TermText } from "@/components/shared/Term";
 import BenchmarkSourceSwitcher from "@/components/dashboard/BenchmarkSourceSwitcher";
 import { AlertCircle, AlertTriangle, Info } from "lucide-react";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform?: "meta" | "google" | "both";
@@ -41,6 +42,8 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
     if (dropOff <= dropOffThreshold) return "Moderate";
     return "Critical";
   };
+  const STATUS_RANK: Record<string, number> = { Critical: 2, Moderate: 1, Healthy: 0 };
+  const withRank = (s: string) => STATUS_RANK[s] ?? 0;
 
   // Derive funnel counts from real pixel data when available (date-scoped via useAudit).
   // Falls back to illustrative demo numbers when no real connection exists.
@@ -68,29 +71,34 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
         const rate = topCount > 0 ? +(count / topCount * 100).toFixed(1) : 0;
         const prevCount = i === 0 ? topCount : (eventMap[stages[i - 1].stage] || 1);
         const dropOff = prevCount > 0 ? Math.round((1 - count / prevCount) * 100) : 0;
-        return { stage: s.stage, count, rate, dropOff, benchmark: benchFor(s.stage, s.defaultBenchmark), status: getDropOffStatus(dropOff) };
+        const status = getDropOffStatus(dropOff);
+        return { stage: s.stage, count, rate, dropOff, benchmark: benchFor(s.stage, s.defaultBenchmark), status, statusRank: withRank(status) };
       });
     }
     // Demo fallback
-    return [
-      { stage: "PageView", count: 125000, rate: 100, dropOff: 0, benchmark: benchFor("PageView", 100), status: getDropOffStatus(0) },
-      { stage: "ViewContent", count: 95000, rate: 76, dropOff: 24, benchmark: benchFor("ViewContent", 80), status: getDropOffStatus(24) },
-      { stage: "AddToCart", count: 45000, rate: 36, dropOff: 52, benchmark: benchFor("AddToCart", 25), status: getDropOffStatus(52) },
-      { stage: "InitiateCheckout", count: 15000, rate: 12, dropOff: 67, benchmark: benchFor("InitiateCheckout", 10), status: getDropOffStatus(67) },
-      { stage: "AddPaymentInfo", count: 11000, rate: 8.8, dropOff: 27, benchmark: benchFor("AddPaymentInfo", 7), status: getDropOffStatus(27) },
-      { stage: "Purchase", count: 8500, rate: 6.8, dropOff: 23, benchmark: benchFor("Purchase", 3), status: getDropOffStatus(23) },
-    ];
+    return [0, 24, 52, 67, 27, 23].map((dropOff, i) => {
+      const stages = [
+        { stage: "PageView",          count: 125000, rate: 100,  benchmark: benchFor("PageView", 100) },
+        { stage: "ViewContent",       count: 95000,  rate: 76,   benchmark: benchFor("ViewContent", 80) },
+        { stage: "AddToCart",         count: 45000,  rate: 36,   benchmark: benchFor("AddToCart", 25) },
+        { stage: "InitiateCheckout",  count: 15000,  rate: 12,   benchmark: benchFor("InitiateCheckout", 10) },
+        { stage: "AddPaymentInfo",    count: 11000,  rate: 8.8,  benchmark: benchFor("AddPaymentInfo", 7) },
+        { stage: "Purchase",          count: 8500,   rate: 6.8,  benchmark: benchFor("Purchase", 3) },
+      ][i];
+      const status = getDropOffStatus(dropOff);
+      return { ...stages, dropOff, status, statusRank: withRank(status) };
+    });
   };
 
   const funnelMeta = buildMetaFunnel();
   const { sorted: sortedMeta, sort: metaSort, toggle: metaToggle } = useSort(funnelMeta, "dropOff", "desc");
 
   const funnelGoogle = [
-    { stage: "view_item", count: 125000, rate: 100, dropOff: 0, benchmark: benchFor("view_item", 100), status: getDropOffStatus(0) },
-    { stage: "add_to_cart", count: 42000, rate: 33.6, dropOff: 66, benchmark: benchFor("add_to_cart", 35), status: getDropOffStatus(66) },
-    { stage: "begin_checkout", count: 14200, rate: 11.4, dropOff: 66, benchmark: benchFor("begin_checkout", 12), status: getDropOffStatus(66) },
-    { stage: "purchase", count: 8500, rate: 6.8, dropOff: 40, benchmark: benchFor("purchase", 3), status: getDropOffStatus(40) },
-  ];
+    { stage: "view_item",      count: 125000, rate: 100,  dropOff: 0,  benchmark: benchFor("view_item", 100) },
+    { stage: "add_to_cart",    count: 42000,  rate: 33.6, dropOff: 66, benchmark: benchFor("add_to_cart", 35) },
+    { stage: "begin_checkout", count: 14200,  rate: 11.4, dropOff: 66, benchmark: benchFor("begin_checkout", 12) },
+    { stage: "purchase",       count: 8500,   rate: 6.8,  dropOff: 40, benchmark: benchFor("purchase", 3) },
+  ].map((r) => { const status = getDropOffStatus(r.dropOff); return { ...r, status, statusRank: withRank(status) }; });
   const { sorted: sortedGoogle, sort: googleSort, toggle: googleToggle } = useSort(funnelGoogle, "dropOff", "desc");
 
   // Build recommendations from REAL funnel data — no hardcoded values.
@@ -224,7 +232,7 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
                       />
                     </span>
                   </th>
-                  <SortTh col="status" sort={metaSort} onToggle={metaToggle} className="px-6 py-3" align="center">Status</SortTh>
+                  <SortTh col="statusRank" sort={metaSort} onToggle={metaToggle} className="px-6 py-3" align="center">Status</SortTh>
                   <th className="px-6 py-3 text-left font-semibold text-gray-700">Recommendation</th>
                 </tr>
               </thead>
@@ -291,7 +299,7 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
                       />
                     </span>
                   </th>
-                  <SortTh col="status" sort={googleSort} onToggle={googleToggle} className="px-6 py-3" align="center">Status</SortTh>
+                  <SortTh col="statusRank" sort={googleSort} onToggle={googleToggle} className="px-6 py-3" align="center">Status</SortTh>
                   <th className="px-6 py-3 text-left font-semibold text-gray-700">Recommendation</th>
                 </tr>
               </thead>
@@ -335,6 +343,38 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
         <ConnectCta platform="Google" />
       )}
 
+      <TabSummaryFooter
+        tabName="Funnel Audit"
+        lines={[
+          `${funnelMeta.length}-stage Meta funnel analysed — overall conversion rate: ${funnelMeta.find(f => f.stage === "Purchase")?.rate ?? 0}% (PageView → Purchase).`,
+          `${recommendations.filter(r => r.severity === "Critical").length} critical drop-off issue${recommendations.filter(r => r.severity === "Critical").length !== 1 ? "s" : ""} detected — ${recommendations.length} total funnel recommendations.`,
+          funnelMeta.length > 0
+            ? `Largest drop-off: ${funnelMeta.filter(f => f.dropOff > 0).reduce<typeof funnelMeta[0] | null>((b, f) => (!b || f.dropOff > b.dropOff ? f : b), null)?.stage ?? "—"}.`
+            : "No funnel data available for this window.",
+        ]}
+        context={{
+          stages: funnelMeta.length,
+          recommendations: recommendations.length,
+          funnelMeta: funnelMeta.map(f => ({
+            stage: f.stage,
+            count: f.count,
+            rate: f.rate,
+            dropOff: f.dropOff,
+            benchmark: f.benchmark,
+            status: f.status,
+          })),
+          funnelGoogle: funnelGoogle.map(f => ({
+            stage: f.stage,
+            count: f.count,
+            rate: f.rate,
+            dropOff: f.dropOff,
+            benchmark: f.benchmark,
+            status: f.status,
+          })),
+        }}
+        platform={platform === "both" ? "meta" : (platform ?? "meta")}
+        dateRange={String(dateRange ?? "30d")}
+      />
     </div>
   );
 }

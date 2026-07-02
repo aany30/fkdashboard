@@ -182,7 +182,7 @@ export default async function handler(
   try {
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
-      model: "claude-haiku-4-5",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1200,
       system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
       output_config: { format: { type: "json_schema", schema: OUTPUT_SCHEMA } },

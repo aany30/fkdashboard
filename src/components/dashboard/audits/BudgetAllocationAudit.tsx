@@ -7,8 +7,9 @@ import AttributionInfo from "@/components/shared/AttributionInfo";
 import { useSort } from "@/hooks/useSort";
 import SortTh from "@/components/shared/SortTh";
 import { detectCurrency, formatMoney } from "@/lib/currency";
-import { TrendingUp, TrendingDown, AlertCircle, CheckCircle2 } from "lucide-react";
-
+import { TrendingUp, TrendingDown, AlertCircle, CheckCircle2, Sparkles, Loader2 } from "lucide-react";
+import { toDisplayCredits } from "@/lib/ai-cost";
+import { isDemoCredential } from "@/lib/demo-data";
 /**
  * Budget Allocation = honest, date-range-scoped SPEND REPORT (Meta-export style).
  *
@@ -32,9 +33,93 @@ function fmtDate(iso?: string): string {
   return isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-export default function BudgetAllocationAudit({ campaigns, dateRange }: AuditProps) {
+// ── Per-row AI recommendation ────────────────────────────────────────────────
+// Calls /api/ai/chat with this campaign's real snapshot + the static finding
+// already on the row. Returns 2–4 concrete next steps tailored to THIS campaign.
+const AI_RECO_ESTIMATE = `~${toDisplayCredits(0.0018).toFixed(2)}`;
+
+interface RowAiRecoProps {
+  campaignContext: Record<string, unknown>;
+  findingLabel: string;
+  findingDetail: string;
+  isDemo: boolean;
+}
+
+function RowAiReco({ campaignContext, findingLabel, findingDetail, isDemo }: RowAiRecoProps) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const { addAiCredits } = useAuthStore();
+
+  const ask = async () => {
+    if (answer || loading) { setOpen(true); return; }
+    setOpen(true);
+    setLoading(true);
+    setError(null);
+    try {
+      const question = `Finding: ${findingLabel} — ${findingDetail}\n\nGive me 2–4 specific next steps for THIS campaign only. Reference the campaign's actual numbers. Each step on its own line starting with "•". Skip generic advice.`;
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, context: campaignContext, platform: "meta", isDemo }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody?.error || `HTTP ${res.status}`);
+      }
+      const json = await res.json();
+      setAnswer(json.answer || "(no response)");
+      if (json.creditsUsedUsd) addAiCredits(json.creditsUsedUsd);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "AI request failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      {!open && (
+        <button
+          onClick={ask}
+          className="inline-flex items-center gap-1 text-[10px] font-semibold text-violet-700 hover:text-violet-900 hover:underline"
+        >
+          <Sparkles className="w-3 h-3" />
+          Ask AI for next steps
+          <span className="text-gray-400 font-normal">{AI_RECO_ESTIMATE}</span>
+        </button>
+      )}
+      {open && (
+        <div className="mt-1.5 rounded-md border border-violet-200 bg-violet-50/50 p-2.5">
+          <div className="flex items-center justify-between mb-1">
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-violet-700">
+              <Sparkles className="w-3 h-3" /> AI recommendation
+            </span>
+            <button onClick={() => setOpen(false)} className="text-[10px] text-gray-400 hover:text-gray-600">close</button>
+          </div>
+          {loading && (
+            <div className="flex items-center gap-2 text-[11px] text-gray-600">
+              <Loader2 className="w-3 h-3 animate-spin text-violet-600" />
+              Analyzing this campaign…
+            </div>
+          )}
+          {error && (
+            <div className="text-[11px] text-red-700">Couldn&apos;t generate: {error}</div>
+          )}
+          {answer && !loading && (
+            <div className="text-[11px] text-gray-700 leading-relaxed whitespace-pre-wrap">{answer}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function BudgetAllocationAudit({ campaigns, dateRange, platform = "meta" }: AuditProps) {
   const { alertEmail, setAlertEmail, monthlyBudget, setMonthlyBudget, metaAccessToken, metaBusinessId } = useAuthStore();
   const currency = detectCurrency(campaigns);
+  const isDemo = !metaAccessToken || isDemoCredential(metaAccessToken);
 
   // ── Rolling daily-spend trail → real 7d / 4w averages (pacing strip) ──────
   // Reliable account-level Insights edge (level=campaign&time_increment=1) via
@@ -473,11 +558,16 @@ export default function BudgetAllocationAudit({ campaigns, dateRange }: AuditPro
 
   // Default: active campaigns first, then paused, within each group by spend desc.
   const { sorted: rawSorted, sort, toggle } = useSort(rows, "statusOrder", "asc");
-  // Secondary sort within each status group: highest spend first.
-  const sorted = useMemo(
-    () => [...rawSorted].sort((a, b) => a.statusOrder !== b.statusOrder ? a.statusOrder - b.statusOrder : b.spend - a.spend),
-    [rawSorted]
-  );
+  // When sorting by status, keep the status grouping with spend as the in-group
+  // tiebreaker. For every other column, respect the user's chosen sort as-is.
+  const sorted = useMemo(() => {
+    if (sort.col !== "statusOrder") return rawSorted;
+    return [...rows].sort((a, b) =>
+      a.statusOrder !== b.statusOrder
+        ? (sort.dir === "asc" ? a.statusOrder - b.statusOrder : b.statusOrder - a.statusOrder)
+        : b.spend - a.spend
+    );
+  }, [rawSorted, rows, sort.col, sort.dir]);
 
   const cur = (n: number) => formatMoney(n, currency, 0);
 
@@ -687,7 +777,7 @@ export default function BudgetAllocationAudit({ campaigns, dateRange }: AuditPro
             <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr>
                 <SortTh col="name" sort={sort} onToggle={toggle} className="px-4 py-2 min-w-[200px]">Campaign</SortTh>
-                <SortTh col="status" sort={sort} onToggle={toggle} className="px-4 py-2" align="center">Status</SortTh>
+                <SortTh col="statusOrder" sort={sort} onToggle={toggle} className="px-4 py-2" align="center">Status</SortTh>
                 <SortTh col="objective" sort={sort} onToggle={toggle} className="px-4 py-2">Objective</SortTh>
                 <SortTh col="budget" sort={sort} onToggle={toggle} className="px-4 py-2" align="right">Budget (setting)</SortTh>
                 <SortTh col="spend" sort={sort} onToggle={toggle} className="px-4 py-2" align="right">Spend</SortTh>
@@ -697,7 +787,7 @@ export default function BudgetAllocationAudit({ campaigns, dateRange }: AuditPro
             <tbody>
               {sorted.map((r) => (
                 <tr key={`${r.c.platform}-${r.c.id}`} className="border-b border-gray-100 hover:bg-gray-50 align-top">
-                  <td className="px-4 py-2.5 font-mono text-gray-900 truncate max-w-[240px]" title={r.name}>{r.name}</td>
+                  <td className="px-4 py-2.5 font-mono text-gray-900 break-words max-w-[280px]" title={r.name}>{r.name}</td>
                   <td className="px-4 py-2.5 text-center">
                     <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${isActive(r.c) ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
                       {isActive(r.c) ? "Active" : r.status}
@@ -729,6 +819,32 @@ export default function BudgetAllocationAudit({ campaigns, dateRange }: AuditPro
                               {t.label}
                             </span>
                             <div className="text-[11px] text-gray-600 leading-snug mt-1">{t.detail}</div>
+                            {t.severity !== "info" && (
+                              <RowAiReco
+                                isDemo={isDemo}
+                                findingLabel={t.label}
+                                findingDetail={t.detail}
+                                campaignContext={{
+                                  name: r.name,
+                                  status: r.status,
+                                  objective: r.objective,
+                                  dailyBudget: r.budget,
+                                  budgetType: r.budgetType,
+                                  spend: r.spend,
+                                  impressions: r.c.impressions ?? 0,
+                                  clicks: r.c.clicks ?? 0,
+                                  conversions: r.c.conversions ?? 0,
+                                  conversionValue: r.c.conversionValue ?? 0,
+                                  ctr: (r.c.impressions ?? 0) > 0 ? ((r.c.clicks ?? 0) / (r.c.impressions ?? 1)) * 100 : null,
+                                  cpa: (r.c.conversions ?? 0) > 0 ? r.spend / (r.c.conversions as number) : null,
+                                  roas: r.spend > 0 ? (r.c.conversionValue ?? 0) / r.spend : null,
+                                  avg7dSpendPerDay: trail[r.c.id]?.avg7d ?? null,
+                                  avg14dSpendPerDay: trail[r.c.id]?.avg14d ?? null,
+                                  avg28dSpendPerDay: trail[r.c.id]?.avg28d ?? null,
+                                  currency,
+                                }}
+                              />
+                            )}
                           </div>
                         </div>
                       );
@@ -760,6 +876,7 @@ export default function BudgetAllocationAudit({ campaigns, dateRange }: AuditPro
       <p className="text-[11px] text-gray-400 leading-relaxed px-1">
         This is a spend report — every figure is real data Meta returns for the selected window{dateRange === "custom" ? "" : ""} (spend, impressions, clicks, results via the Insights API). The &ldquo;Budget (setting)&rdquo; column is the live configured budget, not a projection. Projected &ldquo;allocated&rdquo;, forecast, efficiency and scaling scores were removed because Meta doesn&apos;t return them directly.
       </p>
+
     </div>
   );
 }

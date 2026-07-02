@@ -16,6 +16,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Megaphone, Target, Clock, LayoutGrid, ChevronDown, Plus, ListChecks, TrendingUp, TrendingDown, Check, X, Search } from "lucide-react";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import {
   Bar, ComposedChart, Line, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
@@ -24,13 +27,15 @@ import { useAuthStore } from "@/store/auth";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useAdSetInsights } from "@/hooks/useAdSetInsights";
 import { useMetaDailyVsPrev } from "@/hooks/useMetaDailyVsPrev";
+import { usePersistentColumns, usePersistentValue } from "@/hooks/useColumnPrefs";
+import CampaignMultiPicker from "@/components/shared/CampaignMultiPicker";
 import { formatMoney } from "@/lib/currency";
 import { rangeToDates } from "@/lib/date-range";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import type { CampaignData } from "@/types";
 import type { AdSetRow } from "@/hooks/useAdSetInsights";
 import type { AdInsightRow } from "@/pages/api/reporting/ad-insights/meta";
-import { ChevronRight as ChevronRightIcon, ArrowUpDown, MoreHorizontal, GitCompare, Layers as LayersIcon } from "lucide-react";
+import { ChevronRight as ChevronRightIcon, MoreHorizontal, GitCompare, Layers as LayersIcon } from "lucide-react";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -269,7 +274,7 @@ function SelectDropdown<T extends string>({
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[210px] bg-white text-gray-800 rounded-xl shadow-xl border border-gray-200 overflow-hidden py-1">
-            {groupTitle && <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-500">{groupTitle}</div>}
+            {groupTitle && <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-blue-600">{groupTitle}</div>}
             {options.map(o => (
               <button
                 key={o.value}
@@ -350,98 +355,6 @@ function MultiCheckboxDropdown<T extends string>({
   );
 }
 
-// Deterministic color from id — used for campaign chip dots
-const DOT_COLORS = ["#a3e635", "#a78bfa", "#fbbf24", "#f472b6", "#34d399", "#fb7185", "#60a5fa", "#facc15", "#22d3ee", "#c084fc"];
-function dotColor(id: string): string {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
-  return DOT_COLORS[Math.abs(h) % DOT_COLORS.length];
-}
-
-// Search + multi-select with colored dots (Campaign filter)
-function CampaignMultiPicker({
-  options, values, onChange,
-}: {
-  options: { id: string; name: string }[];
-  values: string[];
-  onChange: (next: string[]) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const filtered = useMemo(
-    () => options.filter(o => o.name.toLowerCase().includes(query.toLowerCase())).slice(0, 50),
-    [options, query]
-  );
-  const toggle = (id: string) => {
-    onChange(values.includes(id) ? values.filter(v => v !== id) : [...values, id]);
-  };
-  const allLabel = values.length === 0 ? "All campaigns" : `${values.length} selected`;
-  return (
-    <div className="relative inline-flex items-center gap-2">
-      <Megaphone className="w-3.5 h-3.5 text-gray-400" />
-      <span className="text-xs italic text-gray-500">{allLabel}</span>
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-dashed border-gray-300 text-gray-500 hover:border-gray-400 hover:text-gray-700"
-      >
-        <Plus className="w-3 h-3" /> Add
-      </button>
-      {values.length > 0 && (
-        <button
-          onClick={() => onChange([])}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-gray-400 hover:text-gray-700"
-          title="Clear filter"
-        >
-          <X className="w-3 h-3" />
-        </button>
-      )}
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-[170px] top-full mt-1.5 z-50 w-[420px] bg-white text-gray-800 rounded-xl shadow-xl border border-gray-200 overflow-hidden">
-            <div className="p-2 border-b border-gray-100">
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                <input
-                  autoFocus
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  placeholder="Search campaigns…"
-                  className="w-full pl-8 pr-3 py-2 rounded-lg text-xs border border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                />
-              </div>
-            </div>
-            <div className="max-h-72 overflow-y-auto">
-              {filtered.length === 0 ? (
-                <div className="px-3 py-6 text-center text-xs text-gray-400">No campaigns match.</div>
-              ) : filtered.map(c => {
-                const selected = values.includes(c.id);
-                return (
-                  <button
-                    key={c.id}
-                    onClick={() => toggle(c.id)}
-                    className={`w-full text-left px-3 py-2 text-xs hover:bg-blue-50 flex items-center gap-2.5 ${selected ? "bg-blue-50/60" : ""}`}
-                  >
-                    <span className={`w-4 h-4 rounded flex items-center justify-center transition ${selected ? "bg-blue-600 border border-blue-600" : "border border-gray-300 bg-white"}`}>
-                      {selected && <Check className="w-3 h-3 text-white" />}
-                    </span>
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: dotColor(c.id) }} />
-                    <span className="truncate font-medium" title={c.name}>{c.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <div className="px-3 py-2 border-t border-gray-100 flex items-center justify-between text-xs">
-              <button onClick={() => onChange(options.map(o => o.id))} className="font-semibold text-blue-600 hover:underline">Select all</button>
-              <button onClick={() => onChange([])} className="font-semibold text-gray-500 hover:text-gray-700">Clear</button>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 function DeltaBadge({ delta, lowerIsBetter = false }: { delta: number | null; lowerIsBetter?: boolean }) {
   if (delta === null) return <span className="text-[10px] text-gray-500">—</span>;
   const positive = delta > 0;
@@ -457,18 +370,161 @@ function DeltaBadge({ delta, lowerIsBetter = false }: { delta: number | null; lo
   );
 }
 
+const KPI_SWAP_GROUPS: { label: string; ids: MetricId[] }[] = [
+  { label: "Display",    ids: ["impressions", "reach", "frequency", "cpm"] },
+  { label: "Engagement", ids: ["clicks", "ctr", "cpc", "spend"] },
+  { label: "Conversion", ids: ["conversions", "conversionValue", "roas", "cpa", "cvr", "aov"] },
+];
+
+function PlainEnglishSummary({
+  spend, leads, cpl, prevSpend, prevLeads, prevCpl, currency, startDate, endDate,
+}: {
+  spend: number; leads: number; cpl: number;
+  prevSpend: number; prevLeads: number; prevCpl: number;
+  currency: string; startDate?: string; endDate?: string;
+}) {
+  const spendDelta = pctDelta(spend, prevSpend);
+  const leadsDelta = pctDelta(leads, prevLeads);
+  const cplDelta   = pctDelta(cpl, prevCpl);
+  const fmtDate = (d?: string) => d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "";
+  const rangeLabel = startDate && endDate ? `${fmtDate(startDate)} – ${fmtDate(endDate)}` : "the selected period";
+
+  const cplGood = cplDelta !== null && cplDelta < 0;
+  const cplBad  = cplDelta !== null && cplDelta > 0;
+
+  const sentence = leads > 0
+    ? `You spent ${fmt(spend, "money", currency)} and got ${fmt(leads, "int", currency)} results back. That works out to ${fmt(cpl, "money", currency)} for every result your ads delivered.`
+    : `You spent ${fmt(spend, "money", currency)} in this period, but the pixel didn't record any tracked results (purchases, leads, signups). Either tracking isn't firing or the campaigns aren't optimised for a conversion event.`;
+
+  const verdict = leads === 0
+    ? null
+    : cplDelta === null
+      ? "No prior period to compare against yet."
+      : cplGood
+        ? `Each result is costing ${Math.abs(cplDelta).toFixed(0)}% less than last period — your ads are getting more efficient.`
+        : cplBad
+          ? `Each result is costing ${Math.abs(cplDelta).toFixed(0)}% more than last period — efficiency has dropped.`
+          : "Cost per result is roughly the same as last period.";
+
+  return (
+    <div className="bg-gradient-to-br from-blue-50 via-white to-purple-50 rounded-xl border border-blue-100 p-5 shadow-sm">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900">In simpler terms</h3>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Money spent</div>
+          <div className="text-2xl font-bold text-gray-900 mt-1">{fmt(spend, "money", currency)}</div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            Total ad budget Meta charged you.
+            {spendDelta !== null && (
+              <span className={`ml-1 font-semibold ${spendDelta > 0 ? "text-orange-600" : "text-emerald-600"}`}>
+                {spendDelta > 0 ? "↑" : "↓"} {Math.abs(spendDelta).toFixed(0)}% vs last period
+              </span>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Results you got</div>
+          <div className="text-2xl font-bold text-gray-900 mt-1">{fmt(leads, "int", currency)}</div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            Purchases, leads, signups & installs your pixel tracked.
+            {leadsDelta !== null && (
+              <span className={`ml-1 font-semibold ${leadsDelta >= 0 ? "text-emerald-600" : "text-orange-600"}`}>
+                {leadsDelta >= 0 ? "↑" : "↓"} {Math.abs(leadsDelta).toFixed(0)}% vs last period
+              </span>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Cost per result</div>
+          <div className={`text-2xl font-bold mt-1 ${cplGood ? "text-emerald-700" : cplBad ? "text-orange-700" : "text-gray-900"}`}>
+            {leads > 0 ? fmt(cpl, "money", currency) : "—"}
+          </div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            What each tracked result effectively cost you.
+            {cplDelta !== null && leads > 0 && (
+              <span className={`ml-1 font-semibold ${cplGood ? "text-emerald-600" : "text-orange-600"}`}>
+                {cplGood ? "↓" : "↑"} {Math.abs(cplDelta).toFixed(0)}% vs last period
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="text-sm text-gray-700 leading-relaxed bg-white/60 rounded-lg p-3 border border-gray-100">
+        <span>{sentence}</span>
+        {verdict && <span className="ml-1 text-gray-600">{verdict}</span>}
+      </div>
+    </div>
+  );
+}
+
 function KpiCard({ metric, totals, prevTotals, currency }: { metric: MetricId; totals: GroupRow; prevTotals: GroupRow; currency: string }) {
   const def = METRIC_BY_ID.get(metric)!;
   const val = totals[metric];
   const prev = prevTotals[metric];
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-      <div className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide">{def.label}</div>
-      <div className="text-3xl font-bold text-gray-900 mt-1.5 tabular-nums">{fmt(val, def.fmt, currency)}</div>
+      <div className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide mb-1.5">{def.label}</div>
+      <div className="text-3xl font-bold text-gray-900 tabular-nums">{fmt(val, def.fmt, currency)}</div>
       <div className="flex items-center gap-1.5 mt-1">
         <DeltaBadge delta={pctDelta(val, prev)} lowerIsBetter={def.lowerIsBetter} />
-        <span className="text-[10px] text-gray-400">vs prev.</span>
+        <span className="text-[10px] text-gray-500">vs prev.</span>
       </div>
+    </div>
+  );
+}
+
+function KpiSlotPicker({ metrics, onChange }: { metrics: MetricId[]; onChange: (idx: number, m: MetricId) => void }) {
+  const [openSlot, setOpenSlot] = useState<number | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (openSlot === null) return;
+    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpenSlot(null); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [openSlot]);
+
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap" ref={ref}>
+      {metrics.map((m, i) => {
+        const def = METRIC_BY_ID.get(m)!;
+        return (
+          <div key={i} className="relative">
+            <button
+              onClick={() => setOpenSlot(openSlot === i ? null : i)}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition ${openSlot === i ? "bg-blue-50 border-blue-300 text-blue-700" : "bg-white border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50"}`}>
+              {def.label}
+              <svg className="w-2.5 h-2.5 opacity-60" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M2 3.5l3 3 3-3"/></svg>
+            </button>
+            {openSlot === i && (
+              <div className="absolute right-0 top-full mt-1 z-[200] bg-white rounded-xl shadow-xl border border-gray-100 w-48 overflow-hidden">
+                <div className="px-3 py-2 border-b border-gray-100 text-[10px] font-bold uppercase tracking-wide text-gray-500">Slot {i + 1}</div>
+                <div className="max-h-64 overflow-y-auto py-1">
+                  {KPI_SWAP_GROUPS.map(g => (
+                    <div key={g.label}>
+                      <div className="px-3 pt-2 pb-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-400">{g.label}</div>
+                      {g.ids.map(id => {
+                        const md = METRIC_BY_ID.get(id)!;
+                        return (
+                          <button key={id} onClick={() => { onChange(i, id); setOpenSlot(null); }}
+                            className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-50 transition ${id === m ? "text-blue-600 font-semibold" : "text-gray-700"}`}>
+                            {id === m && <svg className="w-3 h-3 shrink-0" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 5l2.5 2.5L8 3"/></svg>}
+                            {md.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -510,7 +566,7 @@ function GraphCard({
             <>
               <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
               <div className="absolute right-0 top-full mt-1.5 z-50 w-[460px] bg-white text-gray-800 rounded-xl shadow-xl border border-gray-200 overflow-hidden">
-                <div className="px-3 py-2 border-b border-gray-100 text-[10px] font-bold uppercase tracking-wider text-gray-500">Bars (primary) × Line (secondary)</div>
+                <div className="px-3 py-2 border-b border-gray-100 text-[10px] font-bold uppercase tracking-wider text-blue-600">Bars (primary) × Line (secondary)</div>
                 <div className="grid grid-cols-2 gap-0 max-h-[320px] overflow-y-auto">
                   <div>
                     <div className="px-3 py-1.5 text-[10px] font-bold text-gray-400 uppercase border-b">Primary</div>
@@ -708,12 +764,11 @@ function PerformanceTable({
   columns: PerfCol[];
   onColumnsChange: (next: PerfCol[]) => void;
 }) {
-  const [sortKey, setSortKey] = useState<PerfCol | "date">("date");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [compareMode, setCompareMode] = useState(false);
   const [swapIdx, setSwapIdx] = useState<number | null>(null);
   const [colMenuOpen, setColMenuOpen] = useState(false);
   const swapRef = useRef<HTMLDivElement>(null);
+  const { sorted, sort: perfSort, toggle: perfToggle } = useSort(rows, "date", "asc");
 
   useEffect(() => {
     if (swapIdx === null) return;
@@ -729,26 +784,15 @@ function PerformanceTable({
     setSwapIdx(null);
   };
 
-  const sorted = useMemo(() => {
-    const cp = [...rows];
-    cp.sort((a, b) => {
-      const av: number | string = sortKey === "date" ? a.date : a[sortKey];
-      const bv: number | string = sortKey === "date" ? b.date : b[sortKey];
-      const cmp = typeof av === "string" ? av.localeCompare(bv as string) : (av as number) - (bv as number);
-      return sortDir === "asc" ? cmp : -cmp;
-    });
-    return cp;
-  }, [rows, sortKey, sortDir]);
-
   // Match prev rows to current by position (prev period dates differ from current)
   const sortedWithPrev = useMemo(() => {
     if (!compareMode || !prevRows || prevRows.length === 0) return sorted.map(r => ({ r, prev: null as PerfRow | null }));
     const sortedPrev = [...prevRows].sort((a, b) => {
       const cmp = a.date.localeCompare(b.date);
-      return sortDir === "asc" ? cmp : -cmp;
+      return perfSort.dir === "asc" ? cmp : -cmp;
     });
     return sorted.map((r, i) => ({ r, prev: sortedPrev[i] ?? null }));
-  }, [sorted, prevRows, compareMode, sortDir]);
+  }, [sorted, prevRows, compareMode, perfSort.dir]);
 
   const totals = useMemo(() => {
     if (rows.length === 0) return null;
@@ -793,21 +837,21 @@ function PerformanceTable({
             {colMenuOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setColMenuOpen(false)} />
-                <div className="absolute right-0 top-full mt-1.5 z-50 w-56 bg-gray-900 text-white rounded-xl shadow-2xl border border-gray-700 overflow-hidden">
-                  <div className="px-3 py-2.5 border-b border-gray-700 flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-gray-300">Columns</span>
-                    <span className="text-[10px] text-gray-400">{columns.length} selected</span>
+                <div className="absolute right-0 top-full mt-1.5 z-50 w-56 bg-white text-gray-800 rounded-xl shadow-xl border border-gray-200 overflow-hidden">
+                  <div className="px-3 py-2.5 border-b border-gray-100 flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-wider text-gray-700">Columns</span>
+                    <span className="text-[10px] text-gray-500">{columns.length} selected</span>
                   </div>
                   {METRIC_GROUPS.map(g => (
                     <div key={g.label}>
-                      <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-500">{g.label}</div>
+                      <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-blue-600">{g.label}</div>
                       {g.ids.map(id => {
                         const m = METRIC_BY_ID.get(id as MetricId)!;
                         const on = columns.includes(id);
                         return (
                           <button key={id} onClick={() => { const next = on ? columns.filter(c => c !== id) : [...columns, id]; if (next.length > 0) onColumnsChange(next); }}
-                            className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition ${on ? "bg-blue-600/20 text-blue-300" : "text-gray-200 hover:bg-gray-800"}`}>
-                            <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${on ? "bg-blue-600 border-blue-500" : "border-gray-600"}`}>
+                            className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition ${on ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-blue-50 hover:text-blue-700"}`}>
+                            <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${on ? "bg-blue-600 border-blue-500" : "border-gray-300"}`}>
                               {on && <Check className="w-2.5 h-2.5 text-white" />}
                             </span>
                             {m.label}
@@ -822,43 +866,34 @@ function PerformanceTable({
           </div>
         </div>
       </div>
-      <div className="overflow-x-auto">
+      <div>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-[90px] z-20 shadow-sm">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">
-                <button onClick={() => { setSortKey("date"); setSortDir(d => sortKey === "date" ? (d === "asc" ? "desc" : "asc") : "asc"); }} className="inline-flex items-center gap-1 hover:text-gray-900">
-                  Date {sortKey === "date" ? <span className="text-blue-600 text-[10px]">{sortDir === "asc" ? "↑" : "↓"}</span> : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                </button>
-              </th>
+              <SortTh col="date" sort={perfSort} onToggle={perfToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap">Date</SortTh>
               {columns.map((c, colIdx) => {
                 const def = METRIC_BY_ID.get(c as MetricId)!;
-                const isSorted = sortKey === c;
                 return (
                   <th key={c} className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">
                     <div className="relative inline-flex items-center gap-1 justify-end">
-                      <button onClick={() => { setSortKey(c); setSortDir(d => isSorted ? (d === "asc" ? "desc" : "asc") : "desc"); }}
-                        className="hover:text-gray-900 flex items-center gap-1">
-                        {def.label}
-                        {isSorted ? <span className="text-blue-600 text-[10px]">{sortDir === "asc" ? "↑" : "↓"}</span> : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                      </button>
+                      <SortTh col={c} sort={perfSort} onToggle={perfToggle} className="text-[11px] uppercase font-semibold text-gray-600" align="right">{def.label}</SortTh>
                       <button onClick={() => setSwapIdx(swapIdx === colIdx ? null : colIdx)}
                         className="text-gray-400 hover:text-gray-700 transition shrink-0 ml-0.5" title="Change column">
                         <svg className="w-3 h-3" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 2v6M2 5l3 3 3-3"/></svg>
                       </button>
                       {swapIdx === colIdx && (
-                        <div className="absolute right-0 top-full mt-1 z-50 w-52 bg-gray-900 text-white rounded-xl shadow-2xl overflow-hidden border border-gray-700">
-                          <div className="px-3 py-2 border-b border-gray-700 text-[10px] font-bold uppercase tracking-wider text-gray-400">Change column</div>
-                          <div className="max-h-72 overflow-y-auto py-1">
+                        <div className="absolute right-0 top-full mt-1 z-50 w-52 bg-white text-gray-800 rounded-xl shadow-xl overflow-hidden border border-gray-200">
+                          <div className="px-3 py-2 border-b border-gray-100 text-[10px] font-bold uppercase tracking-wider text-blue-600">Change column</div>
+                          <div className="max-h-[500px] overflow-y-auto py-1">
                             {METRIC_GROUPS.map(g => (
                               <div key={g.label}>
-                                <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-600">{g.label}</div>
+                                <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-blue-600">{g.label}</div>
                                 {g.ids.map(id => {
                                   const m = METRIC_BY_ID.get(id as MetricId)!;
                                   const isCur = id === c;
                                   return (
                                     <button key={id} onClick={() => !isCur && swapCol(colIdx, id)}
-                                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition ${isCur ? "text-blue-400 font-semibold bg-blue-600/10 cursor-default" : "text-gray-200 hover:bg-gray-800"}`}>
+                                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition ${isCur ? "text-blue-700 font-semibold bg-blue-50 cursor-default" : "text-gray-700 hover:bg-blue-50 hover:text-blue-700"}`}>
                                       {isCur && <svg className="w-2.5 h-2.5 shrink-0" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1.5 5l2.5 2.5 4.5-4.5"/></svg>}
                                       {m.label}
                                     </button>
@@ -882,7 +917,7 @@ function PerformanceTable({
               <tr key={r.date} className="border-b border-gray-100 hover:bg-gray-50">
                 <td className="px-4 py-2.5 font-mono text-xs text-gray-900">
                   {r.date}
-                  {compareMode && prev && <div className="text-[10px] text-gray-400 mt-0.5">{prev.date}</div>}
+                  {compareMode && prev && <div className="text-[10px] text-gray-500 mt-0.5">{prev.date}</div>}
                 </td>
                 {columns.map(c => {
                   const def = METRIC_BY_ID.get(c as MetricId)!;
@@ -892,7 +927,7 @@ function PerformanceTable({
                       <div className="text-gray-900">{fmt(r[c], def.fmt, currency)}</div>
                       {compareMode && prev && (
                         <div className="flex items-center justify-end gap-1 mt-0.5">
-                          <span className="text-[10px] text-gray-400">{fmt(prev[c], def.fmt, currency)}</span>
+                          <span className="text-[10px] text-gray-500">{fmt(prev[c], def.fmt, currency)}</span>
                           {delta !== null && (
                             <span className={`text-[10px] font-semibold ${delta > 0 ? (def.lowerIsBetter ? "text-red-500" : "text-green-600") : delta < 0 ? (def.lowerIsBetter ? "text-green-600" : "text-red-500") : "text-gray-400"}`}>
                               {delta > 0 ? "+" : ""}{delta.toFixed(1)}%
@@ -918,7 +953,7 @@ function PerformanceTable({
                       <div className="text-gray-900">{fmt(v, def.fmt, currency)}</div>
                       {compareMode && pv !== null && (
                         <div className="flex items-center justify-end gap-1 mt-0.5">
-                          <span className="text-[10px] text-gray-400">{fmt(pv, def.fmt, currency)}</span>
+                          <span className="text-[10px] text-gray-500">{fmt(pv, def.fmt, currency)}</span>
                           {delta !== null && (
                             <span className={`text-[10px] font-semibold ${delta > 0 ? (def.lowerIsBetter ? "text-red-500" : "text-green-600") : delta < 0 ? (def.lowerIsBetter ? "text-green-600" : "text-red-500") : "text-gray-400"}`}>
                               {delta > 0 ? "+" : ""}{delta.toFixed(1)}%
@@ -945,18 +980,25 @@ interface DrillNode {
   label: string;
   level: "camp" | "as" | "ad";
   spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number;
-  ctr: number; cpc: number; cpm: number; cpa: number; roas: number;
+  reach: number; frequency: number;
+  ctr: number; cpc: number; cpm: number; cpa: number; roas: number; cvr: number; aov: number;
   children?: DrillNode[];
 }
 
-function deriveSimple(r: { spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number }) {
+function deriveSimple(r: { spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number; reach?: number; frequency?: number }) {
+  const reach = r.reach ?? 0;
+  const frequency = r.frequency ?? (reach > 0 ? r.impressions / reach : 0);
   return {
     ...r,
+    reach,
+    frequency,
     ctr:  r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0,
     cpc:  r.clicks > 0 ? r.spend / r.clicks : 0,
     cpm:  r.impressions > 0 ? (r.spend / r.impressions) * 1000 : 0,
     cpa:  r.conversions > 0 ? r.spend / r.conversions : 0,
     roas: r.spend > 0 ? r.conversionValue / r.spend : 0,
+    cvr:  r.clicks > 0 ? (r.conversions / r.clicks) * 100 : 0,
+    aov:  r.conversions > 0 ? r.conversionValue / r.conversions : 0,
   };
 }
 
@@ -981,7 +1023,8 @@ function buildDrillTree(
   const built = campaigns
     .filter(c => c.platform === "meta")
     .map<DrillNode>(c => {
-      const adsetChildren = (adsetsByCampaign.get(c.name.trim().toLowerCase()) || []).map<DrillNode>(a => {
+      const campaignAdSets = adsetsByCampaign.get(c.name.trim().toLowerCase()) || [];
+      const adsetChildren = campaignAdSets.map<DrillNode>(a => {
         const adChildren = (adsByAdSet.get(a.name.trim().toLowerCase()) || []).map<DrillNode>(ad => ({
           id: ad.id, label: ad.name, level: "ad",
           ...deriveSimple({
@@ -994,15 +1037,18 @@ function buildDrillTree(
           ...deriveSimple({
             spend: a.spend, impressions: a.impressions, clicks: a.clicks,
             conversions: a.conversions, conversionValue: a.conversionValue,
+            reach: a.reach, frequency: a.frequency,
           }),
           children: adChildren.length ? adChildren : undefined,
         };
       });
+      const campReach = campaignAdSets.reduce((s, a) => s + (a.reach || 0), 0);
       return {
         id: c.id, label: c.name, level: "camp",
         ...deriveSimple({
           spend: c.spend || 0, impressions: c.impressions || 0, clicks: c.clicks || 0,
           conversions: c.conversions || 0, conversionValue: c.conversionValue || 0,
+          reach: campReach,
         }),
         children: adsetChildren.length ? adsetChildren : undefined,
       };
@@ -1018,27 +1064,32 @@ const LEVEL_BADGE: Record<DrillNode["level"], { label: string; bg: string }> = {
   ad:   { label: "AD",   bg: "bg-emerald-100 text-emerald-700" },
 };
 
-type DrillCol = "impressions" | "clicks" | "ctr" | "cpm" | "cpc" | "spend" | "conversions" | "roas" | "cpa";
-const DRILL_COL_DEFS: { id: DrillCol; label: string; fmt: "money" | "int" | "pct" | "x" }[] = [
-  { id: "impressions", label: "Impressions", fmt: "int" },
-  { id: "clicks",      label: "Clicks",      fmt: "int" },
-  { id: "ctr",         label: "CTR",         fmt: "pct" },
-  { id: "cpm",         label: "CPM",         fmt: "money" },
-  { id: "cpc",         label: "CPC",         fmt: "money" },
-  { id: "spend",       label: "Spend",       fmt: "money" },
-  { id: "conversions", label: "Conversions", fmt: "int" },
-  { id: "roas",        label: "ROAS",        fmt: "x" },
-  { id: "cpa",         label: "CPA",         fmt: "money" },
+type DrillCol = "impressions" | "reach" | "frequency" | "clicks" | "ctr" | "cpm" | "cpc" | "spend" | "conversions" | "conversionValue" | "roas" | "cpa" | "cvr" | "aov";
+const DRILL_COL_DEFS: { id: DrillCol; label: string; fmt: "money" | "int" | "pct" | "x" | "decimal" }[] = [
+  { id: "impressions",     label: "Impressions", fmt: "int" },
+  { id: "reach",           label: "Reach",       fmt: "int" },
+  { id: "frequency",       label: "Frequency",   fmt: "decimal" },
+  { id: "clicks",          label: "Clicks",      fmt: "int" },
+  { id: "ctr",             label: "CTR",         fmt: "pct" },
+  { id: "cpm",             label: "CPM",         fmt: "money" },
+  { id: "cpc",             label: "CPC",         fmt: "money" },
+  { id: "spend",           label: "Spend",       fmt: "money" },
+  { id: "conversions",     label: "Conversions", fmt: "int" },
+  { id: "conversionValue", label: "Revenue",     fmt: "money" },
+  { id: "roas",            label: "ROAS",        fmt: "x" },
+  { id: "cpa",             label: "CPA",         fmt: "money" },
+  { id: "cvr",             label: "CVR",         fmt: "pct" },
+  { id: "aov",             label: "AOV",         fmt: "money" },
 ];
 const DRILL_DEFAULT_COLS: DrillCol[] = ["impressions", "clicks", "ctr", "cpm", "cpc", "spend"];
 
 const DRILL_METRIC_GROUPS: { label: string; ids: DrillCol[] }[] = [
-  { label: "Display",    ids: ["impressions", "cpm"] },
+  { label: "Display",    ids: ["impressions", "reach", "frequency", "cpm"] },
   { label: "Engagement", ids: ["clicks", "ctr", "cpc", "spend"] },
-  { label: "Conversion", ids: ["conversions", "roas", "cpa"] },
+  { label: "Conversion", ids: ["conversions", "conversionValue", "roas", "cpa", "cvr", "aov"] },
 ];
 
-const DRILL_LOWER_IS_BETTER = new Set<DrillCol>(["cpm", "cpc", "cpa"]);
+const DRILL_LOWER_IS_BETTER = new Set<DrillCol>(["cpm", "cpc", "cpa", "frequency"]);
 
 function DrillRow({
   node, depth, expanded, toggle, currency, columns, prevNodeMap, compareMode,
@@ -1074,7 +1125,7 @@ function DrillRow({
               <div>{fmt(node[c], def.fmt, currency)}</div>
               {compareMode && prev && (
                 <div className="flex items-center justify-end gap-1 mt-0.5">
-                  <span className="text-[10px] text-gray-400">{fmt(prev[c], def.fmt, currency)}</span>
+                  <span className="text-[10px] text-gray-500">{fmt(prev[c], def.fmt, currency)}</span>
                   {delta !== null && (
                     <span className={`text-[10px] font-semibold ${delta > 0 ? (lib ? "text-red-500" : "text-green-600") : delta < 0 ? (lib ? "text-green-600" : "text-red-500") : "text-gray-400"}`}>
                       {delta > 0 ? "+" : ""}{delta.toFixed(1)}%
@@ -1106,9 +1157,8 @@ function DrillTable({
   const [colMenuOpen, setColMenuOpen] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
   const [swapIdx, setSwapIdx] = useState<number | null>(null);
-  const [sortKey, setSortKey] = useState<DrillCol | null>("impressions");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const swapRef = useRef<HTMLDivElement>(null);
+  const { sorted: sortedNodes, sort: drillSort, toggle: drillToggle } = useSort(nodes, "impressions", "desc");
 
   useEffect(() => {
     if (swapIdx === null) return;
@@ -1133,13 +1183,6 @@ function DrillTable({
     if (prevNodes) walk(prevNodes);
     return map;
   }, [prevNodes]);
-
-  const sortedNodes = useMemo(() => {
-    if (!sortKey) return nodes;
-    const cp = [...nodes];
-    cp.sort((a, b) => sortDir === "asc" ? a[sortKey] - b[sortKey] : b[sortKey] - a[sortKey]);
-    return cp;
-  }, [nodes, sortKey, sortDir]);
 
   const hiddenCount = totalCount - nodes.length;
 
@@ -1188,21 +1231,21 @@ function DrillTable({
               {colMenuOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setColMenuOpen(false)} />
-                  <div className="absolute right-0 top-full mt-1.5 z-50 w-56 bg-gray-900 text-white rounded-xl shadow-2xl border border-gray-700 overflow-hidden">
-                    <div className="px-3 py-2.5 border-b border-gray-700 flex items-center justify-between">
-                      <span className="text-xs font-bold uppercase tracking-wider text-gray-300">Columns</span>
-                      <button onClick={() => setColumns(DRILL_DEFAULT_COLS)} className="text-[10px] text-gray-400 hover:text-white">Reset</button>
+                  <div className="absolute right-0 top-full mt-1.5 z-50 w-56 bg-white text-gray-800 rounded-xl shadow-xl border border-gray-200 overflow-hidden">
+                    <div className="px-3 py-2.5 border-b border-gray-100 flex items-center justify-between">
+                      <span className="text-xs font-bold uppercase tracking-wider text-gray-700">Columns</span>
+                      <button onClick={() => setColumns(DRILL_DEFAULT_COLS)} className="text-[10px] text-gray-500 hover:text-white">Reset</button>
                     </div>
                     {DRILL_METRIC_GROUPS.map(g => (
                       <div key={g.label}>
-                        <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-500">{g.label}</div>
+                        <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-blue-600">{g.label}</div>
                         {g.ids.map(id => {
                           const def = DRILL_COL_DEFS.find(d => d.id === id)!;
                           const on = columns.includes(id);
                           return (
                             <button key={id} onClick={() => toggleCol(id)}
-                              className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition ${on ? "bg-blue-600/20 text-blue-300" : "text-gray-200 hover:bg-gray-800"}`}>
-                              <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${on ? "bg-blue-600 border-blue-500" : "border-gray-600"}`}>
+                              className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition ${on ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-blue-50 hover:text-blue-700"}`}>
+                              <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${on ? "bg-blue-600 border-blue-500" : "border-gray-300"}`}>
                                 {on && <Check className="w-2.5 h-2.5 text-white" />}
                               </span>
                               {def.label}
@@ -1211,46 +1254,41 @@ function DrillTable({
                         })}
                       </div>
                     ))}
-                    <div className="px-4 py-2 border-t border-gray-700 text-[10px] text-gray-500">{columns.length} selected</div>
+                    <div className="px-4 py-2 border-t border-gray-100 text-[10px] text-gray-500">{columns.length} selected</div>
                   </div>
                 </>
               )}
             </div>
           </div>
         </div>
-        <div className="overflow-x-auto">
+        <div>
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-[90px] z-20 shadow-sm">
               <tr>
-                <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600">{GROUPBY_LABEL[groupBy]}</th>
+                <SortTh col="label" sort={drillSort} onToggle={drillToggle} className="px-3 py-2 text-[11px] uppercase font-semibold text-gray-600">{GROUPBY_LABEL[groupBy]}</SortTh>
                 {columns.map((c, colIdx) => {
                   const def = DRILL_COL_DEFS.find(d => d.id === c)!;
-                  const isSorted = sortKey === c;
                   return (
                     <th key={c} className="px-3 py-2 text-right text-[11px] font-semibold text-gray-600 whitespace-nowrap">
                       <div className="relative inline-flex items-center gap-1 justify-end">
-                        <button onClick={() => { setSortKey(c); setSortDir(d => isSorted ? (d === "asc" ? "desc" : "asc") : "desc"); }}
-                          className="hover:text-gray-900 flex items-center gap-1">
-                          {def.label}
-                          {isSorted ? <span className="text-blue-600 text-[10px]">{sortDir === "asc" ? "↑" : "↓"}</span> : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-                        </button>
+                        <SortTh col={c} sort={drillSort} onToggle={drillToggle} className="text-[11px] uppercase font-semibold text-gray-600" align="right">{def.label}</SortTh>
                         <button onClick={() => setSwapIdx(swapIdx === colIdx ? null : colIdx)}
                           className="text-gray-400 hover:text-gray-700 transition shrink-0 ml-0.5" title="Change column">
                           <svg className="w-3 h-3" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 2v6M2 5l3 3 3-3"/></svg>
                         </button>
                         {swapIdx === colIdx && (
-                          <div className="absolute right-0 top-full mt-1 z-50 w-52 bg-gray-900 text-white rounded-xl shadow-2xl overflow-hidden border border-gray-700">
-                            <div className="px-3 py-2 border-b border-gray-700 text-[10px] font-bold uppercase tracking-wider text-gray-400">Change column</div>
-                            <div className="max-h-72 overflow-y-auto py-1">
+                          <div className="absolute right-0 top-full mt-1 z-50 w-52 bg-white text-gray-800 rounded-xl shadow-xl overflow-hidden border border-gray-200">
+                            <div className="px-3 py-2 border-b border-gray-100 text-[10px] font-bold uppercase tracking-wider text-blue-600">Change column</div>
+                            <div className="max-h-[500px] overflow-y-auto py-1">
                               {DRILL_METRIC_GROUPS.map(g => (
                                 <div key={g.label}>
-                                  <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-600">{g.label}</div>
+                                  <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-blue-600">{g.label}</div>
                                   {g.ids.map(id => {
                                     const m = DRILL_COL_DEFS.find(d => d.id === id)!;
                                     const isCur = id === c;
                                     return (
                                       <button key={id} onClick={() => !isCur && swapCol(colIdx, id)}
-                                        className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition ${isCur ? "text-blue-400 font-semibold bg-blue-600/10 cursor-default" : "text-gray-200 hover:bg-gray-800"}`}>
+                                        className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition ${isCur ? "text-blue-700 font-semibold bg-blue-50 cursor-default" : "text-gray-700 hover:bg-blue-50 hover:text-blue-700"}`}>
                                         {isCur && <svg className="w-2.5 h-2.5 shrink-0" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1.5 5l2.5 2.5 4.5-4.5"/></svg>}
                                         {m.label}
                                       </button>
@@ -1319,8 +1357,8 @@ export default function KeyMetricAnalysisReport({ platform, dateRange, customSta
 
   const [objectiveIds, setObjectiveIds] = useState<ObjectiveId[]>(["awareness_cpm"]);
   const primaryObjective = OBJECTIVE_BY_ID.get(objectiveIds[0])!;
-  const [granularity, setGranularity] = useState<Granularity>("week");
-  const [groupBy, setGroupBy] = useState<GroupBy>("campaigns");
+  const [granularity, setGranularity] = usePersistentValue<Granularity>("key-metrics-granularity", "week");
+  const [groupBy, setGroupBy] = usePersistentValue<GroupBy>("key-metrics-groupby", "campaigns");
   const [campaignFilter, setCampaignFilter] = useState<string[]>([]); // empty = all
 
   // Apply campaign filter to ad sets + campaigns lists used downstream.
@@ -1340,7 +1378,12 @@ export default function KeyMetricAnalysisReport({ platform, dateRange, customSta
   const totalsCur  = useMemo(() => totalsOf(rowsCur),  [rowsCur]);
   const totalsPrev = useMemo(() => totalsOf(rowsPrev), [rowsPrev]);
 
-  const headlineMetrics = primaryObjective.highlights;
+  // Persisted per (account, objective) — switching objective still shows that
+  // objective's own saved highlight picks (or its defaults on first visit).
+  const [highlightMetrics, setHighlightMetrics] = usePersistentColumns<MetricId>(
+    `key-metrics-highlights:${objectiveIds[0]}`,
+    primaryObjective.highlights
+  );
   const [templates, setTemplates] = useState<GraphTemplate[]>(primaryObjective.templates);
 
   // Re-sync templates if objective changes (only when user hasn't customised).
@@ -1440,6 +1483,19 @@ export default function KeyMetricAnalysisReport({ platform, dateRange, customSta
         />
       </div>
 
+      {/* Plain-English Summary */}
+      <PlainEnglishSummary
+        spend={totalsCur.spend}
+        leads={totalsCur.conversions}
+        cpl={totalsCur.cpa}
+        prevSpend={totalsPrev.spend}
+        prevLeads={totalsPrev.conversions}
+        prevCpl={totalsPrev.cpa}
+        currency={currency}
+        startDate={startDate}
+        endDate={endDate}
+      />
+
       {/* Highlights section */}
       <div>
         <div className="mb-3">
@@ -1448,14 +1504,20 @@ export default function KeyMetricAnalysisReport({ platform, dateRange, customSta
         </div>
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Highlights</h3>
-          <button className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-semibold text-gray-600 hover:bg-gray-100" title="Coming soon">
-            <ListChecks className="w-3.5 h-3.5" /> Save list
-          </button>
+          <KpiSlotPicker
+            metrics={highlightMetrics}
+            onChange={(idx, next) => setHighlightMetrics(prev => prev.map((x, j) => j === idx ? next : x))}
+          />
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {headlineMetrics.map((m, i) => (
-            <div key={m} className={`animate-fade-in-up stagger-${Math.min(i + 1, 9)}`}>
-              <KpiCard metric={m} totals={totalsCur} prevTotals={totalsPrev} currency={currency} />
+          {highlightMetrics.map((m, i) => (
+            <div key={`${m}-${i}`} className={`animate-fade-in-up stagger-${Math.min(i + 1, 9)}`}>
+              <KpiCard
+                metric={m}
+                totals={totalsCur}
+                prevTotals={totalsPrev}
+                currency={currency}
+              />
             </div>
           ))}
         </div>
@@ -1511,6 +1573,35 @@ export default function KeyMetricAnalysisReport({ platform, dateRange, customSta
           Key Metric Analysis uses Meta insights — switch Platform to Meta or Both for data.
         </div>
       )}
+
+      <TabSummaryFooter
+        tabName="Key Metric Analysis"
+        lines={[
+          `${filteredCampaignsCur.length} campaign${filteredCampaignsCur.length !== 1 ? "s" : ""} analysed (${campaignFilter.length > 0 ? `${campaignFilter.length} filtered` : "all campaigns"}) · ${GROUPBY_LABEL[groupBy]} grouping.`,
+          `Total impressions: ${fmt(totalsCur.impressions, "int", currency)} · Spend: ${fmt(totalsCur.spend, "money", currency)} · CPM: ${fmt(totalsCur.cpm, "money", currency)}.`,
+          `Date window: ${startDate} → ${endDate}.`,
+        ]}
+        context={{
+          campaignCount: filteredCampaignsCur.length,
+          totalSpend: totalsCur.spend,
+          totalImpressions: totalsCur.impressions,
+          groupBy,
+          startDate,
+          endDate,
+          campaigns: filteredCampaignsCur.map(c => ({
+            name: c.name,
+            status: c.status,
+            spend: c.spend ?? 0,
+            impressions: c.impressions ?? 0,
+            clicks: c.clicks ?? 0,
+            conversions: c.conversions ?? 0,
+            conversionValue: c.conversionValue ?? 0,
+            roas: (c.spend ?? 0) > 0 ? +((c.conversionValue ?? 0) / (c.spend ?? 1)).toFixed(4) : 0,
+          })),
+        }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

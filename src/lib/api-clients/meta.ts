@@ -183,6 +183,16 @@ function isoToUnix(iso: string, endOfDay = false): number {
  * (pixel-specific). Naively summing both double-counts. We prefer the unified
  * type and only fall back to the pixel alias when the unified one is absent.
  */
+/**
+ * Sum every entry in a raw Meta action array (e.g. `video_play_actions`).
+ * Unlike sumConversions this does NOT dedupe aliases — video_play_actions
+ * normally returns a single `video_view` row, so a plain sum is correct.
+ */
+function sumActionValues(rows: Array<{ action_type: string; value: string }> | undefined): number | undefined {
+  if (!rows || rows.length === 0) return undefined;
+  return rows.reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
+}
+
 function sumConversions(rows: Array<{ action_type: string; value: string }> | undefined): number | undefined {
   if (!rows || rows.length === 0) return undefined;
   const byType: Record<string, number> = {};
@@ -643,7 +653,7 @@ export class MetaApiClient {
       spend?: number;
       impressions?: number;
       clicks?: number;
-      ads: Array<{ id: string; name: string; status: string }>;
+      ads: Array<{ id: string; name: string; status: string; spend?: number; impressions?: number; clicks?: number; reach?: number }>;
     }>;
     effectiveAttribution?: string;
   }> | null> {
@@ -696,9 +706,10 @@ export class MetaApiClient {
       }
 
       // STEP 3 — fetch the rest in parallel, using the derived attribution.
-      const [campaignInsights, adsetInsights, accountCurrency, windowBreakdown] = await Promise.all([
+      const [campaignInsights, adsetInsights, adInsights, accountCurrency, windowBreakdown] = await Promise.all([
         this.getCampaignInsights(accountPath, startDate, endDate, dominantWindows),
         this.getAdSetInsights(accountPath, startDate, endDate),
+        this.getAdMetricsById(accountPath, startDate, endDate),
         this.getAccountCurrency(accountPath),
         this.getCampaignWindowBreakdown(accountPath, startDate, endDate),
       ]);
@@ -715,6 +726,7 @@ export class MetaApiClient {
         // is actually set at the ad-set level — fall back to summing the ad-sets.
         let dailyBudget = c.daily_budget ? parseFloat(c.daily_budget) / 100 : undefined;
         let lifetimeBudget = c.lifetime_budget ? parseFloat(c.lifetime_budget) / 100 : undefined;
+        const hasCampaignLevelBudget = dailyBudget !== undefined || lifetimeBudget !== undefined;
         const adsets: any[] = c.adsets?.data || [];
         if (dailyBudget === undefined && lifetimeBudget === undefined && adsets.length > 0) {
           // Sum ad-set budgets — only ACTIVELY-DELIVERING ad sets, so paused/
@@ -766,17 +778,25 @@ export class MetaApiClient {
             spend: asm?.spend,
             impressions: asm?.impressions,
             clicks: asm?.clicks,
+            reach: asm?.reach,
             learningStatus: lsi?.status || undefined,
             lastSigEditTs: lsi?.last_sig_edit_ts ? Number(lsi.last_sig_edit_ts) : undefined,
             optimizationGoal: a.optimization_goal || undefined,
             bidStrategy: a.bid_strategy || undefined,
             bidAmount: a.bid_amount ? parseFloat(a.bid_amount) / 100 : undefined,
             attributionSpec: Array.isArray(a.attribution_spec) ? a.attribution_spec : undefined,
-            ads: (a.ads?.data || []).map((ad: any) => ({
+            ads: (a.ads?.data || []).map((ad: any) => {
+              const adm = adInsights[String(ad.id)];
+              return {
               id: String(ad.id),
               name: String(ad.name || ""),
               status: String(ad.status || ad.effective_status || "UNKNOWN"),
-            })),
+              spend: adm?.spend,
+              impressions: adm?.impressions,
+              clicks: adm?.clicks,
+              reach: adm?.reach,
+            };
+            }),
           };
         });
 
@@ -811,9 +831,12 @@ export class MetaApiClient {
           endTime,
           dailyBudget,
           lifetimeBudget,
+          budgetLevel: hasCampaignLevelBudget ? "campaign" as const : "adset" as const,
           spend: m?.spend,
           impressions: m?.impressions,
           clicks: m?.clicks,
+          reach: m?.reach,
+          videoViews: m?.videoViews,
           conversions,
           conversionValue,
           currency,
@@ -937,8 +960,8 @@ export class MetaApiClient {
      * ["1d_click","1d_view"] derived from the account's actual attribution_spec
      * so conversions match Ads Manager exactly. */
     attributionWindows?: string[]
-  ): Promise<Record<string, { spend?: number; impressions?: number; clicks?: number; conversions?: number; conversionValue?: number }>> {
-    const out: Record<string, { spend?: number; impressions?: number; clicks?: number; conversions?: number; conversionValue?: number }> = {};
+  ): Promise<Record<string, { spend?: number; impressions?: number; clicks?: number; reach?: number; conversions?: number; conversionValue?: number; videoViews?: number }>> {
+    const out: Record<string, { spend?: number; impressions?: number; clicks?: number; reach?: number; conversions?: number; conversionValue?: number; videoViews?: number }> = {};
 
     // Inner runner — fetches the insights edge with (or without) attribution
     // windows. `withAttribution=false` omits action_attribution_windows entirely
@@ -947,7 +970,7 @@ export class MetaApiClient {
     const runFetch = async (withAttribution: boolean) => {
       const params: Record<string, string> = {
         level: "campaign",
-        fields: "campaign_id,spend,impressions,clicks,actions,action_values",
+        fields: "campaign_id,spend,impressions,clicks,reach,actions,action_values,video_play_actions",
         limit: "500",
       };
       if (withAttribution) {
@@ -970,8 +993,10 @@ export class MetaApiClient {
             spend: row.spend !== undefined ? parseFloat(row.spend) : undefined,
             impressions: row.impressions !== undefined ? parseInt(row.impressions, 10) : undefined,
             clicks: row.clicks !== undefined ? parseInt(row.clicks, 10) : undefined,
+            reach: row.reach !== undefined ? parseInt(row.reach, 10) : undefined,
             conversions: sumConversions(row.actions),
             conversionValue: sumConversions(row.action_values),
+            videoViews: sumActionValues(row.video_play_actions),
           };
         }
         const next = res.paging?.next;
@@ -1055,16 +1080,17 @@ export class MetaApiClient {
     spend: number; impressions: number; clicks: number;
     reach: number; frequency: number;
     conversions: number; conversionValue: number;
+    uniqueClicks?: number;
   }>> {
     const params: Record<string, string> = {
       level: "adset",
-      fields: "adset_id,adset_name,campaign_name,spend,impressions,clicks,reach,frequency,actions,action_values",
+      fields: "adset_id,adset_name,campaign_name,spend,impressions,clicks,reach,frequency,actions,action_values,unique_clicks",
       limit: "500",
     };
     if (startDate && endDate) params.time_range = `{"since":"${startDate}","until":"${endDate}"}`;
     else params.date_preset = "last_30d";
 
-    const out: Array<{ id: string; name: string; campaignName?: string; spend: number; impressions: number; clicks: number; reach: number; frequency: number; conversions: number; conversionValue: number }> = [];
+    const out: Array<{ id: string; name: string; campaignName?: string; spend: number; impressions: number; clicks: number; reach: number; frequency: number; conversions: number; conversionValue: number; uniqueClicks?: number }> = [];
     let path: string | null = `/${accountPath}/insights`;
     let nextParams: Record<string, string> | undefined = params;
     for (let guard = 0; guard < 10 && path; guard++) {
@@ -1083,6 +1109,7 @@ export class MetaApiClient {
           frequency: row.frequency ? parseFloat(row.frequency) : 0,
           conversions: sumConversions(row.actions) || 0,
           conversionValue: sumConversions(row.action_values) || 0,
+          uniqueClicks: row.unique_clicks ? parseInt(row.unique_clicks, 10) : undefined,
         });
       }
       path = res.paging?.next || null;
@@ -1091,16 +1118,90 @@ export class MetaApiClient {
     return out;
   }
 
+  /** Account-level reach + average frequency + impressions over the trailing
+   *  365 days (one Insights call, level=account). Used by the annual
+   *  frequency-distribution chart. Returns zeros when no data. */
+  async getAccountAnnualReachFrequency(
+    accountPath: string
+  ): Promise<{ reach: number; frequency: number; impressions: number; spend: number }> {
+    // Trailing 12 months: today − 365 days → today (UTC date strings).
+    const until = new Date();
+    const since = new Date(until.getTime() - 365 * 24 * 60 * 60 * 1000);
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    const params: Record<string, string> = {
+      level: "account",
+      fields: "reach,frequency,impressions,spend",
+      time_range: `{"since":"${iso(since)}","until":"${iso(until)}"}`,
+    };
+    const res = await this.fetch<{ data?: any[] }>(`/${accountPath}/insights`, params);
+    const row = res.data?.[0] || {};
+    return {
+      reach: row.reach ? parseInt(row.reach, 10) : 0,
+      frequency: row.frequency ? parseFloat(row.frequency) : 0,
+      impressions: row.impressions ? parseInt(row.impressions, 10) : 0,
+      spend: row.spend ? parseFloat(row.spend) : 0,
+    };
+  }
+
+  /** Account-level deduplicated reach + average frequency for an ARBITRARY date
+   *  range (level=account). This is the TRUE cross-campaign frequency — the
+   *  average impressions per unique person across every campaign in the period —
+   *  and the deduplicated denominator for the cross-campaign burden metric.
+   *  Returns zeros when no data. */
+  async getAccountReachFrequency(
+    accountPath: string,
+    startDate?: string,
+    endDate?: string
+  ): Promise<{ reach: number; frequency: number; impressions: number }> {
+    const params: Record<string, string> = {
+      level: "account",
+      fields: "reach,frequency,impressions",
+    };
+    if (startDate && endDate) params.time_range = `{"since":"${startDate}","until":"${endDate}"}`;
+    else params.date_preset = "last_30d";
+    const res = await this.fetch<{ data?: any[] }>(`/${accountPath}/insights`, params);
+    const row = res.data?.[0] || {};
+    return {
+      reach: row.reach ? parseInt(row.reach, 10) : 0,
+      frequency: row.frequency ? parseFloat(row.frequency) : 0,
+      impressions: row.impressions ? parseInt(row.impressions, 10) : 0,
+    };
+  }
+
+  /** Account-level reach + frequency + impressions broken out by MONTH over the
+   *  trailing 365 days (time_increment=monthly). Used by the monthly
+   *  views-over-time chart. Each row's reach is the unique reach within that month. */
+  async getAccountMonthlyReachFrequency(
+    accountPath: string
+  ): Promise<Array<{ month: string; reach: number; frequency: number; impressions: number }>> {
+    const until = new Date();
+    const since = new Date(until.getTime() - 365 * 24 * 60 * 60 * 1000);
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    const params: Record<string, string> = {
+      level: "account",
+      fields: "reach,frequency,impressions",
+      time_increment: "monthly",
+      time_range: `{"since":"${iso(since)}","until":"${iso(until)}"}`,
+    };
+    const res = await this.fetch<{ data?: any[] }>(`/${accountPath}/insights`, params);
+    return (res.data || []).map((row) => ({
+      month: String(row.date_start || "").slice(0, 7), // YYYY-MM
+      reach: row.reach ? parseInt(row.reach, 10) : 0,
+      frequency: row.frequency ? parseFloat(row.frequency) : 0,
+      impressions: row.impressions ? parseInt(row.impressions, 10) : 0,
+    }));
+  }
+
   async getAdSetInsights(
     accountPath: string,
     startDate?: string,
     endDate?: string
-  ): Promise<Record<string, { spend?: number; impressions?: number; clicks?: number }>> {
-    const out: Record<string, { spend?: number; impressions?: number; clicks?: number }> = {};
+  ): Promise<Record<string, { spend?: number; impressions?: number; clicks?: number; reach?: number }>> {
+    const out: Record<string, { spend?: number; impressions?: number; clicks?: number; reach?: number }> = {};
     try {
       const params: Record<string, string> = {
         level: "adset",
-        fields: "adset_id,spend,impressions,clicks",
+        fields: "adset_id,spend,impressions,clicks,reach",
         limit: "500",
       };
       if (startDate && endDate) params.time_range = `{"since":"${startDate}","until":"${endDate}"}`;
@@ -1118,6 +1219,7 @@ export class MetaApiClient {
             spend: row.spend !== undefined ? parseFloat(row.spend) : undefined,
             impressions: row.impressions !== undefined ? parseInt(row.impressions, 10) : undefined,
             clicks: row.clicks !== undefined ? parseInt(row.clicks, 10) : undefined,
+            reach: row.reach !== undefined ? parseInt(row.reach, 10) : undefined,
           };
         }
         const next = res.paging?.next;
@@ -1126,6 +1228,48 @@ export class MetaApiClient {
       }
     } catch {
       // Degrade gracefully.
+    }
+    return out;
+  }
+
+  /** Ad-level insights keyed by ad_id — spend, impressions, clicks, reach.
+   *  Used by the drill tree to show per-ad metrics. */
+  async getAdMetricsById(
+    accountPath: string,
+    startDate?: string,
+    endDate?: string
+  ): Promise<Record<string, { spend?: number; impressions?: number; clicks?: number; reach?: number }>> {
+    const out: Record<string, { spend?: number; impressions?: number; clicks?: number; reach?: number }> = {};
+    try {
+      const params: Record<string, string> = {
+        level: "ad",
+        fields: "ad_id,spend,impressions,clicks,reach",
+        limit: "500",
+      };
+      if (startDate && endDate) params.time_range = `{"since":"${startDate}","until":"${endDate}"}`;
+      else params.date_preset = "last_30d";
+
+      let path: string | null = `/${accountPath}/insights`;
+      let nextParams: Record<string, string> | undefined = params;
+      for (let guard = 0; guard < 10 && path; guard++) {
+        const res: { data?: any[]; paging?: { next?: string } } = nextParams
+          ? await this.fetch<{ data?: any[]; paging?: { next?: string } }>(path, nextParams)
+          : await this.fetchAbsolute<{ data?: any[]; paging?: { next?: string } }>(path);
+        for (const row of res.data || []) {
+          const id = String(row.ad_id);
+          out[id] = {
+            spend: row.spend !== undefined ? parseFloat(row.spend) : undefined,
+            impressions: row.impressions !== undefined ? parseInt(row.impressions, 10) : undefined,
+            clicks: row.clicks !== undefined ? parseInt(row.clicks, 10) : undefined,
+            reach: row.reach !== undefined ? parseInt(row.reach, 10) : undefined,
+          };
+        }
+        const next = res.paging?.next;
+        path = next || null;
+        nextParams = undefined;
+      }
+    } catch {
+      // Degrade gracefully — ad metrics are nice-to-have.
     }
     return out;
   }
@@ -1584,25 +1728,28 @@ export class MetaApiClient {
   }
 
   /** List custom audiences for an ad account.
-   *  Returns id, name, size, and the subtype/lookalike fields needed for
-   *  marketing-meaning audience classification. */
+   *  Returns id, name, size, subtype/lookalike fields, and time_updated for staleness detection. */
   async getCustomAudiences(accountPath: string): Promise<Array<{
     id: string;
     name: string;
     size: number;
     subtype?: string;
-    lookalikeSpec?: { ratio?: number; type?: string; origin?: any[] };
+    lookalikeSpec?: { ratio?: number; type?: string; origin?: any[]; startingAudienceSize?: number };
     customerFileSource?: string;
+    timeUpdated?: string;
+    retentionDays?: number;
   }>> {
     const out: Array<{
       id: string; name: string; size: number;
       subtype?: string;
-      lookalikeSpec?: { ratio?: number; type?: string; origin?: any[] };
+      lookalikeSpec?: { ratio?: number; type?: string; origin?: any[]; startingAudienceSize?: number };
       customerFileSource?: string;
+      timeUpdated?: string;
+      retentionDays?: number;
     }> = [];
     let path: string | null = `/${accountPath}/customaudiences`;
     let nextParams: Record<string, string> | undefined = {
-      fields: "id,name,approximate_count_lower_bound,approximate_count_upper_bound,subtype,lookalike_spec,customer_file_source",
+      fields: "id,name,approximate_count_lower_bound,approximate_count_upper_bound,subtype,lookalike_spec,customer_file_source,time_updated,retention_days",
       limit: "200",
     };
 
@@ -1620,9 +1767,16 @@ export class MetaApiClient {
           size: lower > 0 && upper > 0 ? Math.round((lower + upper) / 2) : lower || upper,
           subtype: row.subtype || undefined,
           lookalikeSpec: row.lookalike_spec
-            ? { ratio: row.lookalike_spec.ratio, type: row.lookalike_spec.type, origin: row.lookalike_spec.origin }
+            ? {
+                ratio: row.lookalike_spec.ratio,
+                type: row.lookalike_spec.type,
+                origin: row.lookalike_spec.origin,
+                startingAudienceSize: row.lookalike_spec.origin?.[0]?.starting_audience_size,
+              }
             : undefined,
           customerFileSource: row.customer_file_source || undefined,
+          timeUpdated: row.time_updated || undefined,
+          retentionDays: row.retention_days != null ? parseInt(String(row.retention_days), 10) : undefined,
         });
       }
 

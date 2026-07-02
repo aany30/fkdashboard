@@ -8,11 +8,15 @@
 
 import { useMemo, useState } from "react";
 import { Trophy, ChevronUp, ChevronDown } from "lucide-react";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useCampaigns } from "@/hooks/useCampaigns";
+import { usePersistentValue } from "@/hooks/useColumnPrefs";
 import { detectCurrency, formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import type { CampaignData } from "@/types";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -44,12 +48,12 @@ const METRICS: MetricSpec[] = [
 export default function LeaderboardsReport({ platform, dateRange, customStart, customEnd, setActiveTab: _setActiveTab }: Props) {
   const { campaigns, loading, startDate, endDate } = useCampaigns(platform, dateRange, customStart, customEnd);
   const currency = detectCurrency(campaigns);
-  const [metricId, setMetricId] = useState<MetricId>("spend");
+  const [metricId, setMetricId] = usePersistentValue<MetricId>("leaderboards-metric", "spend");
   const [activeOnly, setActiveOnly] = useState(false);
 
   const metric = METRICS.find((m) => m.id === metricId)!;
 
-  const { top10, bottom10, totalEligible } = useMemo(() => {
+  const { top10Raw, bottom10Raw, totalEligible } = useMemo(() => {
     const isActive = (c: CampaignData) => ["ACTIVE", "ENABLED"].includes((c.status || "").toUpperCase());
     let pool = campaigns;
     if (activeOnly) pool = pool.filter(isActive);
@@ -60,11 +64,14 @@ export default function LeaderboardsReport({ platform, dateRange, customStart, c
     // Sort: lowest-first for cost metrics ("best CPA" = lowest), highest-first for the rest
     const sorted = [...eligible].sort((a, b) => metric.cost ? a.v - b.v : b.v - a.v);
     return {
-      top10: sorted.slice(0, 10),
-      bottom10: sorted.slice(-10).reverse(),
+      top10Raw: sorted.slice(0, 10).map((x) => ({ id: `top-${x.c.platform}-${x.c.id}`, name: x.c.name, v: x.v, c: x.c })),
+      bottom10Raw: sorted.slice(-10).reverse().map((x) => ({ id: `bot-${x.c.platform}-${x.c.id}`, name: x.c.name, v: x.v, c: x.c })),
       totalEligible: eligible.length,
     };
   }, [campaigns, metric, activeOnly]);
+
+  const { sorted: top10, sort: topSort, toggle: topToggle } = useSort(top10Raw, "v", "desc");
+  const { sorted: bottom10, sort: botSort, toggle: botToggle } = useSort(bottom10Raw, "v", "asc");
 
   return (
     <div className="space-y-6">
@@ -141,18 +148,18 @@ export default function LeaderboardsReport({ platform, dateRange, customStart, c
               <h3 className="text-sm font-bold text-green-900">Top 10 — {metric.label}</h3>
             </div>
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
                 <tr>
                   <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase w-8">#</th>
-                  <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase">Campaign</th>
-                  <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">{metric.label}</th>
+                  <SortTh col="name" sort={topSort} onToggle={topToggle} className="px-4 py-2 text-[11px] uppercase font-semibold text-gray-600">Campaign</SortTh>
+                  <SortTh col="v" sort={topSort} onToggle={topToggle} className="px-4 py-2 text-[11px] uppercase font-semibold text-gray-600" align="right">{metric.label}</SortTh>
                 </tr>
               </thead>
               <tbody>
                 {top10.map((x, idx) => (
-                  <tr key={`top-${x.c.platform}-${x.c.id}`} className="border-b border-gray-100 hover:bg-gray-50">
+                  <tr key={x.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="px-4 py-2 text-xs text-gray-500 font-mono">{idx + 1}</td>
-                    <td className="px-4 py-2 font-mono text-gray-900 truncate max-w-[260px]" title={x.c.name}>{x.c.name}</td>
+                    <td className="px-4 py-2 font-mono text-gray-900 truncate max-w-[260px]" title={x.name}>{x.name}</td>
                     <td className="px-4 py-2 text-right font-semibold text-gray-900 whitespace-nowrap">{metric.format(x.v, currency)}</td>
                   </tr>
                 ))}
@@ -170,18 +177,18 @@ export default function LeaderboardsReport({ platform, dateRange, customStart, c
               <h3 className="text-sm font-bold text-red-900">Bottom 10 — {metric.label}</h3>
             </div>
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
                 <tr>
                   <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase w-8">#</th>
-                  <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase">Campaign</th>
-                  <th className="px-4 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase">{metric.label}</th>
+                  <SortTh col="name" sort={botSort} onToggle={botToggle} className="px-4 py-2 text-[11px] uppercase font-semibold text-gray-600">Campaign</SortTh>
+                  <SortTh col="v" sort={botSort} onToggle={botToggle} className="px-4 py-2 text-[11px] uppercase font-semibold text-gray-600" align="right">{metric.label}</SortTh>
                 </tr>
               </thead>
               <tbody>
                 {bottom10.map((x, idx) => (
-                  <tr key={`bot-${x.c.platform}-${x.c.id}`} className="border-b border-gray-100 hover:bg-gray-50">
+                  <tr key={x.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="px-4 py-2 text-xs text-gray-500 font-mono">{idx + 1}</td>
-                    <td className="px-4 py-2 font-mono text-gray-900 truncate max-w-[260px]" title={x.c.name}>{x.c.name}</td>
+                    <td className="px-4 py-2 font-mono text-gray-900 truncate max-w-[260px]" title={x.name}>{x.name}</td>
                     <td className="px-4 py-2 text-right font-semibold text-gray-900 whitespace-nowrap">{metric.format(x.v, currency)}</td>
                   </tr>
                 ))}
@@ -198,6 +205,36 @@ export default function LeaderboardsReport({ platform, dateRange, customStart, c
         Tip: for cost metrics (CPA, CPC) the lowest value is best. The leaderboard auto-flips the order so winners are always at the top.
       </p>
 
+      <TabSummaryFooter
+        tabName="Leaderboards Report"
+        lines={[
+          `${campaigns.length} campaign${campaigns.length !== 1 ? "s" : ""} loaded — ${totalEligible} eligible for the selected metric (${metric.label}).`,
+          `Top performer: ${top10[0]?.name ? top10[0].name.slice(0, 60) + (top10[0].name.length > 60 ? "…" : "") : "—"} · ${metric.format(top10[0]?.v ?? 0, currency)}.`,
+          `Date window: ${startDate} → ${endDate}.`,
+        ]}
+        context={{
+          campaignCount: campaigns.length,
+          totalEligible,
+          metric: metricId,
+          startDate,
+          endDate,
+          campaigns: campaigns.map(c => ({
+            name: c.name,
+            status: c.status,
+            spend: c.spend ?? 0,
+            impressions: c.impressions ?? 0,
+            clicks: c.clicks ?? 0,
+            conversions: c.conversions ?? 0,
+            conversionValue: c.conversionValue ?? 0,
+            roas: (c.spend ?? 0) > 0 ? +((c.conversionValue ?? 0) / (c.spend ?? 1)).toFixed(4) : 0,
+            ctr: (c.impressions ?? 0) > 0 ? +((c.clicks ?? 0) / (c.impressions ?? 1) * 100).toFixed(4) : 0,
+            cpa: (c.conversions ?? 0) > 0 ? +((c.spend ?? 0) / (c.conversions ?? 1)).toFixed(4) : 0,
+            cpc: (c.clicks ?? 0) > 0 ? +((c.spend ?? 0) / (c.clicks ?? 1)).toFixed(4) : 0,
+          })),
+        }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

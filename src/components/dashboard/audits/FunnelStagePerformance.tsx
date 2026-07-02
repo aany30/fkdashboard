@@ -17,6 +17,7 @@ import { basisMetrics, BASIS_OPTIONS, BASIS_SUBTITLE, type SpendBasis, type Life
 import { detectCurrency, formatMoney } from "@/lib/currency";
 import AttributionInfo from "@/components/shared/AttributionInfo";
 import FunnelStageCompare from "./FunnelStageCompare";
+import { usePersistentValue } from "@/hooks/useColumnPrefs";
 
 type Stage = "TOF" | "MOF" | "BOF";
 
@@ -61,23 +62,13 @@ type MetricId = (typeof METRIC_OPTIONS)[number]["id"];
 
 /** Aggregate per-stage metrics from the raw campaign list, on the chosen spend basis. */
 function aggregateByStage(campaigns: CampaignData[], lifetime: LifetimeMap, basis: SpendBasis) {
-  const stages: Record<Stage, {
-    campaignCount: number;
-    spend: number;
-    impressions: number;
-    clicks: number;
-    conversions: number;
-    conversionValue: number;
-    // Synthetic placeholders for metrics Meta API doesn't directly give us
-    reach: number;
-    engagements: number;
-    views: number;
-    leads: number;
-    atc: number;
-  }> = {
-    TOF: { campaignCount: 0, spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0, reach: 0, engagements: 0, views: 0, leads: 0, atc: 0 },
-    MOF: { campaignCount: 0, spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0, reach: 0, engagements: 0, views: 0, leads: 0, atc: 0 },
-    BOF: { campaignCount: 0, spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0, reach: 0, engagements: 0, views: 0, leads: 0, atc: 0 },
+  const init = () => ({
+    campaignCount: 0, spend: 0, impressions: 0, clicks: 0,
+    reach: 0, conversions: 0, conversionValue: 0,
+    windowSpend: 0, windowClicks: 0, windowImpressions: 0,
+  });
+  const stages: Record<Stage, ReturnType<typeof init>> = {
+    TOF: init(), MOF: init(), BOF: init(),
   };
 
   for (const c of campaigns) {
@@ -85,50 +76,48 @@ function aggregateByStage(campaigns: CampaignData[], lifetime: LifetimeMap, basi
     if (stage === "Unknown") continue;
     const s = stages[stage];
     s.campaignCount += 1;
-    // All three values resolved on the SAME basis so ratios stay coherent.
     const { spend, impressions, clicks } = basisMetrics(c, lifetime, basis);
     s.spend += spend;
     s.impressions += impressions;
     s.clicks += clicks;
+    s.reach += c.reach || 0;
     s.conversions += c.conversions || 0;
     s.conversionValue += c.conversionValue || 0;
-    // Derived/synthetic when API doesn't provide directly
-    s.reach += Math.round(impressions * 0.45); // assume ~45% unique reach
-    if (stage === "TOF") s.views += Math.round(impressions * 0.30);
-    if (stage === "MOF") s.engagements += clicks;
-    if (stage === "BOF") {
-      s.leads += Math.round((c.conversions || 0) * 0.7);
-      s.atc += Math.round((c.conversions || 0) * 3.5);
-    }
+    s.windowSpend += c.spend || 0;
+    s.windowClicks += c.clicks || 0;
+    s.windowImpressions += c.impressions || 0;
   }
   return stages;
 }
+
+type StageData = ReturnType<ReturnType<typeof aggregateByStage>[Stage] extends infer T ? () => T : never>;
 
 /** Compute a single metric value for a given stage's aggregates. */
 function metricValue(s: ReturnType<typeof aggregateByStage>[Stage], metric: MetricId): number {
   switch (metric) {
     case "spend": return s.spend;
     case "impressions": return s.impressions;
-    case "reach": return s.reach;
-    case "cpm": return s.impressions > 0 ? (s.spend / s.impressions) * 1000 : 0;
-    case "frequency": return s.reach > 0 ? s.impressions / s.reach : 0;
     case "clicks": return s.clicks;
+    case "reach": return s.reach;
+    case "sales": return s.conversions;
+    case "cpm": return s.impressions > 0 ? (s.spend / s.impressions) * 1000 : 0;
+    case "frequency": return s.reach > 0 ? s.windowImpressions / s.reach : 0;
     case "ctr": return s.impressions > 0 ? (s.clicks / s.impressions) * 100 : 0;
     case "cpc": return s.clicks > 0 ? s.spend / s.clicks : 0;
-    case "engagements": return s.engagements;
-    case "engRate": return s.impressions > 0 ? (s.engagements / s.impressions) * 100 : 0;
-    case "cpe": return s.engagements > 0 ? s.spend / s.engagements : 0;
-    case "views": return s.views;
-    case "vtr": return s.impressions > 0 ? (s.views / s.impressions) * 100 : 0;
-    case "cpv": return s.views > 0 ? s.spend / s.views : 0;
-    case "leads": return s.leads;
-    case "convRate": return s.clicks > 0 ? (s.conversions / s.clicks) * 100 : 0;
-    case "cpl": return s.leads > 0 ? s.spend / s.leads : 0;
-    case "atc": return s.atc;
-    case "atcConvRate": return s.atc > 0 ? (s.conversions / s.atc) * 100 : 0;
-    case "sales": return s.conversions;
-    case "saleConvRate": return s.clicks > 0 ? (s.conversions / s.clicks) * 100 : 0;
-    case "cps": return s.conversions > 0 ? s.spend / s.conversions : 0;
+    case "convRate": return s.windowClicks > 0 ? (s.conversions / s.windowClicks) * 100 : 0;
+    case "saleConvRate": return s.windowClicks > 0 ? (s.conversions / s.windowClicks) * 100 : 0;
+    case "cps": return s.conversions > 0 ? s.windowSpend / s.conversions : 0;
+    case "cpl": return s.conversions > 0 ? s.windowSpend / s.conversions : 0;
+    case "cpv": return s.conversions > 0 ? s.windowSpend / s.conversions : 0;
+    case "cpe": return s.clicks > 0 ? s.windowSpend / s.clicks : 0;
+    // Metrics not available at campaign level from Meta API
+    case "engagements": return 0;
+    case "engRate": return 0;
+    case "views": return 0;
+    case "vtr": return 0;
+    case "leads": return 0;
+    case "atc": return 0;
+    case "atcConvRate": return 0;
   }
 }
 
@@ -173,8 +162,9 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
   const acctCurrency = detectCurrency(campaigns);
   const { metaAccessToken, metaBusinessId } = useAuthStore();
   const [compareMode, setCompareMode] = useState(false);
-  const [primaryMetric, setPrimaryMetric] = useState<MetricId>("spend");
-  const [secondaryMetric, setSecondaryMetric] = useState<MetricId>("cpm");
+  const [primaryMetric, setPrimaryMetric] = usePersistentValue<MetricId>("funnel-stage-perf-primary", "spend");
+  const [secondaryMetric, setSecondaryMetric] = usePersistentValue<MetricId>("funnel-stage-perf-secondary", "cpm");
+  const [tertiaryMetric, setTertiaryMetric] = usePersistentValue<MetricId>("funnel-stage-perf-tertiary", "ctr");
   // Default to "window" so the date picker IMMEDIATELY affects the chart.
   // Avg/day uses lifetime data and ignores the date range — users found this confusing.
   const [basis, setBasis] = useState<SpendBasis>("window");
@@ -231,11 +221,13 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
   // Chart data
   const primary = METRIC_OPTIONS.find((m) => m.id === primaryMetric)!;
   const secondary = METRIC_OPTIONS.find((m) => m.id === secondaryMetric)!;
+  const tertiary = METRIC_OPTIONS.find((m) => m.id === tertiaryMetric)!;
 
   const chartData = stageOrder.map((stage) => ({
     stage,
     [primaryMetric]: Number(metricValue(stages[stage], primaryMetric).toFixed(2)),
     [secondaryMetric]: Number(metricValue(stages[stage], secondaryMetric).toFixed(2)),
+    [`__tertiary__${tertiaryMetric}`]: Number(metricValue(stages[stage], tertiaryMetric).toFixed(2)),
   }));
 
   const stageColor = (stage: Stage) =>
@@ -374,12 +366,24 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
               ))}
             </select>
           </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-600">Tertiary Y:</span>
+            <select
+              value={tertiaryMetric}
+              onChange={(e) => setTertiaryMetric(e.target.value as MetricId)}
+              className="px-2 py-1 bg-white border border-orange-300 rounded font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-orange-400"
+            >
+              {METRIC_OPTIONS.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Composed chart: bars for primary, line for secondary */}
         <div style={{ width: "100%", height: 320 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={chartData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+            <ComposedChart data={chartData} margin={{ top: 10, right: 80, left: 10, bottom: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
               <XAxis dataKey="stage" stroke="#6b7280" tick={{ fill: "#374151", fontSize: 12 }} axisLine={false} tickLine={false} />
               <YAxis
@@ -397,11 +401,22 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
                 axisLine={false} tickLine={false}
                 tickFormatter={(v) => formatValue(v, secondary.unit, acctCurrency)}
               />
+              <YAxis
+                yAxisId="right2"
+                orientation="right"
+                stroke="#f59e0b"
+                tick={{ fill: "#f59e0b", fontSize: 11 }}
+                axisLine={false} tickLine={false}
+                tickFormatter={(v) => formatValue(v, tertiary.unit, acctCurrency)}
+                width={60}
+              />
               <Tooltip
                 cursor={{ fill: "rgba(99,102,241,0.06)" }}
                 formatter={(value: number, name: string) => {
-                  const metric = name === primary.label ? primary : secondary;
-                  return [formatValue(value, metric.unit, acctCurrency), name];
+                  if (name === primary.label) return [formatValue(value, primary.unit, acctCurrency), name];
+                  if (name === secondary.label) return [formatValue(value, secondary.unit, acctCurrency), name];
+                  if (name === tertiary.label) return [formatValue(value, tertiary.unit, acctCurrency), name];
+                  return [value, name];
                 }}
                 contentStyle={{ background: "#fff", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 12 }}
               />
@@ -424,6 +439,18 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
                 dot={{ r: 5, fill: "#10b981" }}
                 activeDot={{ r: 7 }}
                 animationDuration={700}
+                animationEasing="ease-out"
+              />
+              <Line
+                yAxisId="right2"
+                dataKey={`__tertiary__${tertiaryMetric}`}
+                name={tertiary.label}
+                stroke="#f59e0b"
+                strokeWidth={2}
+                dot={{ r: 5, fill: "#f59e0b" }}
+                activeDot={{ r: 7 }}
+                strokeDasharray="5 3"
+                animationDuration={800}
                 animationEasing="ease-out"
               />
             </ComposedChart>
@@ -459,6 +486,12 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
                     {secondary.label}:{" "}
                     <span className="font-mono text-green-700 font-semibold">
                       {formatValue(metricValue(stages[stage], secondaryMetric), secondary.unit, acctCurrency)}
+                    </span>
+                  </div>
+                  <div className="text-gray-600">
+                    {tertiary.label}:{" "}
+                    <span className="font-mono font-semibold" style={{ color: "#d97706" }}>
+                      {formatValue(metricValue(stages[stage], tertiaryMetric), tertiary.unit, acctCurrency)}
                     </span>
                   </div>
                   <div className="text-[10px] text-indigo-600 mt-1">{isOpen ? "▼ Hide campaigns" : "▶ Show campaigns"}</div>
@@ -500,6 +533,7 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
         </div>
       </div>
     </div>
+
    </div>
   );
 }
@@ -541,7 +575,7 @@ function StageCampaignBreakdown({ campaigns, bucket, lifetime, openStage, acctCu
             <div className="px-3 py-4 text-xs text-gray-500 text-center">No campaigns in this stage.</div>
           ) : (
             <table className="w-full text-xs">
-              <thead className="bg-gray-50 border-b border-gray-100">
+              <thead className="bg-gray-50 border-b border-gray-100 sticky top-0 z-20 shadow-sm">
                 <tr>
                   <th className="px-3 py-1.5 text-left text-gray-600 font-semibold">Campaign</th>
                   <th className="px-3 py-1.5 text-left text-gray-600 font-semibold">Objective</th>

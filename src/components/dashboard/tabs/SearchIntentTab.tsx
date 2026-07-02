@@ -17,7 +17,10 @@ import { useColPicker, ColumnPickerButton, ColHeader, ALL_STANDARD_KPIS, STD_KPI
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { formatMoney } from "@/lib/currency";
 import { detectCurrency } from "@/lib/currency";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import type { DateRange } from "@/components/shared/DateRangePicker";
+import SortTh from "@/components/shared/SortTh";
+import { useSort } from "@/hooks/useSort";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -76,7 +79,7 @@ function MetaNotApplicable() {
 
 // ─── KPI configs ─────────────────────────────────────────────────────────────
 
-const SI_DEFAULTS = ["spend", "revenue", "orders", "roas", "cpa", "cvr", "ctr", "clicks"];
+const SI_DEFAULTS = ["spend", "revenue", "orders", "roas", "cpa", "cvr", "clicks", "cpc"];
 const SQ_DEFAULTS = ["spend", "revenue", "orders", "roas", "cpa", "cvr"];
 
 type SiRow = { spend: number; clicks: number; conversions: number; conversionValue: number; count: number };
@@ -138,6 +141,13 @@ function fmtCampKpi(id: string, c: CampaignRow, cur: (n: number) => string): str
   }
 }
 
+// Only KPIs each table can populate — probe the renderer with a full row; KPIs
+// still "—" (impressions/CTR/reach at intent level, Views, Leads, …) are dropped.
+const SI_SAMPLE: SiRow = { spend: 5000, clicks: 1500, conversions: 80, conversionValue: 120000, count: 5 };
+const SI_FETCHABLE = ALL_STANDARD_KPIS.filter((k) => fmtSiKpi(k.id, SI_SAMPLE, (n) => String(n)) !== "—");
+const SQ_SAMPLE: CampaignRow = { spend: 5000, clicks: 1500, conversions: 80, conversionValue: 120000 };
+const SQ_FETCHABLE = ALL_STANDARD_KPIS.filter((k) => fmtCampKpi(k.id, SQ_SAMPLE, (n) => String(n)) !== "—");
+
 // ─── §12 Search Intent ──────────────────────────────────────────────────────
 
 function SearchIntentAnalysis({ platform, dateRange, customStart, customEnd }: Props) {
@@ -158,10 +168,11 @@ function SearchIntentAnalysis({ platform, dateRange, customStart, customEnd }: P
     }
     return INTENT_ORDER.filter((k) => map.has(k)).map((k) => ({ intent: k, ...map.get(k)! }));
   }, [campaigns]);
+  const { sorted: intentSorted, sort: intentSort, toggle: intentToggle } = useSort(rows, "spend", "desc");
 
   const cur = (n: number) => formatMoney(n, currency, 0);
 
-  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(SI_DEFAULTS);
+  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(SI_DEFAULTS, "search-intent");
 
   if (loading) return <div className="text-sm text-gray-500">Loading campaign data…</div>;
 
@@ -178,28 +189,28 @@ function SearchIntentAnalysis({ platform, dateRange, customStart, customEnd }: P
         Intent classified from campaign names. For precise keyword-level intent, connect Google Search Console or use Smart Bidding intent signals.
       </div>
       <ColumnPickerButton
-        cols={cols} allDefs={ALL_STANDARD_KPIS} defaultIds={SI_DEFAULTS}
+        cols={cols} allDefs={SI_FETCHABLE} defaultIds={SI_DEFAULTS}
         pickerOpen={pickerOpen} setPickerOpen={setPickerOpen} pickerRef={pickerRef}
         toggleCol={toggleCol} resetCols={resetCols}
       />
       <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm" ref={tableRef}>
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
             <tr>
-              <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Intent Type</th>
-              <th className="px-4 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">Campaigns</th>
+              <SortTh col="intent" sort={intentSort} onToggle={intentToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap">Intent Type</SortTh>
+              <SortTh col="count" sort={intentSort} onToggle={intentToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600" align="right">Campaigns</SortTh>
               {cols.map((id, colIdx) => {
                 const k = STD_KPI_MAP.get(id);
                 return (
                   <th key={id} className="px-3 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">
-                    <ColHeader colIdx={colIdx} currentId={id} label={k?.label ?? id} allDefs={ALL_STANDARD_KPIS} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol} />
+                    <ColHeader colIdx={colIdx} currentId={id} label={k?.label ?? id} allDefs={SI_FETCHABLE} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol} />
                   </th>
                 );
               })}
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {intentSorted.map((r) => (
               <tr key={r.intent} className="border-b border-gray-100 hover:bg-gray-50">
                 <td className="px-4 py-2.5">
                   <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${INTENT_COLORS[r.intent]}`}>{r.intent}</span>
@@ -225,8 +236,9 @@ function SearchQueryIntent({ platform, dateRange, customStart, customEnd }: Prop
   const { campaigns, loading } = useCampaigns(platform === "both" ? "google" : platform, dateRange, customStart, customEnd);
   const currency = detectCurrency(campaigns);
   const cur = (n: number) => formatMoney(n, currency, 0);
+  const { sorted: sqSorted, sort: sqSort, toggle: sqToggle } = useSort(campaigns, "spend", "desc");
 
-  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(SQ_DEFAULTS);
+  const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(SQ_DEFAULTS, "search-query");
 
   if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
 
@@ -242,28 +254,28 @@ function SearchQueryIntent({ platform, dateRange, customStart, customEnd }: Prop
       {campaigns.length > 0 && (
         <>
           <ColumnPickerButton
-            cols={cols} allDefs={ALL_STANDARD_KPIS} defaultIds={SQ_DEFAULTS}
+            cols={cols} allDefs={SQ_FETCHABLE} defaultIds={SQ_DEFAULTS}
             pickerOpen={pickerOpen} setPickerOpen={setPickerOpen} pickerRef={pickerRef}
             toggleCol={toggleCol} resetCols={resetCols}
           />
           <div className="overflow-x-auto bg-white rounded-lg border border-gray-200 shadow-sm" ref={tableRef}>
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
                 <tr>
-                  <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase whitespace-nowrap">Query Cluster (Campaign)</th>
+                  <SortTh col="name" sort={sqSort} onToggle={sqToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap">Query Cluster (Campaign)</SortTh>
                   <th className="px-4 py-2.5 text-left text-[11px] font-semibold text-gray-600 uppercase">Intent</th>
                   {cols.map((id, colIdx) => {
                     const k = STD_KPI_MAP.get(id);
                     return (
                       <th key={id} className="px-3 py-2.5 text-right text-[11px] font-semibold text-gray-600 uppercase">
-                        <ColHeader colIdx={colIdx} currentId={id} label={k?.label ?? id} allDefs={ALL_STANDARD_KPIS} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol} />
+                        <ColHeader colIdx={colIdx} currentId={id} label={k?.label ?? id} allDefs={SQ_FETCHABLE} swapIdx={swapIdx} setSwapIdx={setSwapIdx} swapCol={swapCol} />
                       </th>
                     );
                   })}
                 </tr>
               </thead>
               <tbody>
-                {[...campaigns].sort((a, b) => (b.spend || 0) - (a.spend || 0)).map((c) => {
+                {sqSorted.map((c) => {
                   const intent = classifyIntent(c.name || "");
                   return (
                     <tr key={`${c.platform}-${c.id}`} className="border-b border-gray-100 hover:bg-gray-50">
@@ -333,6 +345,20 @@ export default function SearchIntentTab(props: Props) {
           {active === "queries" && <SearchQueryIntent {...props} />}
         </>
       )}
+
+      <TabSummaryFooter
+        tabName="Search Intent"
+        lines={[
+          isMetaOnly
+            ? "Search Intent analysis is not applicable for Meta — this section is Google Ads only."
+            : `Search intent analysis across Brand, Transactional, Commercial, Competitor, Informational, and Navigational intent buckets.`,
+          `Platform: ${props.platform} · Active view: ${active === "intent" ? "Intent Analysis" : "Search Query Intent"}.`,
+          "Rename campaigns with intent keywords (brand:, tran:, comp:) for automatic intent classification.",
+        ]}
+        context={{ platform: props.platform, activeSubTab: active }}
+        platform={props.platform === "both" ? "meta" : props.platform}
+        dateRange={String(props.dateRange)}
+      />
     </div>
   );
 }

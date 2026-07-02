@@ -7,6 +7,7 @@ import NamingChecker from "./NamingChecker";
 import RenamingAgent from "./RenamingAgent";
 import { objectiveMatches } from "./CampaignObjectiveFilter";
 import { rangeToDates } from "@/lib/date-range";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -237,6 +238,18 @@ export default function NamingTab({ platform, dateRange = "30d", customStart, cu
         <NamingChecker campaigns={filteredCampaigns} loading={loading} onRefresh={handleRefresh} />
       )}
       {activeTab === "agent" && <RenamingAgent campaigns={filteredCampaigns} loading={loading} />}
+
+      <TabSummaryFooter
+        lines={[
+          `${filteredCampaigns.length} campaign${filteredCampaigns.length !== 1 ? "s" : ""} loaded for naming audit${selectedObjectives && selectedObjectives.size > 0 ? ` (filtered from ${campaigns.length} total)` : ""}.`,
+          `Currently in the ${NAMING_TABS.find((t) => t.id === activeTab)?.label ?? activeTab} tool — ${NAMING_TABS.find((t) => t.id === activeTab)?.description ?? ""}.`,
+          "Use Naming Checker to audit compliance against your convention, and Renaming Agent to get AI-powered correction suggestions.",
+        ]}
+        tabName="Campaign Naming Conventions"
+        context={{ platform, dateRange, campaignCount: filteredCampaigns.length, activeTab }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

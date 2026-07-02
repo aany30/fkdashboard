@@ -1,6 +1,7 @@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { useMetaBreakdown } from "@/hooks/useMetaBreakdown";
 import type { DateRange } from "@/components/shared/DateRangePicker";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform: "meta" | "google" | "both";
@@ -82,6 +83,20 @@ export default function ConversionMonitoringTab({ platform, dateRange, customSta
           </ResponsiveContainer>
         )}
       </div>
+
+      <TabSummaryFooter
+        lines={[
+          `${totalConv.toLocaleString("en-IN")} total conversion${totalConv !== 1 ? "s" : ""} tracked across ${rows.length} day${rows.length !== 1 ? "s" : ""}.`,
+          `Conversion value: ₹${totalRevenue.toLocaleString("en-IN", { maximumFractionDigits: 0 })} — ROAS ${roas}×.`,
+          totalConv > 0
+            ? `Cost per acquisition: ₹${(totalSpend / totalConv).toFixed(0)} on ₹${totalSpend.toLocaleString("en-IN", { maximumFractionDigits: 0 })} total spend.`
+            : "No conversions recorded in this date range — check pixel events and attribution windows.",
+        ]}
+        tabName="Conversion Monitoring"
+        context={{ totalConversions: totalConv, totalSpend, totalRevenue, roas, platform, dateRange }}
+        platform={platform === "both" ? "meta" : platform}
+        dateRange={String(dateRange)}
+      />
     </div>
   );
 }

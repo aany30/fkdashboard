@@ -206,47 +206,50 @@ async function generateExcel(opts: {
   XLSX.writeFile(wb, `auditor-report-${opts.startDate}-${opts.endDate}.xlsx`);
 }
 
-// ─── PDF via the browser's own print engine (real vector PDF, no server) ───────
-// Renders the same <PdfReportPages> deck to HTML, opens it in a new window, and
-// triggers the browser's native "Save as PDF" — identical vector quality to a
-// headless-Chrome render, but with zero server, zero Puppeteer, deploys anywhere.
+// ─── PDF — client-side render via html2canvas → jsPDF (direct file download) ─
+// Renders <PdfReportPages> into an off-screen 1280×720 container, snapshots each
+// page to a canvas, and assembles a multi-page landscape PDF. Saves directly to
+// disk — no print dialog, no Puppeteer, deploys anywhere.
 
 async function generatePdf(opts: PdfReportPagesProps) {
-  const [{ renderToStaticMarkup }, React, { default: PdfReportPages }] = await Promise.all([
-    import("react-dom/server"),
+  const [{ createRoot }, React, { default: PdfReportPages }, { default: jsPDF }, html2canvasMod] = await Promise.all([
+    import("react-dom/client"),
     import("react"),
     import("./PdfReportPages"),
+    import("jspdf"),
+    import("html2canvas"),
   ]);
+  const html2canvas = (html2canvasMod as { default: typeof import("html2canvas").default }).default;
 
-  const body = renderToStaticMarkup(React.createElement(PdfReportPages, opts));
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>Auditor — Ad Performance Report (${opts.startDate} – ${opts.endDate})</title>
-<style>
-  @page { size: 1280px 720px; margin: 0; }
-  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  html, body { margin: 0; padding: 0; background: #EEF1F6; }
-  @media screen { body { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 16px; } }
-</style>
-</head>
-<body>${body}</body>
-</html>`;
+  // Off-screen host — positioned far off-viewport so it renders without affecting layout
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;left:-99999px;top:0;width:1280px;background:#EEF1F6;";
+  document.body.appendChild(host);
 
-  const win = window.open("", "_blank");
-  if (!win) throw new Error("Popup blocked — allow popups for this site, then click Download PDF again.");
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+  try {
+    const root = createRoot(host);
+    root.render(React.createElement(PdfReportPages, opts));
+    // Wait for React + Recharts to mount and lay out
+    await new Promise<void>((r) => setTimeout(r, 800));
 
-  // Give the new window a beat to lay out, then open its print dialog once.
-  await new Promise<void>((resolve) => {
-    let printed = false;
-    const fire = () => { if (printed) return; printed = true; try { win.focus(); win.print(); } catch { /* user closed it */ } resolve(); };
-    win.onload = fire;
-    setTimeout(fire, 500); // fallback if onload doesn't fire for document.write content
-  });
+    const pageEls = Array.from(host.children[0]?.children ?? []) as HTMLElement[];
+    if (pageEls.length === 0) throw new Error("Could not find any report pages to render.");
+
+    const pdf = new jsPDF({ orientation: "landscape", unit: "px", format: [1280, 720], hotfixes: ["px_scaling"] });
+
+    for (let i = 0; i < pageEls.length; i++) {
+      const el = pageEls[i];
+      const canvas = await html2canvas(el, { scale: 2, useCORS: true, backgroundColor: "#EEF1F6", logging: false, width: 1280, height: 720 });
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+      if (i > 0) pdf.addPage([1280, 720], "landscape");
+      pdf.addImage(dataUrl, "JPEG", 0, 0, 1280, 720, undefined, "FAST");
+    }
+
+    pdf.save(`auditor-report-${opts.startDate}-${opts.endDate}.pdf`);
+    root.unmount();
+  } finally {
+    document.body.removeChild(host);
+  }
 }
 
 // ─── Format cards ─────────────────────────────────────────────────────────────

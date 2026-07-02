@@ -6,6 +6,7 @@ import ConnectCta from "@/components/shared/ConnectCta";
 import { ExternalLink, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import AttributionInfo from "@/components/shared/AttributionInfo";
 import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
+import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
   platform?: "meta" | "google" | "both";
@@ -352,6 +353,31 @@ export default function AttributionTab({ platform, dateRange, customStart, custo
           </ul>
         </div>
       )}
+
+      <TabSummaryFooter
+        lines={[
+          attrState.status !== "loading" && "detail" in attrState
+            ? `Attribution window: ${attrState.detail}.`
+            : "Attribution window: loading…",
+          "detail" in capiState
+            ? `CAPI status: ${capiState.detail}`
+            : `CAPI: ${pixels.length} pixel${pixels.length !== 1 ? "s" : ""} detected${overallServerShare > 0 ? ` — ${overallServerShare}% server-side share` : " — no server-side events detected"}.`,
+          domainState.status !== "loading" && "detail" in domainState
+            ? `Domain verification: ${domainState.detail}`
+            : "Domain verification status loading…",
+        ]}
+        tabName="Attribution Readiness"
+        context={{
+          platform,
+          capiServerShare: overallServerShare,
+          pixelCount: pixels.length,
+          verifiedDomains: checks.verifiedDomains.length,
+          aemEvents: Object.values(checks.aem || {}).flat().length,
+          dateRange,
+        }}
+        platform={(platform ?? "meta") === "both" ? "meta" : (platform ?? "meta") as "meta" | "google"}
+        dateRange={String(dateRange ?? "30d")}
+      />
     </div>
   );
 }
