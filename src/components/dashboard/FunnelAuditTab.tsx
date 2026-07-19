@@ -2,29 +2,52 @@ import { useAuthStore } from "@/store/auth";
 import { useSort } from "@/hooks/useSort";
 import SortTh from "@/components/shared/SortTh";
 import { useAudit } from "@/hooks/useAudit";
+import { useFloodlight } from "@/hooks/useFloodlight";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import FixRecommendation from "@/components/shared/FixRecommendation";
 import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
 import ConnectCta from "@/components/shared/ConnectCta";
 import { TermText } from "@/components/shared/Term";
 import BenchmarkSourceSwitcher from "@/components/dashboard/BenchmarkSourceSwitcher";
-import { AlertCircle, AlertTriangle, Info } from "lucide-react";
+import { AlertCircle, AlertTriangle, Info, Loader2 } from "lucide-react";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import LoadingState from "@/components/shared/LoadingState";
 
 interface Props {
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   dateRange?: DateRange;
   customStart?: string;
   customEnd?: string;
 }
 
 export default function FunnelAuditTab({ platform = "both", dateRange = "30d", customStart, customEnd }: Props) {
-  const { customBenchmarks, isMetaConnected, isGoogleConnected, benchmarkSnapshots, activeBenchmarkId } = useAuthStore();
-  // Wire to useAudit so the funnel re-fetches when the date picker changes.
-  const { meta, google, loading: auditLoading, error: auditError } = useAudit(platform, dateRange, customStart, customEnd);
-  const metaOn = isMetaConnected();
-  const googleOn = isGoogleConnected();
+  const { customBenchmarks, isMetaConnected, isDV360Connected, demoMode, benchmarkSnapshots, activeBenchmarkId } = useAuthStore();
+  const { meta, loading: auditLoading, error: auditError } = useAudit(platform, dateRange, customStart, customEnd);
+  const metaOn = isMetaConnected() || demoMode;
+  const dv360On = isDV360Connected() || demoMode;
+  const showMeta = metaOn && (platform === "meta" || platform === "both");
+  const showDV360 = dv360On && (platform === "dv360" || platform === "both");
   const activeSnapshot = benchmarkSnapshots.find((s) => s.id === activeBenchmarkId);
+
+  // DV360 conversion funnel is built from Floodlight activities — the real
+  // equivalent of Meta's pixel-event funnel. Each activity is a conversion
+  // stage; we rank by 14d conversion volume (Floodlight doesn't declare a
+  // funnel sequence via API, so order is inferred from volume).
+  const { data: floodlight, loading: flLoading } = useFloodlight();
+  const dv360Funnel = (() => {
+    const acts = (floodlight?.activities || [])
+      .map((a) => ({ name: a.name, conversions: a.conversions14d.reduce((s, v) => s + v, 0), servingStatus: a.servingStatus }))
+      .filter((a) => a.conversions > 0)
+      .sort((a, b) => b.conversions - a.conversions);
+    if (acts.length === 0) return [];
+    const top = acts[0].conversions;
+    return acts.map((a, i) => {
+      const prev = i === 0 ? top : acts[i - 1].conversions;
+      const rate = +((a.conversions / top) * 100).toFixed(1);
+      const dropOff = i === 0 ? 0 : +((1 - a.conversions / prev) * 100).toFixed(1);
+      return { stage: a.name, count: a.conversions, rate, dropOff, servingStatus: a.servingStatus };
+    });
+  })();
 
   // Resolve a benchmark value for a stage. Falls back to the hardcoded value
   // baked into the funnel data when the active source doesn't define this stage.
@@ -93,13 +116,6 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
   const funnelMeta = buildMetaFunnel();
   const { sorted: sortedMeta, sort: metaSort, toggle: metaToggle } = useSort(funnelMeta, "dropOff", "desc");
 
-  const funnelGoogle = [
-    { stage: "view_item",      count: 125000, rate: 100,  dropOff: 0,  benchmark: benchFor("view_item", 100) },
-    { stage: "add_to_cart",    count: 42000,  rate: 33.6, dropOff: 66, benchmark: benchFor("add_to_cart", 35) },
-    { stage: "begin_checkout", count: 14200,  rate: 11.4, dropOff: 66, benchmark: benchFor("begin_checkout", 12) },
-    { stage: "purchase",       count: 8500,   rate: 6.8,  dropOff: 40, benchmark: benchFor("purchase", 3) },
-  ].map((r) => { const status = getDropOffStatus(r.dropOff); return { ...r, status, statusRank: withRank(status) }; });
-  const { sorted: sortedGoogle, sort: googleSort, toggle: googleToggle } = useSort(funnelGoogle, "dropOff", "desc");
 
   // Build recommendations from REAL funnel data — no hardcoded values.
   // Every Critical/Moderate stage gets an entry with its actual drop-off % and benchmark.
@@ -128,11 +144,11 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
     Purchase: "Check that the Purchase event fires on the confirmation page (not just the payment gateway redirect). Verify no duplicate or missing fires.",
     add_to_cart: "Simplify cart UX, check mobile ATC button visibility, verify add_to_cart event fires on all product types.",
     begin_checkout: "Offer guest checkout, show trust signals, verify begin_checkout fires before the payment step.",
-    purchase: "Ensure purchase event fires on the order confirmation page. Check for duplicate fires via GTM debug.",
+    purchase: "Ensure purchase event fires on the order confirmation page. Check for duplicate fires via browser developer tools.",
   };
 
   const statusColor = (s: string) =>
-    s === "Healthy" ? "text-green-700 bg-green-100" : s === "Moderate" ? "text-yellow-700 bg-yellow-100" : "text-red-700 bg-red-100";
+    s === "Healthy" ? "text-green-700 bg-green-100" : s === "Moderate" ? "text-yellow-700 bg-yellow-100" : s === "N/A" ? "text-gray-500 bg-gray-100" : "text-red-700 bg-red-100";
 
   const severityIcon = (severity: "Critical" | "High" | "Medium") => {
     if (severity === "Critical") return { Icon: AlertCircle, ring: "bg-red-100 text-red-600", chip: "bg-red-100 text-red-700" };
@@ -146,6 +162,8 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
     return "warn";
   };
 
+  if (showMeta && auditLoading && !meta) return <LoadingState message="Loading funnel data…" />;
+
   return (
     <div className="space-y-6 section-enter">
       <div>
@@ -158,7 +176,15 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
         </div>
       )}
 
-      {(metaOn || googleOn) && (() => {
+      {/* ── Meta Section ─────────────────────────────────────────────────── */}
+      {showMeta && (platform === "both") && (
+        <div className="flex items-center gap-3 pt-2 pb-1 border-b border-gray-200">
+          <h2 className="text-xl font-bold text-gray-900">Meta</h2>
+          <span className="text-xs text-gray-400 font-medium">Meta Ads</span>
+        </div>
+      )}
+
+      {showMeta && (() => {
         // Derive all KPI cards from the real funnel data — never hardcode.
         const purchaseRow = funnelMeta.find((f) => f.stage === "Purchase");
         const convRate = purchaseRow ? purchaseRow.rate : 0;
@@ -209,7 +235,7 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
         );
       })()}
 
-      {metaOn ? (
+      {showMeta ? (
         <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
           <div className="p-6 border-b border-gray-200">
             <h2 className="text-lg font-bold text-gray-900">Meta Funnel — Pixel Events</h2>
@@ -272,107 +298,131 @@ export default function FunnelAuditTab({ platform = "both", dateRange = "30d", c
             </table>
           </div>
         </div>
-      ) : (
+      ) : platform !== "dv360" ? (
         <ConnectCta platform="Meta" />
+      ) : null}
+
+      {/* ── DV360 Section — Floodlight conversion funnel ─────────────────── */}
+      {showDV360 && platform === "both" && (
+        <div className="flex items-center gap-3 pt-4 pb-1 border-b border-gray-200">
+          <h2 className="text-xl font-bold text-gray-900">DV360</h2>
+          <span className="text-xs text-gray-400 font-medium">Floodlight conversion funnel</span>
+        </div>
       )}
 
-      {googleOn ? (
+      {showDV360 && (
         <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
-          <div className="p-6 border-b border-gray-200">
-            <h2 className="text-lg font-bold text-gray-900">Google GA4 Funnel — Ecommerce Events</h2>
-            <p className="text-sm text-gray-600 mt-1"><TermText>GA4 standard ecommerce conversion path</TermText></p>
+          <div className="p-5 border-b border-gray-100">
+            <h2 className="text-lg font-bold text-gray-900">Floodlight Conversion Funnel</h2>
+            <p className="text-xs text-gray-500 mt-1">
+              Each Floodlight activity is a conversion stage — the DV360 equivalent of a pixel-event funnel.
+              Stages are ranked by 14-day conversion volume (Floodlight doesn&apos;t declare a funnel sequence via API, so order is inferred from volume).
+            </p>
           </div>
-          <div>
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
-                <tr>
-                  <SortTh col="stage" sort={googleSort} onToggle={googleToggle} className="px-6 py-3">Stage</SortTh>
-                  <SortTh col="count" sort={googleSort} onToggle={googleToggle} className="px-6 py-3" align="right">Users</SortTh>
-                  <SortTh col="rate" sort={googleSort} onToggle={googleToggle} className="px-6 py-3" align="right">Rate</SortTh>
-                  <SortTh col="dropOff" sort={googleSort} onToggle={googleToggle} className="px-6 py-3" align="right">Drop-off</SortTh>
-                  <th className="px-6 py-3 text-right font-semibold text-gray-700">
-                    <span className="inline-flex items-center justify-end">
-                      Benchmark
-                      <BenchmarkSourceSwitcher
-                        stages={["PageView", "ViewContent", "AddToCart", "InitiateCheckout", "AddPaymentInfo", "Purchase", "view_item", "add_to_cart", "begin_checkout", "purchase"]}
-                        platform="both"
-                      />
-                    </span>
-                  </th>
-                  <SortTh col="statusRank" sort={googleSort} onToggle={googleToggle} className="px-6 py-3" align="center">Status</SortTh>
-                  <th className="px-6 py-3 text-left font-semibold text-gray-700">Recommendation</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedGoogle.map((f, idx) => (
-                  <tr key={idx} className={`border-b border-gray-100 hover:bg-gray-50 align-top ${f.status === "Critical" ? "bg-red-50/30" : ""}`}>
-                    <td className="px-6 py-4 font-semibold text-gray-900 font-mono">{f.stage}</td>
-                    <td className="px-6 py-4 text-right text-gray-900">{f.count.toLocaleString()}</td>
-                    <td className="px-6 py-4 text-right text-gray-900 font-semibold">{f.rate}%</td>
-                    <td className="px-6 py-4 text-right font-semibold">
-                      {f.dropOff > 0
-                        ? <span className={f.status === "Critical" ? "text-red-600" : f.status === "Moderate" ? "text-yellow-600" : "text-gray-500"}>-{f.dropOff}%</span>
-                        : <span className="text-gray-400">—</span>}
-                    </td>
-                    <td className="px-6 py-4 text-right text-gray-700">{f.benchmark}%</td>
-                    <td className="px-6 py-4 text-center">
-                      <span className={`px-3 py-1 rounded-full text-xs font-semibold ${statusColor(f.status)}`}>{f.status}</span>
-                    </td>
-                    <td className="px-6 py-4 max-w-xs">
-                      {f.status === "Healthy"
-                        ? <span className="text-xs text-green-700">✓ No action needed</span>
-                        : <>
-                            <p className="text-xs text-gray-700 leading-snug">{STAGE_RECS[f.stage] || "Review drop-off and optimise the user journey at this stage."}</p>
-                            <AIRecommendationButton
-                              metric={`GA4 ${f.stage} drop-off`}
-                              value={f.dropOff}
-                              status={f.status === "Critical" ? "critical" : "moderate"}
-                              platform="google"
-                              auditContext={{ module: "Funnel Audit", siblingMetrics: { dropOff: f.dropOff, benchmark: f.benchmark, rate: f.rate } }}
-                            />
-                          </>
-                      }
-                    </td>
+
+          {flLoading ? (
+            <div className="p-6 flex items-center gap-2 text-sm text-gray-500">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading Floodlight conversion data…
+            </div>
+          ) : dv360Funnel.length >= 2 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-gray-500 uppercase text-[10px]">
+                    <th className="text-left px-6 py-3">Stage (Floodlight activity)</th>
+                    <th className="text-right px-6 py-3">Conversions (14d)</th>
+                    <th className="text-right px-6 py-3">% of top</th>
+                    <th className="text-right px-6 py-3">Drop-off</th>
+                    <th className="text-center px-6 py-3">Status</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {dv360Funnel.map((s, i) => (
+                    <tr key={s.stage} className="hover:bg-gray-50">
+                      <td className="px-6 py-3 font-medium text-gray-900 max-w-[280px] truncate" title={s.stage}>{s.stage}</td>
+                      <td className="px-6 py-3 text-right text-gray-700 tabular-nums">{s.count.toLocaleString("en-IN")}</td>
+                      <td className="px-6 py-3 text-right text-gray-700 tabular-nums">{s.rate}%</td>
+                      <td className={`px-6 py-3 text-right tabular-nums ${i === 0 ? "text-gray-400" : s.dropOff >= 70 ? "text-red-600" : s.dropOff >= 40 ? "text-amber-600" : "text-gray-700"}`}>
+                        {i === 0 ? "—" : `${s.dropOff}%`}
+                      </td>
+                      <td className="px-6 py-3 text-center">
+                        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${statusColor(s.servingStatus === "ENABLED" ? "Healthy" : "Moderate")}`}>
+                          {s.servingStatus === "ENABLED" ? "Active" : "Inactive"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : dv360Funnel.length === 1 ? (
+            <div className="p-6 space-y-2">
+              <div className="flex items-center gap-2 text-sm text-gray-700">
+                <Info className="w-4 h-4 text-blue-500 shrink-0" />
+                Only one Floodlight activity has conversions, so a multi-stage funnel can&apos;t be built.
+              </div>
+              <div className="bg-gray-50 rounded-lg p-4 flex items-center justify-between">
+                <span className="font-medium text-gray-900 truncate" title={dv360Funnel[0].stage}>{dv360Funnel[0].stage}</span>
+                <span className="text-gray-700 tabular-nums">{dv360Funnel[0].count.toLocaleString("en-IN")} conversions (14d)</span>
+              </div>
+              <div className="text-xs text-gray-400">
+                A full conversion funnel needs multiple Floodlight activities mapped to different stages (e.g. Site Visit → Add to Cart → Purchase). See the <strong>Floodlight Health</strong> tab for full activity detail.
+              </div>
+            </div>
+          ) : (
+            <div className="p-6 text-sm text-gray-500 space-y-1">
+              <div>No Floodlight conversions found in the last 14 days.</div>
+              <div className="text-xs text-gray-400">
+                {floodlight?.note || "Assign Floodlight activities to line items in DV360, or verify conversion tracking. See the Floodlight Health tab for detail."}
+              </div>
+            </div>
+          )}
         </div>
-      ) : (
-        <ConnectCta platform="Google" />
+      )}
+
+      {!showMeta && !showDV360 && (
+        <ConnectCta platform="Meta" context="to see funnel audit" />
       )}
 
       <TabSummaryFooter
         tabName="Funnel Audit"
         lines={[
-          `${funnelMeta.length}-stage Meta funnel analysed — overall conversion rate: ${funnelMeta.find(f => f.stage === "Purchase")?.rate ?? 0}% (PageView → Purchase).`,
-          `${recommendations.filter(r => r.severity === "Critical").length} critical drop-off issue${recommendations.filter(r => r.severity === "Critical").length !== 1 ? "s" : ""} detected — ${recommendations.length} total funnel recommendations.`,
-          funnelMeta.length > 0
-            ? `Largest drop-off: ${funnelMeta.filter(f => f.dropOff > 0).reduce<typeof funnelMeta[0] | null>((b, f) => (!b || f.dropOff > b.dropOff ? f : b), null)?.stage ?? "—"}.`
-            : "No funnel data available for this window.",
+          ...(showMeta ? [
+            `${funnelMeta.length}-stage Meta funnel analysed — overall conversion rate: ${funnelMeta.find(f => f.stage === "Purchase")?.rate ?? 0}% (PageView → Purchase).`,
+            `${recommendations.filter(r => r.severity === "Critical").length} critical drop-off issue${recommendations.filter(r => r.severity === "Critical").length !== 1 ? "s" : ""} detected — ${recommendations.length} total funnel recommendations.`,
+          ] : []),
+          ...(showDV360 ? [
+            dv360Funnel.length >= 2
+              ? `DV360 Floodlight funnel: ${dv360Funnel.length} conversion stages — top "${dv360Funnel[0].stage}" (${dv360Funnel[0].count.toLocaleString("en-IN")} conv, 14d).`
+              : dv360Funnel.length === 1
+                ? `DV360 Floodlight: 1 activity with conversions ("${dv360Funnel[0].stage}") — multi-stage funnel needs ≥2 activities.`
+                : `DV360 Floodlight: no conversions in the last 14 days.`,
+          ] : []),
         ]}
         context={{
           stages: funnelMeta.length,
           recommendations: recommendations.length,
-          funnelMeta: funnelMeta.map(f => ({
-            stage: f.stage,
-            count: f.count,
-            rate: f.rate,
-            dropOff: f.dropOff,
-            benchmark: f.benchmark,
-            status: f.status,
-          })),
-          funnelGoogle: funnelGoogle.map(f => ({
-            stage: f.stage,
-            count: f.count,
-            rate: f.rate,
-            dropOff: f.dropOff,
-            benchmark: f.benchmark,
-            status: f.status,
-          })),
+          ...(showMeta ? {
+            metaFunnel: funnelMeta.map(f => ({
+              stage: f.stage,
+              count: f.count,
+              rate: f.rate,
+              dropOff: f.dropOff,
+              benchmark: f.benchmark,
+              status: f.status,
+            })),
+            metaRecommendations: recommendations.slice(0, 8).map(r => ({ severity: r.severity, title: r.title })),
+          } : {}),
+          ...(showDV360 ? {
+            dv360Floodlight: {
+              window: "last 14 days",
+              activitiesWithConversions: dv360Funnel.length,
+              stages: dv360Funnel.map(f => ({ stage: f.stage, conversions14d: f.count })),
+              note: dv360Funnel.length < 2 ? "Multi-stage funnel needs ≥2 Floodlight activities mapped to stages." : undefined,
+            },
+          } : {}),
         }}
-        platform={platform === "both" ? "meta" : (platform ?? "meta")}
+        platform={platform ?? "meta"}
         dateRange={String(dateRange ?? "30d")}
       />
     </div>

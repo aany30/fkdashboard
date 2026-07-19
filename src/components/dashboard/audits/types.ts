@@ -3,7 +3,7 @@ import type { CampaignData } from "@/types";
 export interface AuditProps {
   campaigns: CampaignData[];
   loading: boolean;
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   /**
    * Total campaigns on the ad account, BEFORE any objective filter is applied.
    * Audits that report shares (e.g. TOF/MOF/BOF as a % of the account) use this

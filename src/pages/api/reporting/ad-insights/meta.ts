@@ -26,7 +26,18 @@ export interface AdInsightRow {
   conversionValue: number;
 }
 
-// Meta locale ID → language name (most common ones)
+// Meta's full ad-locale table is static reference data — fetch once and cache
+// for the server's lifetime so we don't re-pull it on every request.
+let localeMapCache: Map<number, string> | null = null;
+async function getLocaleNameMap(client: MetaApiClient): Promise<Map<number, string>> {
+  if (localeMapCache && localeMapCache.size > 0) return localeMapCache;
+  const m = await client.getAdLocales();
+  if (m.size > 0) localeMapCache = m;
+  return m;
+}
+
+// Meta locale ID → language name (most common ones) — built-in fallback used when
+// the full ad-locale fetch is unavailable.
 export const META_LOCALE_MAP: Record<number, string> = {
   6:   "English",
   24:  "English",
@@ -51,12 +62,19 @@ export const META_LOCALE_MAP: Record<number, string> = {
   29:  "Chinese (Simplified)",
 };
 
-/** Resolve locale IDs to a single display language string. */
-export function localesToLanguage(locales: number[] | undefined): string {
-  if (!locales || locales.length === 0) return "All Languages";
-  const names = [...new Set(locales.map(id => META_LOCALE_MAP[id]).filter(Boolean))];
-  if (names.length === 0) return "All Languages";
-  return names.join(" / ");
+/**
+ * Resolve locale IDs to a display language string.
+ * - No locales targeted → "All languages" (genuinely no language restriction).
+ * - Locales present → their real names via `nameMap` (Meta's full ad-locale
+ *   table), falling back to the small built-in map. If IDs still can't be
+ *   resolved we return "Unknown" — NEVER "All languages", which would falsely
+ *   imply the ad set wasn't language-targeted.
+ */
+export function localesToLanguage(locales: number[] | undefined, nameMap?: Map<number, string>): string {
+  if (!locales || locales.length === 0) return "All languages";
+  const resolve = (id: number) => nameMap?.get(id) ?? META_LOCALE_MAP[id];
+  const names = [...new Set(locales.map(resolve).filter(Boolean))];
+  return names.length > 0 ? names.join(" / ") : "Unknown";
 }
 
 // Demo: adSetId → locales mapping (realistic for an Indian DTC brand)
@@ -107,17 +125,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Fetch targeting locales for the unique ad sets represented in this batch.
     const adSetIds = [...new Set(ads.map(a => a.adSetId).filter(Boolean) as string[])];
     type TargetingMap = Awaited<ReturnType<typeof client.getAdSetsTargeting>>;
-    const targetingMap: TargetingMap = adSetIds.length
-      ? await client.getAdSetsTargeting(accountPath, adSetIds).catch(() => ({} as TargetingMap))
-      : {} as TargetingMap;
+    const [targetingMap, localeNames] = await Promise.all([
+      adSetIds.length
+        ? client.getAdSetsTargeting(accountPath, adSetIds).catch(() => ({} as TargetingMap))
+        : Promise.resolve({} as TargetingMap),
+      getLocaleNameMap(client),
+    ]);
+
+    const localesFor = (adSetId?: string): number[] | undefined =>
+      adSetId && targetingMap[adSetId]?.targeting?.locales ? targetingMap[adSetId].targeting!.locales : undefined;
 
     const enriched: AdInsightRow[] = ads.map(a => ({
       ...a,
-      language: localesToLanguage(
-        a.adSetId && targetingMap[a.adSetId]?.targeting?.locales
-          ? targetingMap[a.adSetId].targeting!.locales
-          : undefined
-      ),
+      language: localesToLanguage(localesFor(a.adSetId), localeNames),
     }));
 
     res.status(200).json({ source: "live", ads: enriched, currency: currency || "USD" });

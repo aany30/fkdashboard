@@ -7,7 +7,7 @@ import type { AccountContext } from "./types";
 export interface FixContext {
   /** Stable metric ID (e.g. "budget_overspending", "emq_low"). */
   metric: string;
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   threshold?: string;
   /** Per-campaign data when the failure is per-campaign. */
   campaignContext?: CampaignData;

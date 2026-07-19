@@ -4,9 +4,10 @@ import type { CampaignData } from "@/types";
 import { objectiveMatches } from "../CampaignObjectiveFilter";
 import { TermText } from "@/components/shared/Term";
 import { rangeToDates } from "@/lib/date-range";
+import LoadingState from "@/components/shared/LoadingState";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   /** Dashboard date range — forwarded to /api/naming/campaigns so insights
    * window matches the date picker. Default "30d" if omitted. */
   dateRange?: string;
@@ -21,7 +22,7 @@ interface Props {
     id: string;
     label: string;
     description: string;
-    render: (args: { campaigns: CampaignData[]; loading: boolean; platform: "meta" | "google" | "both" }) => ReactNode;
+    render: (args: { campaigns: CampaignData[]; loading: boolean; platform: "meta" | "dv360" | "both" }) => ReactNode;
   }>;
   defaultSubTab: string;
 }
@@ -41,10 +42,11 @@ export default function AuditTabShell({
   const {
     metaAccessToken,
     metaBusinessId,
-    googleAccessToken,
-    googleCustomerId,
-    googleAdsDeveloperToken,
-    googleAdsLoginCustomerId,
+    dv360ClientId,
+    dv360ClientSecret,
+    dv360RefreshToken,
+    dv360AdvertiserId,
+    dv360PartnerId,
   } = useAuthStore();
   const [campaigns, setCampaigns] = useState<CampaignData[]>([]);
   const [loading, setLoading] = useState(false);
@@ -66,19 +68,18 @@ export default function AuditTabShell({
           if (r.ok) all.push(...(await r.json()));
         }
         if (
-          (platform === "google" || platform === "both") &&
-          googleAccessToken &&
-          googleCustomerId &&
-          googleAdsDeveloperToken
+          (platform === "dv360" || platform === "both") &&
+          dv360ClientId && dv360ClientSecret && dv360RefreshToken && dv360AdvertiserId
         ) {
-          const r = await fetch("/api/naming/campaigns/google", {
+          const r = await fetch("/api/naming/campaigns/dv360", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              accessToken: googleAccessToken,
-              customerId: googleCustomerId,
-              developerToken: googleAdsDeveloperToken,
-              loginCustomerId: googleAdsLoginCustomerId || googleCustomerId,
+              clientId: dv360ClientId,
+              clientSecret: dv360ClientSecret,
+              refreshToken: dv360RefreshToken,
+              advertiserId: dv360AdvertiserId,
+              partnerId: dv360PartnerId || undefined,
               startDate,
               endDate,
             }),
@@ -105,10 +106,11 @@ export default function AuditTabShell({
     customEnd,
     metaAccessToken,
     metaBusinessId,
-    googleAccessToken,
-    googleCustomerId,
-    googleAdsDeveloperToken,
-    googleAdsLoginCustomerId,
+    dv360ClientId,
+    dv360ClientSecret,
+    dv360RefreshToken,
+    dv360AdvertiserId,
+    dv360PartnerId,
   ]);
 
   const filteredCampaigns = useMemo(() => {
@@ -155,7 +157,11 @@ export default function AuditTabShell({
         ))}
       </div>
 
-      {activeSub.render({ campaigns: filteredCampaigns, loading, platform })}
+      {loading ? (
+        <LoadingState message="Loading campaign data…" />
+      ) : (
+        activeSub.render({ campaigns: filteredCampaigns, loading, platform })
+      )}
     </div>
   );
 }

@@ -4,17 +4,12 @@
  * Client-side dims (Campaign / Platform / Objective / Status): aggregate the
  * campaign list already in memory — no new API call.
  *
- * API-backed dims (Age / Gender / Country / Device / Placement / Age×Gender /
- * Daily): call /api/reporting/breakdown/meta which hits Meta's
- * `/{account}/insights?breakdowns=<dim>` (or `time_increment=1` for daily).
- * These are live Meta API calls — fully implemented, not "coming soon".
+ * API-backed dims (Age / Gender / Country / Device / Daily):
+ *   Meta  → /api/reporting/breakdown/meta (synchronous)
+ *   DV360 → /api/reporting/breakdown/dv360 (async BM, 202-retry)
  *
- * Google Ads age/gender/device/geographic GAQL segments are deferred to v1.1
- * (no breakdown/google endpoint yet). A note is shown when platform ≠ meta.
- *
- * Hourly is still coming v1.1 — Meta supports
- * `breakdowns=hourly_stats_aggregated_by_advertiser_time_zone` but
- * the endpoint whitelist doesn't include it yet.
+ * Placement + Age×Gender: Meta only.
+ * Hourly: coming v1.1.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -26,12 +21,12 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useAuthStore } from "@/store/auth";
 import { usePersistentValue } from "@/hooks/useColumnPrefs";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { currencyFor, formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -58,27 +53,31 @@ interface BreakdownRow {
 const GROUP_OPTIONS: Array<{
   id: GroupBy;
   label: string;
-  source: "client" | "meta-api" | "coming-soon";
+  source: "client" | "api" | "meta-only" | "coming-soon";
   note?: string;
 }> = [
   { id: "campaign",          label: "Campaign",       source: "client" },
   { id: "platform",          label: "Platform",       source: "client" },
   { id: "objective",         label: "Objective",      source: "client" },
   { id: "status",            label: "Status",         source: "client" },
-  { id: "daily",             label: "Daily trend",    source: "meta-api" },
-  { id: "age",               label: "Age",            source: "meta-api" },
-  { id: "gender",            label: "Gender",         source: "meta-api" },
-  { id: "country",           label: "Country",        source: "meta-api" },
-  { id: "impression_device", label: "Device",         source: "meta-api" },
-  { id: "publisher_platform",label: "Placement",      source: "meta-api" },
-  { id: "age,gender",        label: "Age × Gender",   source: "meta-api" },
-  { id: "hourly",            label: "Hour of day",    source: "coming-soon", note: "Coming v1.1 — Meta breakdowns=hourly_stats_aggregated_by_advertiser_time_zone, Google segments.hour" },
+  { id: "daily",             label: "Daily trend",    source: "api" },
+  { id: "age",               label: "Age",            source: "api" },
+  { id: "gender",            label: "Gender",         source: "api" },
+  { id: "country",           label: "Country",        source: "api" },
+  { id: "impression_device", label: "Device",         source: "api" },
+  { id: "publisher_platform",label: "Placement",      source: "meta-only" },
+  { id: "age,gender",        label: "Age × Gender",   source: "meta-only" },
+  { id: "hourly",            label: "Hour of day",    source: "coming-soon", note: "Coming v1.1" },
 ];
 
 export default function BreakdownsReport({ platform, dateRange, customStart, customEnd }: Props) {
   const { campaigns, loading: campaignsLoading, startDate, endDate } = useCampaigns(platform, dateRange, customStart, customEnd);
-  const { metaAccessToken, metaBusinessId, demoMode } = useAuthStore();
-  const currency = detectCurrency(campaigns);
+  const {
+    metaAccessToken, metaBusinessId,
+    dv360ClientId, dv360ClientSecret, dv360RefreshToken, dv360AdvertiserId, dv360PartnerId,
+    demoMode,
+  } = useAuthStore();
+  const currency = currencyFor(campaigns, platform === "dv360" ? "dv360" : "meta");
 
   const [groupBy, setGroupBy] = usePersistentValue<GroupBy>("breakdowns-groupby", "campaign");
   const [metric, setMetric] = usePersistentValue<Metric>("breakdowns-metric", "spend");
@@ -90,50 +89,87 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
 
   const opt = GROUP_OPTIONS.find((o) => o.id === groupBy)!;
 
-  // Fetch from /api/reporting/breakdown/meta when a meta-api dim is selected
-  useEffect(() => {
-    if (opt.source !== "meta-api") { setApiRows([]); return; }
+  const [dv360Pending, setDv360Pending] = useState(false);
 
-    const effectiveToken = demoMode ? "demo-meta-token" : metaAccessToken;
-    const effectiveBiz = demoMode ? "demo-business-123" : metaBusinessId;
-    if (!effectiveToken || !effectiveBiz) { setApiRows([]); return; }
+  useEffect(() => {
+    if (opt.source !== "api" && opt.source !== "meta-only") { setApiRows([]); return; }
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     setApiLoading(true);
     setApiError(null);
+    setDv360Pending(false);
 
-    fetch("/api/reporting/breakdown/meta", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        accessToken: effectiveToken,
-        businessId: effectiveBiz,
-        breakdown: groupBy,
-        startDate,
-        endDate,
-      }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return;
-        if (data.error) { setApiError(data.error); setApiRows([]); return; }
-        const mapped: BreakdownRow[] = (data.rows || []).map((r: any) => ({
-          label: r.label,
-          spend: r.spend || 0,
-          impressions: r.impressions || 0,
-          clicks: r.clicks || 0,
-          conversions: r.conversions || 0,
-          conversionValue: r.conversionValue || 0,
-          metricValue: r[metric] || 0,
-        }));
-        setApiRows(mapped);
+    const mapRows = (data: any): BreakdownRow[] =>
+      (data.rows || []).map((r: any) => ({
+        label: r.label,
+        spend: r.spend || 0,
+        impressions: r.impressions || 0,
+        clicks: r.clicks || 0,
+        conversions: r.conversions || 0,
+        conversionValue: r.conversionValue || 0,
+        metricValue: r[metric] || 0,
+      }));
+
+    const fetchMeta = () => {
+      const effectiveToken = demoMode ? "demo-meta-token" : metaAccessToken;
+      const effectiveBiz = demoMode ? "demo-business-123" : metaBusinessId;
+      if (!effectiveToken || !effectiveBiz) { setApiRows([]); setApiLoading(false); return; }
+      fetch("/api/reporting/breakdown/meta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessToken: effectiveToken, businessId: effectiveBiz, breakdown: groupBy, startDate, endDate }),
       })
-      .catch((e) => { if (!cancelled) setApiError(e.message); })
-      .finally(() => { if (!cancelled) setApiLoading(false); });
+        .then((r) => r.json())
+        .then((data) => { if (!cancelled) { if (data.error) { setApiError(data.error); setApiRows([]); } else setApiRows(mapRows(data)); } })
+        .catch((e) => { if (!cancelled) setApiError(e.message); })
+        .finally(() => { if (!cancelled) setApiLoading(false); });
+    };
 
-    return () => { cancelled = true; };
+    const fetchDv360 = (attempt: number) => {
+      const dvBreakdown = groupBy === "impression_device" ? "device" : groupBy;
+      const effectiveRefresh = demoMode ? "demo-dv360-refresh" : dv360RefreshToken;
+      if (!effectiveRefresh || (!demoMode && (!dv360ClientId || !dv360ClientSecret || !dv360AdvertiserId))) {
+        setApiRows([]); setApiLoading(false); return;
+      }
+      fetch("/api/reporting/breakdown/dv360", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientId: demoMode ? "demo-client" : dv360ClientId,
+          clientSecret: demoMode ? "demo-secret" : dv360ClientSecret,
+          refreshToken: effectiveRefresh,
+          advertiserId: demoMode ? "demo-advertiser-1" : dv360AdvertiserId,
+          partnerId: dv360PartnerId || undefined,
+          breakdown: dvBreakdown, startDate, endDate,
+        }),
+      })
+        .then(async (r) => {
+          if (cancelled) return;
+          if (r.status === 202 && attempt < 12) {
+            setDv360Pending(true);
+            retryTimer = setTimeout(() => fetchDv360(attempt + 1), 5_000);
+            return;
+          }
+          const data = await r.json();
+          if (data.error) { setApiError(data.error); setApiRows([]); } else setApiRows(mapRows(data));
+          setDv360Pending(false);
+          setApiLoading(false);
+        })
+        .catch((e) => { if (!cancelled) { setApiError(e.message); setApiLoading(false); setDv360Pending(false); } });
+    };
+
+    if (opt.source === "meta-only" || platform === "meta") {
+      fetchMeta();
+    } else if (platform === "dv360") {
+      fetchDv360(0);
+    } else {
+      fetchMeta();
+    }
+
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupBy, startDate, endDate, metaAccessToken, metaBusinessId, demoMode]);
+  }, [groupBy, platform, startDate, endDate, metaAccessToken, metaBusinessId, dv360ClientId, dv360ClientSecret, dv360RefreshToken, dv360AdvertiserId, demoMode]);
 
   // Re-sort api rows when metric changes (no refetch needed)
   const sortedApiRows = useMemo(() => {
@@ -149,7 +185,7 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
     const keyFn = (c: (typeof campaigns)[number]): string => {
       switch (groupBy) {
         case "campaign":  return c.name || c.id;
-        case "platform":  return c.platform === "meta" ? "Meta" : "Google";
+        case "platform":  return c.platform === "meta" ? "Meta" : "DV360";
         case "objective": return c.objective || "(none)";
         case "status":    return ["ACTIVE", "ENABLED"].includes((c.status || "").toUpperCase()) ? "Active" : (c.status || "Unknown");
         default:          return c.name || c.id;
@@ -176,7 +212,7 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
     [rows]
   );
   const { sorted, sort, toggle } = useSort(rowsWithRoas, "spend", "desc");
-  const loading = opt.source === "client" ? campaignsLoading : apiLoading;
+  const loading = opt.source === "client" ? campaignsLoading : (apiLoading && !dv360Pending);
 
   const cur = (n: number) => formatMoney(n, currency, 0);
   const fmtMetric = (v: number) => metric === "spend" ? cur(v) : Math.round(v).toLocaleString("en-IN");
@@ -199,8 +235,22 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
           </div>
           <AIExecutiveSummary
             tabName="Breakdowns Report"
-            context={{ breakdown: groupBy, metric, rowCount: rows.length, platform, dateRange: String(dateRange) }}
-            platform={platform === "both" ? "meta" : platform}
+            context={{
+              breakdown: groupBy,
+              metric,
+              rowCount: rows.length,
+              totalSpend: Math.round(rows.reduce((s, r) => s + (r.spend || 0), 0)),
+              segments: [...rows]
+                .sort((a, b) => (b.spend || 0) - (a.spend || 0))
+                .slice(0, 25)
+                .map((r) => ({
+                  label: r.label, spend: Math.round(r.spend || 0),
+                  impressions: r.impressions || 0, clicks: r.clicks || 0,
+                  conversions: r.conversions || 0,
+                  roas: (r.spend || 0) > 0 ? +(((r.conversionValue || 0) / (r.spend || 1))).toFixed(2) : 0,
+                })),
+            }}
+            platform={platform}
             dateRange={String(dateRange)}
             inline
           />
@@ -221,8 +271,13 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
                 <option key={o.id} value={o.id}>{o.label}</option>
               ))}
             </optgroup>
-            <optgroup label="Meta Insights API">
-              {GROUP_OPTIONS.filter((o) => o.source === "meta-api").map((o) => (
+            <optgroup label="API breakdowns">
+              {GROUP_OPTIONS.filter((o) => o.source === "api").map((o) => (
+                <option key={o.id} value={o.id}>{o.label}</option>
+              ))}
+            </optgroup>
+            <optgroup label="Meta only">
+              {GROUP_OPTIONS.filter((o) => o.source === "meta-only").map((o) => (
                 <option key={o.id} value={o.id}>{o.label}</option>
               ))}
             </optgroup>
@@ -240,7 +295,7 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
               value={metric}
               onChange={(e) => setMetric(e.target.value as Metric)}
               className="border border-gray-300 rounded px-3 py-1.5 text-sm font-semibold text-gray-700 bg-white"
-              disabled={opt.source === "coming-soon"}
+              disabled={opt.source === "coming-soon" || (opt.source === "meta-only" && platform === "dv360")}
             >
               <option value="spend">Spend</option>
               <option value="impressions">Impressions</option>
@@ -251,9 +306,14 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
         )}
 
         {/* Source badge */}
-        {opt.source === "meta-api" && (
+        {opt.source === "api" && (
           <span className="ml-auto inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-blue-50 text-blue-700 font-semibold border border-blue-200">
-            <Info className="w-3 h-3" /> Meta Insights API
+            <Info className="w-3 h-3" /> {platform === "dv360" ? "DV360 Bid Manager" : "Meta Insights API"}
+          </span>
+        )}
+        {opt.source === "meta-only" && (
+          <span className="ml-auto inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-blue-50 text-blue-700 font-semibold border border-blue-200">
+            <Info className="w-3 h-3" /> Meta only
           </span>
         )}
         {opt.source === "client" && (
@@ -263,17 +323,19 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
         )}
       </div>
 
-      {/* Google-only note when using a meta-api dim */}
-      {opt.source === "meta-api" && (platform === "google") && (
+      {/* Meta-only dims on DV360 */}
+      {opt.source === "meta-only" && platform === "dv360" && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 flex items-start gap-2 text-xs text-yellow-800">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-          Google account selected — these breakdowns pull from Meta Insights. Connect a Meta account or switch to &quot;Both&quot; to see Meta data here. Google Ads demographic/device GAQL segments are coming in v1.1.
+          {opt.label} is a Meta-only breakdown. Switch to Meta or All to see this data.
         </div>
       )}
-      {opt.source === "meta-api" && (platform === "both") && (
+
+      {/* DV360 pending indicator */}
+      {dv360Pending && (
         <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 flex items-start gap-2 text-xs text-blue-800">
           <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-          Showing Meta data. Google Ads breakdown dimensions (age_range_view, gender_view, geographic_view) are coming in v1.1.
+          DV360 report is generating — this can take up to a minute. Retrying automatically…
         </div>
       )}
 
@@ -366,11 +428,11 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
         </>
       )}
 
-      {!loading && opt.source !== "coming-soon" && rows.length === 0 && !apiError && (
+      {!loading && !dv360Pending && opt.source !== "coming-soon" && rows.length === 0 && !apiError && (
         <div className="bg-white border-2 border-dashed border-gray-300 rounded-xl p-10 text-center text-sm text-gray-500">
-          {opt.source === "meta-api" && platform === "google"
-            ? "Switch to Meta or Both to see breakdown data."
-            : "No data for the selected window. Connect a Meta account or widen the date range."}
+          {opt.source === "meta-only" && platform === "dv360"
+            ? `${opt.label} is available for Meta only. Switch platform to see data.`
+            : "No data for the selected window. Connect an account or widen the date range."}
         </div>
       )}
 
@@ -392,7 +454,7 @@ export default function BreakdownsReport({ platform, dateRange, customStart, cus
             ].filter(Boolean)}
             tabName={`Breakdowns — ${opt.label}`}
             context={{ groupBy, rowCount: rows.length }}
-            platform={platform === "both" ? "meta" : platform}
+            platform={platform}
             dateRange={String(dateRange)}
           />
         );

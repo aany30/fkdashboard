@@ -14,7 +14,7 @@ export interface FixStep {
 
 export interface FixRecipe {
   title: string;
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   steps: FixStep[];
 }
 
@@ -391,7 +391,7 @@ export const FIX_RECIPES: Record<string, FixRecipe> = {
   // ----- Platform: Google -----
   google_low_impression_share: {
     title: "Lift Impression Share (below 60%)",
-    platform: "google",
+    platform: "dv360",
     steps: [
       {
         action:
@@ -417,7 +417,7 @@ export const FIX_RECIPES: Record<string, FixRecipe> = {
 
   google_pmax_assets_low: {
     title: "Fill PMax asset coverage (below 70%)",
-    platform: "google",
+    platform: "dv360",
     steps: [
       {
         action:

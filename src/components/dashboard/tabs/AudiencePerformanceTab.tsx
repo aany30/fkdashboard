@@ -17,6 +17,7 @@ import { usePersistentColumns } from "@/hooks/useColumnPrefs";
 import { formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import LoadingState from "@/components/shared/LoadingState";
 import {
   classifyAdSet,
   AUDIENCE_COLORS, STAGE_COLORS, INTENT_COLORS, TYPE_COLORS,
@@ -323,7 +324,7 @@ function ByAudienceTab({ adsets, audienceMap, loading, currency, startDate, endD
               return { label: r.label, spend: r.spend, roas: +m.roas.toFixed(2), cpa: +m.cpa.toFixed(2) };
             }),
           }}
-          platform={platform === "both" ? "meta" : platform}
+          platform={platform}
           dateRange={String(dateRange)}
           inline
         />
@@ -892,7 +893,7 @@ function EmptyState() {
 // ─── Main tab ────────────────────────────────────────────────────────────────
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -911,6 +912,8 @@ export default function AudiencePerformanceTab({ platform, dateRange, customStar
   const [active, setActive] = useState("by-audience");
   const { adsets, audienceMap, loading, error, currency, startDate, endDate } = useAdSetInsights(platform, dateRange, customStart, customEnd);
 
+  if (loading && adsets.length === 0) return <LoadingState message="Loading audience data…" />;
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -924,13 +927,6 @@ export default function AudiencePerformanceTab({ platform, dateRange, customStar
           </div>
         </div>
       </div>
-
-      {platform === "google" && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800 flex items-start gap-2">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-          Showing Meta ad-set data. Switch platform to Meta or Both to see results.
-        </div>
-      )}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-800 flex items-center gap-2">
@@ -989,7 +985,7 @@ export default function AudiencePerformanceTab({ platform, dateRange, customStar
             cpa: a.conversions > 0 ? +(a.spend / a.conversions).toFixed(4) : 0,
           })),
         }}
-        platform={platform === "both" ? "meta" : platform}
+        platform={platform}
         dateRange={String(dateRange)}
       />
     </div>

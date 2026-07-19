@@ -26,8 +26,8 @@ import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useAuthStore } from "@/store/auth";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useAdSetInsights } from "@/hooks/useAdSetInsights";
-import { useMetaDailyVsPrev } from "@/hooks/useMetaDailyVsPrev";
-import { usePersistentColumns, usePersistentValue } from "@/hooks/useColumnPrefs";
+import { useMetaDailyVsPrev, type DailyPoint } from "@/hooks/useMetaDailyVsPrev";
+import { usePersistentColumns, usePersistentValue, usePersistentJSON } from "@/hooks/useColumnPrefs";
 import CampaignMultiPicker from "@/components/shared/CampaignMultiPicker";
 import { formatMoney } from "@/lib/currency";
 import { rangeToDates } from "@/lib/date-range";
@@ -38,7 +38,7 @@ import type { AdInsightRow } from "@/pages/api/reporting/ad-insights/meta";
 import { ChevronRight as ChevronRightIcon, MoreHorizontal, GitCompare, Layers as LayersIcon } from "lucide-react";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -217,11 +217,16 @@ function buildGroupRows(adsets: AdSetRow[], campaigns: CampaignData[], groupBy: 
     cur.reach += a.reach || 0; cur.impressions += a.impressions || 0;
     reachByCamp.set(k, cur);
   }
+  // Roll up ALL campaigns in the list — useCampaigns already scopes to the
+  // selected platform(s), so Meta + DV360 campaigns both belong here. (Reach is
+  // hydrated from Meta ad sets; DV360 campaigns simply have reach 0.)
   return campaigns
-    .filter(c => c.platform === "meta")
     .map(c => {
       const r = reachByCamp.get(c.name);
-      const reach = r?.reach ?? 0;
+      // Meta reach comes from ad-set hydration; DV360 reach comes on the campaign
+      // itself (from the Bid Manager REACH report). Frequency derives from
+      // impressions ÷ reach, which equals the API's avg-frequency metric.
+      const reach = r?.reach || c.reach || 0;
       return {
         id: c.id, label: c.name,
         ...derive({
@@ -230,6 +235,18 @@ function buildGroupRows(adsets: AdSetRow[], campaigns: CampaignData[], groupBy: 
         }),
       };
     });
+}
+
+function totalsFromDailyPoints(daily: DailyPoint[]): GroupRow {
+  const sums = daily.reduce(
+    (s, d) => ({
+      spend: s.spend + d.spend, impressions: s.impressions + d.impressions,
+      reach: s.reach + (d.reach ?? 0), clicks: s.clicks + d.clicks,
+      conversions: s.conversions + d.conversions, conversionValue: s.conversionValue + d.conversionValue,
+    }),
+    { spend: 0, impressions: 0, reach: 0, clicks: 0, conversions: 0, conversionValue: 0 }
+  );
+  return { id: "__total", label: "Account", ...derive(sums) };
 }
 
 function totalsOf(rows: GroupRow[]): GroupRow {
@@ -351,6 +368,27 @@ function MultiCheckboxDropdown<T extends string>({
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function SectionSkeleton({ label }: { label: string }) {
+  return (
+    <div className="space-y-5 animate-pulse">
+      <div className="bg-gradient-to-br from-gray-50 via-white to-gray-50 rounded-xl border border-gray-100 p-5">
+        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Loading {label} data…</div>
+        <div className="grid grid-cols-3 gap-4">
+          {[1, 2, 3].map(i => <div key={i} className="space-y-2"><div className="h-4 bg-gray-200 rounded w-20" /><div className="h-8 bg-gray-200 rounded w-28" /><div className="h-3 bg-gray-100 rounded w-32" /></div>)}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {[1, 2, 3, 4].map(i => (
+          <div key={i} className="bg-white rounded-xl border border-gray-200 p-5"><div className="h-3 bg-gray-200 rounded w-16 mb-2" /><div className="h-8 bg-gray-200 rounded w-24" /><div className="h-3 bg-gray-100 rounded w-20 mt-2" /></div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        {[1, 2, 3].map(i => <div key={i} className="bg-white rounded-xl border border-gray-200 h-[280px] p-4"><div className="h-3 bg-gray-200 rounded w-32 mb-2" /><div className="h-4 bg-gray-200 rounded w-48" /></div>)}
+      </div>
     </div>
   );
 }
@@ -658,7 +696,7 @@ function usePrevAdSets(platform: "meta" | "both", dateRange: DateRange, customSt
   const prevStart = new Date(new Date(prevEnd).getTime() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
 
   useEffect(() => {
-    if (platform === "google" as string) return;
+    if (platform === "dv360" as string) return;
     const token = demoMode ? "demo-meta-token" : metaAccessToken;
     const biz   = demoMode ? "demo-business-123" : metaBusinessId;
     if (!token || !biz) return;
@@ -693,8 +731,13 @@ function isoWeek(d: Date): { year: number; week: number } {
   return { year: target.getUTCFullYear(), week };
 }
 
+function toIsoDate(raw: string): string {
+  if (/^\d{8}$/.test(raw)) return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+  return raw.replace(/\//g, "-");
+}
+
 function bucketLabel(dateIso: string, gran: Granularity): string {
-  const d = new Date(dateIso + "T00:00:00Z");
+  const d = new Date(toIsoDate(dateIso) + "T00:00:00Z");
   if (gran === "hour" || gran === "day") return dateIso;
   if (gran === "week") {
     const { year, week } = isoWeek(d);
@@ -710,12 +753,16 @@ interface PerfRow {
   spend: number; impressions: number; reach: number; frequency: number;
   clicks: number; conversions: number; conversionValue: number;
   ctr: number; cpc: number; cpm: number; cpa: number; roas: number; cvr: number; aov: number;
+  /** Reach/frequency not available for this row (e.g. DV360 has no per-period
+   * de-duplicated reach here) — render "—" rather than a proxy/zero. */
+  reachNA?: boolean;
 }
 
 function bucketDaily(
   daily: { label: string; spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number }[],
   gran: Granularity,
   adSetsForReach: AdSetRow[],
+  reachAvailable = true,
 ): PerfRow[] {
   const totalImpressions = daily.reduce((s, r) => s + r.impressions, 0);
   const totalReach = adSetsForReach.reduce((s, a) => s + (a.reach || 0), 0);
@@ -739,6 +786,7 @@ function bucketDaily(
           spend: base.spend, impressions: base.impressions, reach,
           clicks: base.clicks, conversions: base.conversions, conversionValue: base.conversionValue,
         }),
+        reachNA: !reachAvailable,
       };
     });
 }
@@ -813,6 +861,7 @@ function PerformanceTable({
   }, [prevRows, compareMode]);
 
   const granLabel = granularity === "day" ? "day" : granularity === "week" ? "week" : granularity === "month" ? "month" : granularity === "quarter" ? "quarter" : "year";
+  const tableReachNA = rows.length > 0 && rows.every(r => r.reachNA);
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm" ref={swapRef}>
@@ -866,9 +915,9 @@ function PerformanceTable({
           </div>
         </div>
       </div>
-      <div>
+      <div className="max-h-[520px] overflow-auto rounded-b-xl">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-[90px] z-20 shadow-sm">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
               <SortTh col="date" sort={perfSort} onToggle={perfToggle} className="px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600 whitespace-nowrap">Date</SortTh>
               {columns.map((c, colIdx) => {
@@ -922,9 +971,10 @@ function PerformanceTable({
                 {columns.map(c => {
                   const def = METRIC_BY_ID.get(c as MetricId)!;
                   const delta = compareMode && prev ? pctDelta(r[c], prev[c]) : null;
+                  const naCell = r.reachNA && (c === "reach" || c === "frequency");
                   return (
                     <td key={c} className="px-4 py-2.5 text-right tabular-nums">
-                      <div className="text-gray-900">{fmt(r[c], def.fmt, currency)}</div>
+                      <div className={naCell ? "text-gray-400" : "text-gray-900"}>{naCell ? "—" : fmt(r[c], def.fmt, currency)}</div>
                       {compareMode && prev && (
                         <div className="flex items-center justify-end gap-1 mt-0.5">
                           <span className="text-[10px] text-gray-500">{fmt(prev[c], def.fmt, currency)}</span>
@@ -948,9 +998,10 @@ function PerformanceTable({
                   const v = totals[c as keyof typeof totals] as number;
                   const pv = prevTotals ? prevTotals[c as keyof typeof prevTotals] as number : null;
                   const delta = compareMode && pv !== null ? pctDelta(v, pv) : null;
+                  const naCell = tableReachNA && (c === "reach" || c === "frequency");
                   return (
                     <td key={c} className="px-4 py-2.5 text-right tabular-nums">
-                      <div className="text-gray-900">{fmt(v, def.fmt, currency)}</div>
+                      <div className={naCell ? "text-gray-400" : "text-gray-900"}>{naCell ? "—" : fmt(v, def.fmt, currency)}</div>
                       {compareMode && pv !== null && (
                         <div className="flex items-center justify-end gap-1 mt-0.5">
                           <span className="text-[10px] text-gray-500">{fmt(pv, def.fmt, currency)}</span>
@@ -973,15 +1024,142 @@ function PerformanceTable({
   );
 }
 
+// ─── Combined KPI + chart section (platform === "both") ─────────────────────
+
+function CombinedKpiSection({
+  metaTotals, metaPrevTotals,
+  dv360Totals, dv360PrevTotals,
+  metaDaily, dv360Daily,
+  currency,
+}: {
+  metaTotals: GroupRow; metaPrevTotals: GroupRow;
+  dv360Totals: GroupRow; dv360PrevTotals: GroupRow;
+  metaDaily: DailyPoint[]; dv360Daily: DailyPoint[];
+  currency: string;
+}) {
+  const [kpiMetrics, setKpiMetrics] = usePersistentColumns<MetricId>(
+    "combined-kpi-highlights", ["spend", "impressions", "clicks", "conversions"]
+  );
+
+  const combinedRow: GroupRow = useMemo(() => ({
+    id: "__combined", label: "Combined",
+    ...derive({
+      spend:           metaTotals.spend           + dv360Totals.spend,
+      impressions:     metaTotals.impressions     + dv360Totals.impressions,
+      reach:           metaTotals.reach           + dv360Totals.reach,
+      clicks:          metaTotals.clicks          + dv360Totals.clicks,
+      conversions:     metaTotals.conversions     + dv360Totals.conversions,
+      conversionValue: metaTotals.conversionValue + dv360Totals.conversionValue,
+    }),
+  }), [metaTotals, dv360Totals]);
+
+  const combinedPrevRow: GroupRow = useMemo(() => ({
+    id: "__combined_prev", label: "Combined Prev",
+    ...derive({
+      spend:           metaPrevTotals.spend           + dv360PrevTotals.spend,
+      impressions:     metaPrevTotals.impressions     + dv360PrevTotals.impressions,
+      reach:           metaPrevTotals.reach           + dv360PrevTotals.reach,
+      clicks:          metaPrevTotals.clicks          + dv360PrevTotals.clicks,
+      conversions:     metaPrevTotals.conversions     + dv360PrevTotals.conversions,
+      conversionValue: metaPrevTotals.conversionValue + dv360PrevTotals.conversionValue,
+    }),
+  }), [metaPrevTotals, dv360PrevTotals]);
+
+  const chartData = useMemo(() => {
+    const metaByDate = new Map(metaDaily.map(r => [r.label, r]));
+    const dvByDate   = new Map(dv360Daily.map(r => [r.label, r]));
+    const zero = { spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0 };
+    const allDates = Array.from(new Set([...metaByDate.keys(), ...dvByDate.keys()])).sort();
+    return allDates.map(d => ({
+      date:      d.slice(5),
+      metaSpend: (metaByDate.get(d) ?? zero).spend,
+      dvSpend:   (dvByDate.get(d)   ?? zero).spend,
+      metaImpr:  (metaByDate.get(d) ?? zero).impressions,
+      dvImpr:    (dvByDate.get(d)   ?? zero).impressions,
+    }));
+  }, [metaDaily, dv360Daily]);
+
+  return (
+    <div className="space-y-4 pb-2 border-b border-gray-100 mb-2">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-2">
+          <div className="w-1 h-6 rounded-full bg-gradient-to-b from-blue-500 to-purple-500" />
+          <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide">Combined — Meta + DV360</h3>
+        </div>
+        <KpiSlotPicker
+          metrics={kpiMetrics}
+          onChange={(idx, next) => setKpiMetrics(prev => prev.map((x, j) => j === idx ? next : x))}
+        />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {kpiMetrics.map((m, i) => (
+          <div key={`combined-${m}-${i}`} className={`animate-fade-in-up stagger-${Math.min(i + 1, 9)}`}>
+            <KpiCard metric={m} totals={combinedRow} prevTotals={combinedPrevRow} currency={currency} />
+          </div>
+        ))}
+      </div>
+
+      {chartData.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+            <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-0.5">Daily Spend</div>
+            <p className="text-[11px] text-gray-400 mb-3">Meta bars · DV360 line · independent Y-axes</p>
+            <ResponsiveContainer width="100%" height={200}>
+              <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis yAxisId="left"  orientation="left"  tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
+                  tickFormatter={(v: number) => fmt(v, "money", currency)} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
+                  tickFormatter={(v: number) => fmt(v, "money", currency)} />
+                <Tooltip contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
+                  formatter={(v: number, name: string) => [fmt(v as number, "money", currency), name] as [string, string]} />
+                <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
+                <Bar  yAxisId="left"  dataKey="metaSpend" name="Meta"  fill="#6366f1" radius={[3, 3, 0, 0]} />
+                <Line yAxisId="right" type="monotone" dataKey="dvSpend" name="DV360" stroke="#10b981" strokeWidth={2} dot={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+            <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-0.5">Daily Impressions</div>
+            <p className="text-[11px] text-gray-400 mb-3">Meta bars · DV360 line · independent Y-axes</p>
+            <ResponsiveContainer width="100%" height={200}>
+              <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis yAxisId="left"  orientation="left"  tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
+                  tickFormatter={(v: number) => fmt(v, "int", currency)} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
+                  tickFormatter={(v: number) => fmt(v, "int", currency)} />
+                <Tooltip contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
+                  formatter={(v: number, name: string) => [fmt(v as number, "int", currency), name] as [string, string]} />
+                <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
+                <Bar  yAxisId="left"  dataKey="metaImpr" name="Meta"  fill="#6366f1" radius={[3, 3, 0, 0]} />
+                <Line yAxisId="right" type="monotone" dataKey="dvImpr" name="DV360" stroke="#10b981" strokeWidth={2} dot={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Drill Down — hierarchical Campaign → Ad Set → Ad ──────────────────────
 
 interface DrillNode {
   id: string;
   label: string;
-  level: "camp" | "as" | "ad";
+  level: "camp" | "as" | "ad" | "io" | "li" | "ag" | "aga" | "cr";
   spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number;
   reach: number; frequency: number;
   ctr: number; cpc: number; cpm: number; cpa: number; roas: number; cvr: number; aov: number;
+  /** DV360: reach/frequency genuinely unavailable at this level (creatives). */
+  reachNA?: boolean;
+  /** DV360: reach report still generating — show a loading state, not a 0. */
+  reachLoading?: boolean;
   children?: DrillNode[];
 }
 
@@ -1021,7 +1199,6 @@ function buildDrillTree(
     adsetsByCampaign.get(key)!.push(a);
   }
   const built = campaigns
-    .filter(c => c.platform === "meta")
     .map<DrillNode>(c => {
       const campaignAdSets = adsetsByCampaign.get(c.name.trim().toLowerCase()) || [];
       const adsetChildren = campaignAdSets.map<DrillNode>(a => {
@@ -1058,10 +1235,79 @@ function buildDrillTree(
     : built;
 }
 
+function buildDv360DrillTree(campaigns: CampaignData[]): DrillNode[] {
+  const zero = { spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0, reach: 0 };
+  return campaigns.map<DrillNode>(c => {
+    // Reach reports are async; while pending, show a loading state (not a 0) for
+    // any level whose reach hasn't arrived yet.
+    const pending = !!c.reachPending;
+    const loadFlag = (reach: number) => (pending && reach === 0 ? { reachLoading: true } : {});
+    const ios = (c.adSets ?? []).map<DrillNode>(io => {
+      const lis = (io.ads ?? []).map<DrillNode>(li => {
+        const adGroups = (li.adGroups ?? []).map<DrillNode>(ag => {
+          const agAds = (ag.ads ?? []).map<DrillNode>(a => ({
+            id: a.id, label: a.name, level: "aga", ...deriveSimple(zero), reachNA: true,
+          }));
+          return {
+            id: ag.id, label: ag.name, level: "ag", ...deriveSimple(zero), reachNA: true,
+            children: agAds.length ? agAds : undefined,
+          };
+        });
+        // Creatives that delivered on this line item. Unique reach is not exposed
+        // per creative by DV360 — mark unavailable so the UI shows "—", not 0.
+        const creatives = (li.creatives ?? []).map<DrillNode>(cr => ({
+          id: `cr-${li.id}-${cr.id}`, label: cr.name, level: "cr",
+          ...deriveSimple({
+            spend: cr.spend ?? 0, impressions: cr.impressions ?? 0, clicks: cr.clicks ?? 0,
+            conversions: 0, conversionValue: 0, reach: 0,
+          }),
+          reachNA: true,
+        }));
+        const liChildren = [...adGroups, ...creatives];
+        const liReach = li.reach ?? 0;
+        return {
+          id: li.id, label: li.name, level: "li",
+          ...deriveSimple({
+            spend: li.spend ?? 0, impressions: li.impressions ?? 0, clicks: li.clicks ?? 0,
+            conversions: 0, conversionValue: 0, reach: liReach,
+          }),
+          ...loadFlag(liReach),
+          children: liChildren.length ? liChildren : undefined,
+        };
+      });
+      const ioReach = io.reach ?? 0;
+      return {
+        id: io.id, label: io.name, level: "io",
+        ...deriveSimple({
+          spend: io.spend ?? 0, impressions: io.impressions ?? 0, clicks: io.clicks ?? 0,
+          conversions: 0, conversionValue: 0, reach: ioReach,
+        }),
+        ...loadFlag(ioReach),
+        children: lis.length ? lis : undefined,
+      };
+    });
+    const campReach = c.reach ?? 0;
+    return {
+      id: c.id, label: c.name, level: "camp",
+      ...deriveSimple({
+        spend: c.spend ?? 0, impressions: c.impressions ?? 0, clicks: c.clicks ?? 0,
+        conversions: c.conversions ?? 0, conversionValue: c.conversionValue ?? 0, reach: campReach,
+      }),
+      ...loadFlag(campReach),
+      children: ios.length ? ios : undefined,
+    };
+  });
+}
+
 const LEVEL_BADGE: Record<DrillNode["level"], { label: string; bg: string }> = {
   camp: { label: "CAMP", bg: "bg-gray-200 text-gray-700" },
+  io:   { label: "IO",   bg: "bg-purple-100 text-purple-700" },
   as:   { label: "AS",   bg: "bg-blue-100 text-blue-700" },
+  li:   { label: "LI",   bg: "bg-indigo-100 text-indigo-700" },
+  ag:   { label: "AG",   bg: "bg-teal-100 text-teal-700" },
+  aga:  { label: "AD",   bg: "bg-emerald-100 text-emerald-700" },
   ad:   { label: "AD",   bg: "bg-emerald-100 text-emerald-700" },
+  cr:   { label: "CR",   bg: "bg-amber-100 text-amber-700" },
 };
 
 type DrillCol = "impressions" | "reach" | "frequency" | "clicks" | "ctr" | "cpm" | "cpc" | "spend" | "conversions" | "conversionValue" | "roas" | "cpa" | "cvr" | "aov";
@@ -1120,9 +1366,13 @@ function DrillRow({
           const def = DRILL_COL_DEFS.find(d => d.id === c)!;
           const lib = DRILL_LOWER_IS_BETTER.has(c);
           const delta = prev ? pctDelta(node[c], prev[c]) : null;
+          const isReachCol = c === "reach" || c === "frequency";
+          const cellText = isReachCol && node.reachNA ? "—"
+            : isReachCol && node.reachLoading ? "…"
+            : fmt(node[c], def.fmt, currency);
           return (
             <td key={c} className={`px-3 py-2.5 text-right text-xs tabular-nums ${c === "spend" ? "font-semibold" : ""} text-gray-900`}>
-              <div>{fmt(node[c], def.fmt, currency)}</div>
+              <div className={isReachCol && (node.reachNA || node.reachLoading) ? "text-gray-400" : ""}>{cellText}</div>
               {compareMode && prev && (
                 <div className="flex items-center justify-end gap-1 mt-0.5">
                   <span className="text-[10px] text-gray-500">{fmt(prev[c], def.fmt, currency)}</span>
@@ -1145,15 +1395,16 @@ function DrillRow({
 }
 
 function DrillTable({
-  nodes, prevNodes, currency, groupBy, hideZero, onToggleHideZero, totalCount,
+  nodes, prevNodes, currency, groupBy, hideZero, onToggleHideZero, totalCount, persistKey,
 }: {
   nodes: DrillNode[]; prevNodes?: DrillNode[]; currency: string; groupBy: GroupBy;
-  hideZero: boolean; onToggleHideZero: () => void; totalCount: number;
+  hideZero: boolean; onToggleHideZero: () => void; totalCount: number; persistKey?: string;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toggle = (id: string) => setExpanded(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
 
-  const [columns, setColumns] = useState<DrillCol[]>(DRILL_DEFAULT_COLS);
+  // Persisted per account so added/removed columns survive reload & logout.
+  const [columns, setColumns] = usePersistentColumns<DrillCol>(persistKey, DRILL_DEFAULT_COLS);
   const [colMenuOpen, setColMenuOpen] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
   const [swapIdx, setSwapIdx] = useState<number | null>(null);
@@ -1193,7 +1444,7 @@ function DrillTable({
     <div className="space-y-3">
       <div>
         <h2 className="text-lg font-bold text-gray-900">Drill Down</h2>
-        <p className="text-xs text-gray-500 mt-0.5">Hierarchical expand: Campaign → Insertion Order → Line Item → Placement → Ad. <span className="italic text-gray-400">(Meta: Campaign → Ad Set → Ad)</span></p>
+        <p className="text-xs text-gray-500 mt-0.5">Hierarchical expand: Campaign → Insertion Order → Line Item → Ad Group / Creative. <span className="italic text-gray-400">(Meta: Campaign → Ad Set → Ad)</span></p>
       </div>
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm" ref={swapRef}>
         <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
@@ -1261,9 +1512,9 @@ function DrillTable({
             </div>
           </div>
         </div>
-        <div>
+        <div className="max-h-[560px] overflow-auto rounded-b-xl">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200 sticky top-[90px] z-20 shadow-sm">
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr>
                 <SortTh col="label" sort={drillSort} onToggle={drillToggle} className="px-3 py-2 text-[11px] uppercase font-semibold text-gray-600">{GROUPBY_LABEL[groupBy]}</SortTh>
                 {columns.map((c, colIdx) => {
@@ -1326,7 +1577,7 @@ function useAdInsightsFetch(platform: "meta" | "both", dateRange: DateRange, cus
   const { startDate, endDate } = rangeToDates(dateRange, customStart, customEnd);
 
   useEffect(() => {
-    if (platform === "google" as string) return;
+    if (platform === "dv360" as string) return;
     const token = demoMode ? "demo-meta-token" : metaAccessToken;
     const biz   = demoMode ? "demo-business-123" : metaBusinessId;
     if (!token || !biz) return;
@@ -1347,79 +1598,100 @@ function useAdInsightsFetch(platform: "meta" | "both", dateRange: DateRange, cus
 // ─── Main component ────────────────────────────────────────────────────────
 
 export default function KeyMetricAnalysisReport({ platform, dateRange, customStart, customEnd }: Props) {
-  const effective: "meta" | "both" = platform === "google" ? "meta" : platform;
+  const effective: "meta" | "both" = platform === "dv360" ? "meta" : platform;
 
-  const { campaigns: campaignsCur, startDate, endDate } = useCampaigns(effective, dateRange, customStart, customEnd);
-  const { adsets: adsetsCur, loading: loadingCur, currency } = useAdSetInsights(effective, dateRange, customStart, customEnd);
+  const { campaigns: campaignsCur, loading: loadingCamp, platformErrors, startDate, endDate } = useCampaigns(platform, dateRange, customStart, customEnd);
+  const { adsets: adsetsCur, loading: loadingAdsets, currency } = useAdSetInsights(platform, dateRange, customStart, customEnd);
   const { adsets: adsetsPrev, campaigns: campaignsPrev, prevStart, prevEnd } = usePrevAdSets(effective, dateRange, customStart, customEnd);
-  const { current: daily, previous: dailyPrev } = useMetaDailyVsPrev(effective, dateRange, customStart, customEnd);
+  const { current: daily, previous: dailyPrev, byPlatform, loading: loadingDaily } = useMetaDailyVsPrev(platform, dateRange, customStart, customEnd);
+  const metaLoading  = loadingCamp || loadingAdsets || loadingDaily;
+  const dv360Loading = loadingCamp || loadingDaily;
   const ads = useAdInsightsFetch(effective, dateRange, customStart, customEnd);
 
+  // ── Shared filters ───────────────────────────────────────────────────
   const [objectiveIds, setObjectiveIds] = useState<ObjectiveId[]>(["awareness_cpm"]);
   const primaryObjective = OBJECTIVE_BY_ID.get(objectiveIds[0])!;
   const [granularity, setGranularity] = usePersistentValue<Granularity>("key-metrics-granularity", "week");
   const [groupBy, setGroupBy] = usePersistentValue<GroupBy>("key-metrics-groupby", "campaigns");
-  const [campaignFilter, setCampaignFilter] = useState<string[]>([]); // empty = all
 
-  // Apply campaign filter to ad sets + campaigns lists used downstream.
-  const filteredCampaignsCur = useMemo(
-    () => campaignFilter.length === 0 ? campaignsCur : campaignsCur.filter(c => campaignFilter.includes(c.id)),
-    [campaignsCur, campaignFilter]
+  // ── Meta filter + data ───────────────────────────────────────────────
+  const [campaignFilter, setCampaignFilter] = useState<string[]>([]);
+  const metaCampaignsCur = useMemo(() => campaignsCur.filter(c => c.platform === "meta"), [campaignsCur]);
+  const filteredMetaCampaigns = useMemo(
+    () => campaignFilter.length === 0 ? metaCampaignsCur : metaCampaignsCur.filter(c => campaignFilter.includes(c.id)),
+    [metaCampaignsCur, campaignFilter]
   );
-  const filteredAdsetsCur = useMemo(() => {
+  const filteredAdsetsMeta = useMemo(() => {
     if (campaignFilter.length === 0) return adsetsCur;
-    const allowedNames = new Set(campaignsCur.filter(c => campaignFilter.includes(c.id)).map(c => c.name));
-    return adsetsCur.filter(a => a.campaignName && allowedNames.has(a.campaignName));
-  }, [adsetsCur, campaignsCur, campaignFilter]);
+    const allowed = new Set(metaCampaignsCur.filter(c => campaignFilter.includes(c.id)).map(c => c.name));
+    return adsetsCur.filter(a => a.campaignName && allowed.has(a.campaignName));
+  }, [adsetsCur, metaCampaignsCur, campaignFilter]);
+  const metaRowsCur  = useMemo(() => buildGroupRows(filteredAdsetsMeta, filteredMetaCampaigns, groupBy), [filteredAdsetsMeta, filteredMetaCampaigns, groupBy]);
+  const metaRowsPrev = useMemo(() => buildGroupRows(adsetsPrev, campaignsPrev, groupBy), [adsetsPrev, campaignsPrev, groupBy]);
+  const metaTotalsCur  = useMemo(() => totalsOf(metaRowsCur),  [metaRowsCur]);
+  const metaTotalsPrev = useMemo(() => totalsOf(metaRowsPrev), [metaRowsPrev]);
+  const metaPerfRows     = useMemo(() => bucketDaily(platform === "both" ? byPlatform.meta.current  : daily,     granularity, filteredAdsetsMeta), [byPlatform.meta.current, daily, platform, granularity, filteredAdsetsMeta]);
+  const metaPrevPerfRows = useMemo(() => bucketDaily(platform === "both" ? byPlatform.meta.previous : dailyPrev, granularity, adsetsPrev),        [byPlatform.meta.previous, dailyPrev, platform, granularity, adsetsPrev]);
 
-  const rowsCur  = useMemo(() => buildGroupRows(filteredAdsetsCur, filteredCampaignsCur, groupBy), [filteredAdsetsCur, filteredCampaignsCur, groupBy]);
-  const rowsPrev = useMemo(() => buildGroupRows(adsetsPrev, campaignsPrev, groupBy), [adsetsPrev, campaignsPrev, groupBy]);
-
-  const totalsCur  = useMemo(() => totalsOf(rowsCur),  [rowsCur]);
-  const totalsPrev = useMemo(() => totalsOf(rowsPrev), [rowsPrev]);
-
-  // Persisted per (account, objective) — switching objective still shows that
-  // objective's own saved highlight picks (or its defaults on first visit).
-  const [highlightMetrics, setHighlightMetrics] = usePersistentColumns<MetricId>(
-    `key-metrics-highlights:${objectiveIds[0]}`,
-    primaryObjective.highlights
+  // ── DV360 filter + data ──────────────────────────────────────────────
+  const [dv360CampaignFilter, setDv360CampaignFilter] = useState<string[]>([]);
+  const dv360CampaignsCur = useMemo(() => campaignsCur.filter(c => c.platform === "dv360"), [campaignsCur]);
+  const filteredDv360Campaigns = useMemo(
+    () => dv360CampaignFilter.length === 0 ? dv360CampaignsCur : dv360CampaignsCur.filter(c => dv360CampaignFilter.includes(c.id)),
+    [dv360CampaignsCur, dv360CampaignFilter]
   );
-  const [templates, setTemplates] = useState<GraphTemplate[]>(primaryObjective.templates);
+  const dv360RowsCur   = useMemo(() => buildGroupRows([], filteredDv360Campaigns, groupBy), [filteredDv360Campaigns, groupBy]);
+  const dv360TotalsCur  = useMemo(() => totalsOf(dv360RowsCur), [dv360RowsCur]);
+  const dv360TotalsPrev = useMemo(() => totalsFromDailyPoints(byPlatform.dv360.previous), [byPlatform.dv360.previous]);
+  // DV360 has no per-period de-duplicated reach in the trend edge — mark it NA
+  // (renders "—") rather than a proxy/zero. Campaign/IO/LI reach lives in the
+  // drill tree below, sourced from dedicated Bid Manager REACH reports.
+  const dv360PerfRows     = useMemo(() => bucketDaily(byPlatform.dv360.current,  granularity, [], false), [byPlatform.dv360.current, granularity]);
+  const dv360PrevPerfRows = useMemo(() => bucketDaily(byPlatform.dv360.previous, granularity, [], false), [byPlatform.dv360.previous, granularity]);
 
-  // Re-sync templates if objective changes (only when user hasn't customised).
-  const [customized, setCustomized] = useState<Set<number>>(new Set());
-  useEffect(() => {
-    const next = OBJECTIVE_BY_ID.get(objectiveIds[0])!.templates;
-    setTemplates(prev => prev.map((t, i) => customized.has(i) ? t : next[i]));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [objectiveIds]);
+  // ── Highlight metrics (persisted per objective, per platform) ────────
+  const [highlightMetrics, setHighlightMetrics] = usePersistentColumns<MetricId>(
+    `key-metrics-highlights:${objectiveIds[0]}`, primaryObjective.highlights
+  );
+  const [dv360HighlightMetrics, setDv360HighlightMetrics] = usePersistentColumns<MetricId>(
+    `key-metrics-dv360-highlights:${objectiveIds[0]}`, ["impressions", "clicks", "cpm", "spend"]
+  );
 
+  // ── Chart templates (persisted per account, per objective) ───────────
+  // Keyed by objective so each objective remembers its own chart pairings;
+  // switching objective loads that objective's saved layout (or its default).
+  const [templates, setTemplates]           = usePersistentJSON<GraphTemplate[]>(
+    `key-metrics-templates:${objectiveIds[0]}`, primaryObjective.templates
+  );
+  const [dv360Templates, setDv360Templates] = usePersistentJSON<GraphTemplate[]>(
+    `key-metrics-dv360-templates:${objectiveIds[0]}`, primaryObjective.templates
+  );
   function setSlot(idx: number, t: GraphTemplate) {
     setTemplates(prev => prev.map((cur, i) => i === idx ? t : cur));
-    setCustomized(prev => { const next = new Set(prev); next.add(idx); return next; });
+  }
+  function setDv360Slot(idx: number, t: GraphTemplate) {
+    setDv360Templates(prev => prev.map((cur, i) => i === idx ? t : cur));
   }
 
-  // Performance table: bucket daily data per granularity, columns follow objective highlights
-  const perfRows = useMemo(() => bucketDaily(daily, granularity, filteredAdsetsCur), [daily, granularity, filteredAdsetsCur]);
-  const prevPerfRows = useMemo(() => bucketDaily(dailyPrev, granularity, adsetsPrev), [dailyPrev, granularity, adsetsPrev]);
-  const [perfCols, setPerfCols] = useState<PerfCol[]>(PERF_COLS_BY_OBJECTIVE(primaryObjective));
-  useEffect(() => { setPerfCols(PERF_COLS_BY_OBJECTIVE(OBJECTIVE_BY_ID.get(objectiveIds[0])!)); }, [objectiveIds]);
-
-  // Drill tree — hide-zero filter on by default so the table doesn't drown in inactive campaigns
-  const [hideZero, setHideZero] = useState(true);
-  const drillTreeFull = useMemo(
-    () => buildDrillTree(filteredCampaignsCur, filteredAdsetsCur, ads, { hideZero: false }),
-    [filteredCampaignsCur, filteredAdsetsCur, ads]
+  // ── Performance table columns (persisted per account, per objective) ──
+  const [perfCols, setPerfCols]           = usePersistentColumns<PerfCol>(
+    `key-metrics-perfcols:${objectiveIds[0]}`, PERF_COLS_BY_OBJECTIVE(primaryObjective)
   );
-  const drillTree = useMemo(
-    () => hideZero ? drillTreeFull.filter(n => (n.impressions || 0) > 0 || (n.spend || 0) > 0) : drillTreeFull,
-    [drillTreeFull, hideZero]
+  const [dv360PerfCols, setDv360PerfCols] = usePersistentColumns<PerfCol>(
+    `key-metrics-dv360-perfcols:${objectiveIds[0]}`, ["impressions", "cpm", "spend", "clicks", "ctr"]
   );
 
-  const prevDrillTree = useMemo(
-    () => buildDrillTree(campaignsPrev, adsetsPrev, [], { hideZero: false }),
-    [campaignsPrev, adsetsPrev]
-  );
+  // ── Drill trees ──────────────────────────────────────────────────────
+  const [hideZero, setHideZero]           = useState(true);
+  const [hideZeroDV360, setHideZeroDV360] = useState(true);
+  const metaDrillFull = useMemo(() => buildDrillTree(filteredMetaCampaigns, filteredAdsetsMeta, ads, { hideZero: false }), [filteredMetaCampaigns, filteredAdsetsMeta, ads]);
+  const metaDrillTree = useMemo(() => hideZero ? metaDrillFull.filter(n => (n.impressions || 0) > 0 || (n.spend || 0) > 0) : metaDrillFull, [metaDrillFull, hideZero]);
+  const prevMetaDrillTree = useMemo(() => buildDrillTree(campaignsPrev, adsetsPrev, [], { hideZero: false }), [campaignsPrev, adsetsPrev]);
+  const dv360DrillFull = useMemo(() => buildDv360DrillTree(filteredDv360Campaigns), [filteredDv360Campaigns]);
+  const dv360DrillTree = useMemo(() => hideZeroDV360 ? dv360DrillFull.filter(n => (n.impressions || 0) > 0 || (n.spend || 0) > 0) : dv360DrillFull, [dv360DrillFull, hideZeroDV360]);
+
+  const showMeta  = platform === "meta"  || platform === "both";
+  const showDV360 = platform === "dv360" || platform === "both";
 
   return (
     <div className="space-y-5 section-enter">
@@ -1440,16 +1712,21 @@ export default function KeyMetricAnalysisReport({ platform, dateRange, customSta
             objectives: objectiveIds.map(id => `${OBJECTIVE_BY_ID.get(id)!.family} · ${OBJECTIVE_BY_ID.get(id)!.cost}`),
             groupBy: GROUPBY_LABEL[groupBy],
             granularity: GRAN_LABEL[granularity],
-            campaignFilterCount: campaignFilter.length,
-            totals: { impressions: totalsCur.impressions, reach: totalsCur.reach, spend: totalsCur.spend, cpm: totalsCur.cpm },
+            currency,
+            ...(showMeta ? { meta: { campaigns: filteredMetaCampaigns.length, impressions: metaTotalsCur.impressions, reach: metaTotalsCur.reach, spend: Math.round(metaTotalsCur.spend), cpm: +metaTotalsCur.cpm.toFixed(2) } } : {}),
+            ...(showDV360 ? { dv360: { campaigns: filteredDv360Campaigns.length, impressions: dv360TotalsCur.impressions, spend: Math.round(dv360TotalsCur.spend), cpm: +dv360TotalsCur.cpm.toFixed(2) } } : {}),
+            topCampaigns: [
+              ...filteredMetaCampaigns.map(c => ({ name: c.name, platform: "meta", spend: Math.round(c.spend ?? 0), impressions: c.impressions ?? 0, conversions: c.conversions ?? 0, roas: (c.spend ?? 0) > 0 ? +((c.conversionValue ?? 0) / (c.spend ?? 1)).toFixed(2) : 0 })),
+              ...filteredDv360Campaigns.map(c => ({ name: c.name, platform: "dv360", spend: Math.round(c.spend ?? 0), impressions: c.impressions ?? 0, conversions: c.conversions ?? 0, roas: 0 })),
+            ].sort((a, b) => b.spend - a.spend).slice(0, 25),
           }}
-          platform="meta"
+          platform={platform}
           inline
         />
       </div>
 
-      {/* FilterBar */}
-      <div className="sticky top-0 z-30 -mx-6 px-6 py-3 border-b border-gray-200 bg-white/90 backdrop-blur space-y-2">
+      {/* Shared FilterBar — Objective · Granularity · Group By */}
+      <div className="sticky top-0 z-30 -mx-6 px-6 py-3 border-b border-gray-200 bg-white/90 backdrop-blur">
         <div className="flex flex-wrap items-center gap-2">
           <MultiCheckboxDropdown<ObjectiveId>
             values={objectiveIds}
@@ -1476,130 +1753,193 @@ export default function KeyMetricAnalysisReport({ platform, dateRange, customSta
             }))}
           />
         </div>
-        <CampaignMultiPicker
-          options={campaignsCur.filter(c => c.platform === "meta").map(c => ({ id: c.id, name: c.name }))}
-          values={campaignFilter}
-          onChange={setCampaignFilter}
-        />
       </div>
 
-      {/* Plain-English Summary */}
-      <PlainEnglishSummary
-        spend={totalsCur.spend}
-        leads={totalsCur.conversions}
-        cpl={totalsCur.cpa}
-        prevSpend={totalsPrev.spend}
-        prevLeads={totalsPrev.conversions}
-        prevCpl={totalsPrev.cpa}
-        currency={currency}
-        startDate={startDate}
-        endDate={endDate}
-      />
-
-      {/* Highlights section */}
-      <div>
-        <div className="mb-3">
-          <h2 className="text-lg font-bold text-gray-900">Highlights</h2>
-          <p className="text-xs text-gray-500 mt-0.5">Key metrics for the chosen objective. Pick objectives in the filter bar above.</p>
-        </div>
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Highlights</h3>
-          <KpiSlotPicker
-            metrics={highlightMetrics}
-            onChange={(idx, next) => setHighlightMetrics(prev => prev.map((x, j) => j === idx ? next : x))}
-          />
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {highlightMetrics.map((m, i) => (
-            <div key={`${m}-${i}`} className={`animate-fade-in-up stagger-${Math.min(i + 1, 9)}`}>
-              <KpiCard
-                metric={m}
-                totals={totalsCur}
-                prevTotals={totalsPrev}
-                currency={currency}
-              />
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Performance Reports section */}
-      <div>
-        <div className="mb-3">
-          <h2 className="text-lg font-bold text-gray-900">Performance Reports</h2>
-          <p className="text-xs text-gray-500 mt-0.5">Top performers per analysis type — change any chart from the dropdown on its card.</p>
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-          {templates.map((t, idx) => (
-            <GraphCard
-              key={idx}
-              template={t}
-              onChangeTemplate={(next) => setSlot(idx, next)}
-              rows={rowsCur}
-              groupBy={groupBy}
-              currency={currency}
-              loading={loadingCur}
-            />
-          ))}
-        </div>
-      </div>
-
-      {/* Performance bucketed table */}
-      <div className="space-y-3">
-        <h2 className="text-lg font-bold text-gray-900">Performance</h2>
-        <PerformanceTable
-          rows={perfRows}
-          prevRows={prevPerfRows}
-          granularity={granularity}
+      {/* ══ COMBINED SECTION (platform === "both") ═══════════════════════════ */}
+      {platform === "both" && !metaLoading && !dv360Loading && (
+        <CombinedKpiSection
+          metaTotals={metaTotalsCur}
+          metaPrevTotals={metaTotalsPrev}
+          dv360Totals={dv360TotalsCur}
+          dv360PrevTotals={dv360TotalsPrev}
+          metaDaily={byPlatform.meta.current}
+          dv360Daily={byPlatform.dv360.current}
           currency={currency}
-          columns={perfCols}
-          onColumnsChange={setPerfCols}
         />
-      </div>
+      )}
 
-      {/* Drill down */}
-      <DrillTable
-        nodes={drillTree}
-        prevNodes={prevDrillTree}
-        currency={currency}
-        groupBy={groupBy}
-        hideZero={hideZero}
-        onToggleHideZero={() => setHideZero(v => !v)}
-        totalCount={drillTreeFull.length}
-      />
+      {/* ══ META SECTION ══════════════════════════════════════════════════════ */}
+      {showMeta && (
+        <div className="space-y-5">
+          {platform === "both" && (
+            <div className="flex items-center gap-3 pt-2">
+              <div className="w-1 h-8 rounded-full bg-blue-500" />
+              <h2 className="text-xl font-bold text-gray-900">Meta</h2>
+              <span className="text-xs bg-blue-50 border border-blue-200 text-blue-700 px-2.5 py-0.5 rounded-full font-semibold">Meta Ads</span>
+            </div>
+          )}
 
-      {platform === "google" && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800">
-          Key Metric Analysis uses Meta insights — switch Platform to Meta or Both for data.
+          {metaLoading ? <SectionSkeleton label="Meta" /> : (
+            <>
+              <CampaignMultiPicker
+                options={metaCampaignsCur.map(c => ({ id: c.id, name: c.name }))}
+                values={campaignFilter}
+                onChange={setCampaignFilter}
+              />
+
+              <PlainEnglishSummary
+                spend={metaTotalsCur.spend}
+                leads={metaTotalsCur.conversions}
+                cpl={metaTotalsCur.cpa}
+                prevSpend={metaTotalsPrev.spend}
+                prevLeads={metaTotalsPrev.conversions}
+                prevCpl={metaTotalsPrev.cpa}
+                currency={currency}
+                startDate={startDate}
+                endDate={endDate}
+              />
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Highlights</h3>
+                  <KpiSlotPicker
+                    metrics={highlightMetrics}
+                    onChange={(idx, next) => setHighlightMetrics(prev => prev.map((x, j) => j === idx ? next : x))}
+                  />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {highlightMetrics.map((m, i) => (
+                    <div key={`meta-${m}-${i}`} className={`animate-fade-in-up stagger-${Math.min(i + 1, 9)}`}>
+                      <KpiCard metric={m} totals={metaTotalsCur} prevTotals={metaTotalsPrev} currency={currency} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h2 className="text-lg font-bold text-gray-900 mb-3">Performance Reports</h2>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                  {templates.map((t, idx) => (
+                    <GraphCard key={idx} template={t} onChangeTemplate={(next) => setSlot(idx, next)}
+                      rows={metaRowsCur} groupBy={groupBy} currency={currency} loading={false} />
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <h2 className="text-lg font-bold text-gray-900">Performance</h2>
+                <PerformanceTable rows={metaPerfRows} prevRows={metaPrevPerfRows} granularity={granularity}
+                  currency={currency} columns={perfCols} onColumnsChange={setPerfCols} />
+              </div>
+
+              <DrillTable nodes={metaDrillTree} prevNodes={prevMetaDrillTree} currency={currency}
+                groupBy={groupBy} hideZero={hideZero} onToggleHideZero={() => setHideZero(v => !v)}
+                totalCount={metaDrillFull.length} persistKey="key-metrics-drill-meta" />
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ══ DV360 SECTION ═════════════════════════════════════════════════════ */}
+      {showDV360 && (
+        <div className="space-y-5">
+          <div className={`flex items-center gap-3 ${platform === "both" ? "pt-4 border-t border-gray-200" : "pt-2"}`}>
+            <div className="w-1 h-8 rounded-full bg-purple-500" />
+            <h2 className="text-xl font-bold text-gray-900">DV360</h2>
+            <span className="text-xs bg-purple-50 border border-purple-200 text-purple-700 px-2.5 py-0.5 rounded-full font-semibold">Display & Video 360</span>
+            {platform === "dv360" && dv360CampaignsCur.length === 0 && !dv360Loading && (
+              <span className="text-xs text-gray-400">No campaigns in this date range</span>
+            )}
+          </div>
+
+          {dv360Loading ? <SectionSkeleton label="DV360" /> : (
+            <>
+              <CampaignMultiPicker
+                options={dv360CampaignsCur.map(c => ({ id: c.id, name: c.name }))}
+                values={dv360CampaignFilter}
+                onChange={setDv360CampaignFilter}
+              />
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Highlights</h3>
+                  <KpiSlotPicker
+                    metrics={dv360HighlightMetrics}
+                    onChange={(idx, next) => setDv360HighlightMetrics(prev => prev.map((x, j) => j === idx ? next : x))}
+                  />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {dv360HighlightMetrics.map((m, i) => (
+                    <div key={`dv360-${m}-${i}`} className={`animate-fade-in-up stagger-${Math.min(i + 1, 9)}`}>
+                      <KpiCard metric={m} totals={dv360TotalsCur} prevTotals={dv360TotalsPrev} currency={currency} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h2 className="text-lg font-bold text-gray-900 mb-3">Performance Reports</h2>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                  {dv360Templates.map((t, idx) => (
+                    <GraphCard key={idx} template={t} onChangeTemplate={(next) => setDv360Slot(idx, next)}
+                      rows={dv360RowsCur} groupBy={groupBy} currency={currency} loading={false} />
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <h2 className="text-lg font-bold text-gray-900">Performance</h2>
+                <PerformanceTable rows={dv360PerfRows} prevRows={dv360PrevPerfRows} granularity={granularity}
+                  currency={currency} columns={dv360PerfCols} onColumnsChange={setDv360PerfCols} />
+              </div>
+
+              <DrillTable nodes={dv360DrillTree} prevNodes={[]} currency={currency}
+                groupBy={groupBy} hideZero={hideZeroDV360} onToggleHideZero={() => setHideZeroDV360(v => !v)}
+                totalCount={dv360DrillFull.length} persistKey="key-metrics-drill-dv360" />
+
+              {platformErrors.dv360 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+                  <span className="font-semibold">DV360 data unavailable:</span> {platformErrors.dv360}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 
       <TabSummaryFooter
         tabName="Key Metric Analysis"
         lines={[
-          `${filteredCampaignsCur.length} campaign${filteredCampaignsCur.length !== 1 ? "s" : ""} analysed (${campaignFilter.length > 0 ? `${campaignFilter.length} filtered` : "all campaigns"}) · ${GROUPBY_LABEL[groupBy]} grouping.`,
-          `Total impressions: ${fmt(totalsCur.impressions, "int", currency)} · Spend: ${fmt(totalsCur.spend, "money", currency)} · CPM: ${fmt(totalsCur.cpm, "money", currency)}.`,
-          `Date window: ${startDate} → ${endDate}.`,
+          ...(showMeta ? [
+            `Meta — ${filteredMetaCampaigns.length} campaign${filteredMetaCampaigns.length !== 1 ? "s" : ""} (${campaignFilter.length > 0 ? `${campaignFilter.length} filtered` : "all"}) · ${fmt(metaTotalsCur.impressions, "int", currency)} impr · ${fmt(metaTotalsCur.spend, "money", currency)} spend · CPM ${fmt(metaTotalsCur.cpm, "money", currency)}.`,
+          ] : []),
+          ...(showDV360 ? [
+            `DV360 — ${filteredDv360Campaigns.length} campaign${filteredDv360Campaigns.length !== 1 ? "s" : ""} (${dv360CampaignFilter.length > 0 ? `${dv360CampaignFilter.length} filtered` : "all"}) · ${fmt(dv360TotalsCur.impressions, "int", currency)} impr · ${fmt(dv360TotalsCur.spend, "money", currency)} spend · CPM ${fmt(dv360TotalsCur.cpm, "money", currency)}.`,
+          ] : []),
+          `Date window: ${startDate} → ${endDate} · ${GROUPBY_LABEL[groupBy]} grouping.`,
         ]}
         context={{
-          campaignCount: filteredCampaignsCur.length,
-          totalSpend: totalsCur.spend,
-          totalImpressions: totalsCur.impressions,
+          campaignCount: filteredMetaCampaigns.length + filteredDv360Campaigns.length,
+          totalSpend: metaTotalsCur.spend + dv360TotalsCur.spend,
+          totalImpressions: metaTotalsCur.impressions + dv360TotalsCur.impressions,
           groupBy,
           startDate,
           endDate,
-          campaigns: filteredCampaignsCur.map(c => ({
-            name: c.name,
-            status: c.status,
-            spend: c.spend ?? 0,
-            impressions: c.impressions ?? 0,
-            clicks: c.clicks ?? 0,
-            conversions: c.conversions ?? 0,
-            conversionValue: c.conversionValue ?? 0,
-            roas: (c.spend ?? 0) > 0 ? +((c.conversionValue ?? 0) / (c.spend ?? 1)).toFixed(4) : 0,
-          })),
+          campaigns: [
+            ...filteredMetaCampaigns.map(c => ({
+              name: c.name, status: c.status,
+              spend: c.spend ?? 0, impressions: c.impressions ?? 0, clicks: c.clicks ?? 0,
+              conversions: c.conversions ?? 0, conversionValue: c.conversionValue ?? 0,
+              roas: (c.spend ?? 0) > 0 ? +((c.conversionValue ?? 0) / (c.spend ?? 1)).toFixed(4) : 0,
+            })),
+            ...filteredDv360Campaigns.map(c => ({
+              name: `[DV360] ${c.name}`, status: c.status,
+              spend: c.spend ?? 0, impressions: c.impressions ?? 0, clicks: c.clicks ?? 0,
+              conversions: 0, conversionValue: 0, roas: 0,
+            })),
+          ],
         }}
-        platform={platform === "both" ? "meta" : platform}
+        platform={platform}
         dateRange={String(dateRange)}
       />
     </div>

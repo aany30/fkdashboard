@@ -28,6 +28,7 @@ export default async function handler(
   try {
     const client = new MetaApiClient(accessToken);
     const campaigns = await client.listCampaigns(businessId, startDate, endDate);
+    console.log(`[campaigns/meta] ${campaigns?.length ?? 0} campaigns, currency=${campaigns?.[0]?.currency ?? "(none)"}`);
     // Real account that genuinely has no campaigns → return empty (not demo),
     // so the user sees the truth rather than misleading demo data.
     res.status(200).json(campaigns || []);

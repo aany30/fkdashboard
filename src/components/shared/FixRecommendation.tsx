@@ -12,7 +12,7 @@ interface FixStep {
 
 interface FixApiResponse {
   title: string;
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   steps: FixStep[];
   source: "ai" | "fallback"; creditsUsedUsd?: number;
 }
@@ -21,7 +21,7 @@ interface Props {
   metric: string;
   value: string | number;
   status: "bad" | "warn" | "critical" | "moderate";
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   threshold?: string;
   /** When the failure is per-campaign, the full campaign object. */
   campaignContext?: CampaignData;
@@ -72,12 +72,12 @@ export default function FixRecommendation({
   // Determine whether the user is in demo mode (no real credentials).
   // Real-data connections must NOT fall back to static recipes per user
   // direction — AI is mandatory for real data.
-  const { metaAccessToken, googleAccessToken, addAiCredits } = useAuthStore();
+  const { metaAccessToken, dv360RefreshToken, addAiCredits } = useAuthStore();
   const isDemo = useMemo(
     () =>
       (!metaAccessToken || isDemoCredential(metaAccessToken)) &&
-      (!googleAccessToken || isDemoCredential(googleAccessToken)),
-    [metaAccessToken, googleAccessToken]
+      (!dv360RefreshToken || isDemoCredential(dv360RefreshToken)),
+    [metaAccessToken, dv360RefreshToken]
   );
 
   const cacheKey = useMemo(

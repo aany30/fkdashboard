@@ -20,8 +20,7 @@ export function useAccountKey(): string {
       ? "demo"
       : s.metaBusinessId ||
         s.selectedMetaPixelId ||
-        s.selectedGoogleCustomerId ||
-        s.googleCustomerId ||
+        s.dv360AdvertiserId ||
         "default"
   );
 }

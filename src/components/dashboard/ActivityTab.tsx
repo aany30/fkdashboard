@@ -10,16 +10,16 @@ export default function ActivityTab() {
   const eventsRaw = [
     { time: "Just now", event: "Purchase", platform: "Meta", pixel: "Main Pixel", value: "$129.00", match: 9, dedup: "OK", status: "Healthy" },
     { time: "3s ago", event: "AddToCart", platform: "Meta", pixel: "Main Pixel", value: "$59.00", match: 8, dedup: "OK", status: "Healthy" },
-    { time: "5s ago", event: "view_item", platform: "Google", pixel: "GA4-DEMO-001", value: "—", match: 7, dedup: "OK", status: "Healthy" },
+    { time: "5s ago", event: "view_item", platform: "DV360", pixel: "FL-DEMO-001", value: "—", match: 7, dedup: "OK", status: "Healthy" },
     { time: "8s ago", event: "InitiateCheckout", platform: "Meta", pixel: "Checkout Pixel", value: "$84.00", match: 8, dedup: "OK", status: "Healthy" },
     { time: "12s ago", event: "PageView", platform: "Meta", pixel: "Main Pixel", value: "—", match: 6, dedup: "OK", status: "Healthy" },
-    { time: "14s ago", event: "begin_checkout", platform: "Google", pixel: "GA4-DEMO-001", value: "$42.00", match: 6, dedup: "Warn", status: "Moderate" },
+    { time: "14s ago", event: "begin_checkout", platform: "DV360", pixel: "FL-DEMO-001", value: "$42.00", match: 6, dedup: "Warn", status: "Moderate" },
     { time: "18s ago", event: "Purchase", platform: "Meta", pixel: "Main Pixel", value: "$249.00", match: 9, dedup: "OK", status: "Healthy" },
     { time: "22s ago", event: "ViewContent", platform: "Meta", pixel: "Main Pixel", value: "—", match: 7, dedup: "OK", status: "Healthy" },
-    { time: "25s ago", event: "add_to_cart", platform: "Google", pixel: "GA4-DEMO-001", value: "$32.00", match: 6, dedup: "OK", status: "Healthy" },
+    { time: "25s ago", event: "add_to_cart", platform: "DV360", pixel: "FL-DEMO-001", value: "$32.00", match: 6, dedup: "OK", status: "Healthy" },
     { time: "28s ago", event: "AddPaymentInfo", platform: "Meta", pixel: "Checkout Pixel", value: "$179.00", match: 5, dedup: "Dup", status: "Critical" },
     { time: "31s ago", event: "PageView", platform: "Meta", pixel: "Main Pixel", value: "—", match: 6, dedup: "OK", status: "Healthy" },
-    { time: "34s ago", event: "purchase", platform: "Google", pixel: "GA4-DEMO-001", value: "$199.00", match: 8, dedup: "OK", status: "Healthy" },
+    { time: "34s ago", event: "purchase", platform: "DV360", pixel: "FL-DEMO-001", value: "$199.00", match: 8, dedup: "OK", status: "Healthy" },
   ].map((e) => ({ ...e, statusRank: STATUS_RANK[e.status] ?? 0 }));
   const { sorted: events, sort: actSort, toggle: actToggle } = useSort(eventsRaw, "match", "desc");
 
@@ -34,7 +34,7 @@ export default function ActivityTab() {
       <div className="flex justify-between items-start">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Real-time Activity</h1>
-          <p className="text-gray-600 mt-1">Live event stream across Meta and Google tracking</p>
+          <p className="text-gray-600 mt-1">Live event stream across Meta and DV360 tracking</p>
         </div>
         <div className="flex items-center gap-2 bg-green-50 px-3 py-2 rounded-lg border border-green-200">
           <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
@@ -69,13 +69,13 @@ export default function ActivityTab() {
         <div className="p-6 border-b border-gray-200 flex justify-between items-center">
           <div>
             <h2 className="text-lg font-bold text-gray-900">Live Event Stream</h2>
-            <p className="text-sm text-gray-600 mt-1">Most recent events from connected pixels and GA4 properties</p>
+            <p className="text-sm text-gray-600 mt-1">Most recent events from connected pixels and DV360 accounts</p>
           </div>
           <div className="flex gap-2">
             <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-700 bg-white">
               <option>All Platforms</option>
               <option>Meta</option>
-              <option>Google</option>
+              <option>DV360</option>
             </select>
             <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-700 bg-white">
               <option>All Events</option>
@@ -122,7 +122,7 @@ export default function ActivityTab() {
         tabName="Real-time Activity"
         lines={[
           `${events.length} events shown in the live stream — ${events.filter(e => e.status === "Healthy").length} healthy, ${events.filter(e => e.status === "Critical").length} critical.`,
-          `${[...new Set(events.map(e => e.event))].length} unique event types across Meta and Google tracking.`,
+          `${[...new Set(events.map(e => e.event))].length} unique event types across Meta and DV360 tracking.`,
           `Last event: ${events[0]?.event ?? "—"} (${events[0]?.time ?? "—"}).`,
         ]}
         context={{ eventCount: events.length }}

@@ -14,7 +14,7 @@ import type { DateRange } from "@/components/shared/DateRangePicker";
 import ReactMarkdown from "react-markdown";
 
 interface Props {
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   dateRange?: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -40,7 +40,10 @@ const SUGGESTED_QUESTIONS = [
 
 export default function AskAITab({ platform, dateRange, customStart, customEnd }: Props) {
   const { demoMode } = useAuthStore();
-  const { campaigns, loading: campsLoading } = useCampaigns(platform ?? "meta", dateRange ?? "30d", customStart, customEnd);
+  // Default to "both" so Ask AI sees Meta AND DV360 unless a single platform is
+  // explicitly selected.
+  const effectivePlatform = platform ?? "both";
+  const { campaigns, loading: campsLoading } = useCampaigns(effectivePlatform, dateRange ?? "30d", customStart, customEnd);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -55,38 +58,50 @@ export default function AskAITab({ platform, dateRange, customStart, customEnd }
 
   const buildContext = () => {
     if (!campaigns.length) return undefined;
-    const totalSpend = campaigns.reduce((s, c) => s + (c.spend || 0), 0);
-    const totalConversions = campaigns.reduce((s, c) => s + (c.conversions || 0), 0);
-    const totalImpressions = campaigns.reduce((s, c) => s + (c.impressions || 0), 0);
-    const totalClicks = campaigns.reduce((s, c) => s + (c.clicks || 0), 0);
-    const totalRevenue = campaigns.reduce((s, c) => s + (c.conversionValue || 0), 0);
+    // Per-platform summary so the model can answer about Meta and DV360
+    // separately (and never blends INR + USD or Meta + DV360 numbers).
+    const summarize = (list: typeof campaigns) => {
+      const spend = list.reduce((s, c) => s + (c.spend || 0), 0);
+      const conv = list.reduce((s, c) => s + (c.conversions || 0), 0);
+      const impr = list.reduce((s, c) => s + (c.impressions || 0), 0);
+      const clicks = list.reduce((s, c) => s + (c.clicks || 0), 0);
+      const rev = list.reduce((s, c) => s + (c.conversionValue || 0), 0);
+      return {
+        campaignCount: list.length,
+        currency: list.find((c) => c.currency)?.currency ?? "USD",
+        totalSpend: spend, totalConversions: conv, totalImpressions: impr, totalClicks: clicks,
+        overallROAS: spend > 0 ? (rev / spend).toFixed(2) : "0",
+        overallCPM: impr > 0 ? ((spend / impr) * 1000).toFixed(2) : "0",
+        overallCTR: impr > 0 ? ((clicks / impr) * 100).toFixed(2) + "%" : "0%",
+        overallCPA: conv > 0 ? (spend / conv).toFixed(2) : "0",
+      };
+    };
+    const metaCampaigns = campaigns.filter((c) => c.platform === "meta");
+    const dv360Campaigns = campaigns.filter((c) => c.platform === "dv360");
+    const mapRow = (c: typeof campaigns[number]) => {
+      const sp = c.spend || 0, im = c.impressions || 0, cl = c.clicks || 0, cv = c.conversions || 0;
+      return {
+        platform: c.platform ?? "meta",
+        name: c.name,
+        objective: c.objective,
+        status: c.status,
+        currency: c.currency,
+        spend: sp, impressions: im, clicks: cl, conversions: cv,
+        reach: c.reach, frequency: c.frequency,
+        roas: sp > 0 ? ((c.conversionValue || 0) / sp).toFixed(2) : "0",
+        cpm: im > 0 ? ((sp / im) * 1000).toFixed(2) : "0",
+        ctr: im > 0 ? ((cl / im) * 100).toFixed(2) + "%" : "0%",
+        cpa: cv > 0 ? (sp / cv).toFixed(2) : "0",
+      };
+    };
     return {
-      summary: {
-        totalSpend,
-        totalConversions,
-        totalImpressions,
-        totalClicks,
-        overallROAS: totalSpend > 0 ? (totalRevenue / totalSpend).toFixed(2) : "0",
-        overallCPM: totalImpressions > 0 ? ((totalSpend / totalImpressions) * 1000).toFixed(2) : "0",
-        overallCTR: totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) + "%" : "0%",
-        overallCPA: totalConversions > 0 ? (totalSpend / totalConversions).toFixed(2) : "0",
+      platform: effectivePlatform,
+      byPlatform: {
+        ...(metaCampaigns.length ? { meta: summarize(metaCampaigns) } : {}),
+        ...(dv360Campaigns.length ? { dv360: summarize(dv360Campaigns) } : {}),
       },
-      campaigns: campaigns.slice(0, 30).map((c) => {
-        const sp = c.spend || 0, im = c.impressions || 0, cl = c.clicks || 0, cv = c.conversions || 0;
-        return {
-          name: c.name,
-          objective: c.objective,
-          status: c.status,
-          spend: sp,
-          impressions: im,
-          clicks: cl,
-          conversions: cv,
-          roas: sp > 0 ? ((c.conversionValue || 0) / sp).toFixed(2) : "0",
-          cpm: im > 0 ? ((sp / im) * 1000).toFixed(2) : "0",
-          ctr: im > 0 ? ((cl / im) * 100).toFixed(2) + "%" : "0%",
-          cpa: cv > 0 ? (sp / cv).toFixed(2) : "0",
-        };
-      }),
+      // Cap per platform so both are represented even with many campaigns.
+      campaigns: [...metaCampaigns.slice(0, 20), ...dv360Campaigns.slice(0, 20)].map(mapRow),
     };
   };
 
@@ -107,7 +122,7 @@ export default function AskAITab({ platform, dateRange, customStart, customEnd }
         body: JSON.stringify({
           question: q,
           context: buildContext(),
-          platform: platform ?? "meta",
+          platform: effectivePlatform,
           dateRange: typeof dateRange === "string" ? dateRange : "custom",
           history: history.map((m) => ({ role: m.role, content: m.content })),
           isDemo: demoMode,

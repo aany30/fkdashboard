@@ -8,9 +8,10 @@ import RenamingAgent from "./RenamingAgent";
 import { objectiveMatches } from "./CampaignObjectiveFilter";
 import { rangeToDates } from "@/lib/date-range";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import LoadingState from "@/components/shared/LoadingState";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: string;
   customStart?: string;
   customEnd?: string;
@@ -24,17 +25,18 @@ export default function NamingTab({ platform, dateRange = "30d", customStart, cu
     metaAccessToken,
     metaBusinessId,
     metaPixelIds,
-    googleAccessToken,
-    googleCustomerId,
-    googleAdsDeveloperToken,
-    googleAdsLoginCustomerId,
+    dv360ClientId,
+    dv360ClientSecret,
+    dv360RefreshToken,
+    dv360AdvertiserId,
+    dv360PartnerId,
   } = useAuthStore();
 
   const [activeTab, setActiveTab] = useState<TabType>("maker");
   const [campaigns, setCampaigns] = useState<CampaignData[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Fetch campaigns from Meta and Google APIs
+  // Fetch campaigns from Meta and DV360 APIs
   useEffect(() => {
     const fetchCampaigns = async () => {
       setLoading(true);
@@ -66,21 +68,20 @@ export default function NamingTab({ platform, dateRange = "30d", customStart, cu
           }
         }
 
-        // Fetch Google campaigns
+        // Fetch DV360 campaigns
         if (
-          (platform === "google" || platform === "both") &&
-          googleAccessToken &&
-          googleCustomerId &&
-          googleAdsDeveloperToken
+          (platform === "dv360" || platform === "both") &&
+          dv360ClientId && dv360ClientSecret && dv360RefreshToken && dv360AdvertiserId
         ) {
-          const response = await fetch("/api/naming/campaigns/google", {
+          const response = await fetch("/api/naming/campaigns/dv360", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              accessToken: googleAccessToken,
-              customerId: googleCustomerId,
-              developerToken: googleAdsDeveloperToken,
-              loginCustomerId: googleAdsLoginCustomerId || googleCustomerId,
+              clientId: dv360ClientId,
+              clientSecret: dv360ClientSecret,
+              refreshToken: dv360RefreshToken,
+              advertiserId: dv360AdvertiserId,
+              partnerId: dv360PartnerId || undefined,
               startDate,
               endDate,
             }),
@@ -111,10 +112,11 @@ export default function NamingTab({ platform, dateRange = "30d", customStart, cu
     metaAccessToken,
     metaBusinessId,
     metaPixelIds,
-    googleAccessToken,
-    googleCustomerId,
-    googleAdsDeveloperToken,
-    googleAdsLoginCustomerId,
+    dv360ClientId,
+    dv360ClientSecret,
+    dv360RefreshToken,
+    dv360AdvertiserId,
+    dv360PartnerId,
   ]);
 
   const handleRefresh = () => {
@@ -148,18 +150,18 @@ export default function NamingTab({ platform, dateRange = "30d", customStart, cu
         }
 
         if (
-          (platform === "google" || platform === "both") &&
-          googleAccessToken &&
-          googleCustomerId
+          (platform === "dv360" || platform === "both") &&
+          dv360ClientId && dv360ClientSecret && dv360RefreshToken && dv360AdvertiserId
         ) {
-          const response = await fetch("/api/naming/campaigns/google", {
+          const response = await fetch("/api/naming/campaigns/dv360", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              accessToken: googleAccessToken,
-              customerId: googleCustomerId,
-              developerToken: googleAdsDeveloperToken,
-              loginCustomerId: googleAdsLoginCustomerId || googleCustomerId,
+              clientId: dv360ClientId,
+              clientSecret: dv360ClientSecret,
+              refreshToken: dv360RefreshToken,
+              advertiserId: dv360AdvertiserId,
+              partnerId: dv360PartnerId || undefined,
               startDate,
               endDate,
             }),
@@ -193,6 +195,8 @@ export default function NamingTab({ platform, dateRange = "30d", customStart, cu
     if (!selectedObjectives || selectedObjectives.size === 0) return campaigns;
     return campaigns.filter((c) => objectiveMatches(c.objective, selectedObjectives));
   }, [campaigns, selectedObjectives]);
+
+  if (loading && campaigns.length === 0) return <LoadingState message="Loading campaign data…" />;
 
   return (
     <div className="space-y-6">

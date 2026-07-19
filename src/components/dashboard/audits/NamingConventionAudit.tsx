@@ -11,7 +11,10 @@ type FilterStatus = "all" | "pass" | "fail";
 
 export default function NamingConventionAudit({ campaigns }: AuditProps) {
   const { namingConventions, activeConventionId } = useAuthStore();
-  const { metaAccessToken } = useAuthStore();
+  const {
+    metaAccessToken,
+    dv360ClientId, dv360ClientSecret, dv360RefreshToken, dv360AdvertiserId, dv360PartnerId,
+  } = useAuthStore();
   const convention = namingConventions.find((c) => c.id === activeConventionId);
 
   const [filter, setFilter] = useState<FilterStatus>("all");
@@ -38,7 +41,12 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
     Record<string, "loading" | "success" | { error: string } | undefined>
   >({});
 
-  const handleChildRename = async (nodeId: string, currentName: string) => {
+  const handleChildRename = async (
+    nodeId: string,
+    currentName: string,
+    parentPlatform: "meta" | "dv360",
+    kind: "insertionOrder" | "lineItem" = "lineItem",
+  ) => {
     const newName = (childDraft[nodeId] ?? currentName).trim();
     if (!newName) {
       setChildStatus((s) => ({ ...s, [nodeId]: { error: "Name cannot be empty" } }));
@@ -50,11 +58,26 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
     }
     setChildStatus((s) => ({ ...s, [nodeId]: "loading" }));
     try {
-      const r = await fetch("/api/naming/rename/meta", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accessToken: metaAccessToken, nodeId, newName }),
-      });
+      const r = parentPlatform === "dv360"
+        ? await fetch("/api/naming/rename/dv360", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientId: dv360ClientId,
+              clientSecret: dv360ClientSecret,
+              refreshToken: dv360RefreshToken,
+              advertiserId: dv360AdvertiserId,
+              partnerId: dv360PartnerId || undefined,
+              entityId: nodeId,
+              newName,
+              kind,
+            }),
+          })
+        : await fetch("/api/naming/rename/meta", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ accessToken: metaAccessToken, nodeId, newName }),
+          });
       const data = await r.json();
       if (r.ok && data.success) {
         setChildStatus((s) => ({ ...s, [nodeId]: "success" }));
@@ -152,25 +175,32 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
       setRenameStatus((s) => ({ ...s, [key]: { error: "Fill in the form first" } }));
       return;
     }
-    // Only Meta is wired right now — Google rename support TBD.
-    if (campaign.platform !== "meta") {
-      setRenameStatus((s) => ({
-        ...s,
-        [key]: { error: "Live rename for Google Ads is not wired yet. Use Copy + paste into Google Ads." },
-      }));
-      return;
-    }
     setRenameStatus((s) => ({ ...s, [key]: "loading" }));
     try {
-      const res = await fetch("/api/naming/rename/meta", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accessToken: metaAccessToken,
-          campaignId: campaign.id,
-          newName,
-        }),
-      });
+      const res = campaign.platform === "dv360"
+        ? await fetch("/api/naming/rename/dv360", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientId: dv360ClientId,
+              clientSecret: dv360ClientSecret,
+              refreshToken: dv360RefreshToken,
+              advertiserId: dv360AdvertiserId,
+              partnerId: dv360PartnerId || undefined,
+              entityId: campaign.id,
+              newName,
+              kind: "campaign",
+            }),
+          })
+        : await fetch("/api/naming/rename/meta", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              accessToken: metaAccessToken,
+              campaignId: campaign.id,
+              newName,
+            }),
+          });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data?.error || `HTTP ${res.status}`);
@@ -245,7 +275,7 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
           </code>
         </span>
         <span>
-          <span className="font-semibold">Threshold:</span> missing &gt; {MISSING_FAIL_THRESHOLD}% → Fail
+          <span className="font-semibold">Threshold:</span> compliance &lt; {100 - MISSING_FAIL_THRESHOLD}% → Fail
         </span>
       </div>
 
@@ -274,7 +304,7 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                 <th className="px-4 py-2 w-6"></th>
                 <th className="px-4 py-2 text-left font-semibold text-gray-700">Campaign / Ad Set / Ad</th>
                 <th className="px-4 py-2 text-left font-semibold text-gray-700">Platform</th>
-                <th className="px-4 py-2 text-center font-semibold text-gray-700">Missing</th>
+                <th className="px-4 py-2 text-center font-semibold text-gray-700">Compliance</th>
                 <th className="px-4 py-2 text-center font-semibold text-gray-700">Status</th>
                 <th className="px-4 py-2 text-right font-semibold text-gray-700">Action</th>
               </tr>
@@ -287,16 +317,16 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                   </td>
                 </tr>
               ) : (() => {
-                // Split into Meta vs Google groups, render with platform header rows
+                // Split into Meta vs DV360 groups, render with platform header rows
                 const metaRows = filtered.filter(({ campaign }) => campaign.platform === "meta");
-                const googleRows = filtered.filter(({ campaign }) => campaign.platform === "google");
+                const dv360Rows = filtered.filter(({ campaign }) => campaign.platform === "dv360");
 
-                const PLATFORM_OPTIONS: Record<"meta" | "google", string[]> = {
+                const PLATFORM_OPTIONS: Record<"meta" | "dv360", string[]> = {
                   meta: ["Meta", "Facebook", "Instagram"],
-                  google: ["Google SEM", "Google Display", "YouTube", "DV360"],
+                  dv360: ["DV360", "YouTube", "Display", "CTV"],
                 };
 
-                const renderRow = ({ campaign, result }: typeof filtered[0], platformKey: "meta" | "google") => {
+                const renderRow = ({ campaign, result }: typeof filtered[0], platformKey: "meta" | "dv360") => {
                   const key = rowKey(campaign);
                   const isFail = result.status === "non-compliant";
                   const isOpen = expandedId === key;
@@ -328,8 +358,10 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                           {campaign.name}
                         </td>
                         <td className="px-4 py-2.5 text-gray-700 capitalize">{campaign.platform}</td>
-                        <td className="px-4 py-2.5 text-center font-mono text-gray-900">
-                          {result.missingPct}%
+                        <td className={`px-4 py-2.5 text-center font-mono font-semibold ${
+                          isFail ? "text-red-600" : (100 - result.missingPct) >= 80 ? "text-green-600" : "text-amber-600"
+                        }`}>
+                          {100 - result.missingPct}%
                         </td>
                         <td className="px-4 py-2.5 text-center">
                           <StatusBadge
@@ -456,7 +488,7 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                               {renameStatus[key] === "success" && (
                                 <div className="bg-green-50 border border-green-200 rounded p-2 text-xs text-green-900 flex items-center gap-1.5">
                                   <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
-                                  Renamed in {campaign.platform === "meta" ? "Meta Ads Manager" : "Google Ads"}. Refresh the page to see the updated name.
+                                  Renamed in {campaign.platform === "meta" ? "Meta Ads Manager" : "DV360"}. Refresh the page to see the updated name.
                                 </div>
                               )}
                               {typeof renameStatus[key] === "object" && (
@@ -486,7 +518,7 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                                           onEdit={() => { setChildEditing(adSet.id); setChildDraft((d) => ({ ...d, [adSet.id]: adSet.name })); }}
                                           onCancel={() => setChildEditing(null)}
                                           onChange={(v) => setChildDraft((d) => ({ ...d, [adSet.id]: v }))}
-                                          onSave={() => handleChildRename(adSet.id, adSet.name)}
+                                          onSave={() => handleChildRename(adSet.id, adSet.name, platformKey, "insertionOrder")}
                                         />
                                         {adSet.ads.length > 0 && (
                                           <div className="ml-4 mt-2 pl-3 border-l-2 border-gray-200 space-y-1.5">
@@ -503,7 +535,7 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                                                 onEdit={() => { setChildEditing(ad.id); setChildDraft((d) => ({ ...d, [ad.id]: ad.name })); }}
                                                 onCancel={() => setChildEditing(null)}
                                                 onChange={(v) => setChildDraft((d) => ({ ...d, [ad.id]: v }))}
-                                                onSave={() => handleChildRename(ad.id, ad.name)}
+                                                onSave={() => handleChildRename(ad.id, ad.name, platformKey, "lineItem")}
                                               />
                                             ))}
                                           </div>
@@ -532,7 +564,14 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                               <span className="text-[10px] text-gray-400 uppercase">{as.status}</span>
                             </td>
                             <td className="px-4 py-1.5 text-right">
-                              <ChildRenameInline id={as.id} name={as.name} accessToken={metaAccessToken} />
+                              <ChildRenameInline
+                                id={as.id}
+                                name={as.name}
+                                platform={platformKey}
+                                kind="insertionOrder"
+                                metaAccessToken={metaAccessToken}
+                                dv360={{ clientId: dv360ClientId, clientSecret: dv360ClientSecret, refreshToken: dv360RefreshToken, advertiserId: dv360AdvertiserId, partnerId: dv360PartnerId }}
+                              />
                             </td>
                           </tr>
                           {as.ads.map((ad) => (
@@ -547,7 +586,14 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                                 <span className="text-[10px] text-gray-400 uppercase">{ad.status}</span>
                               </td>
                               <td className="px-4 py-1.5 text-right">
-                                <ChildRenameInline id={ad.id} name={ad.name} accessToken={metaAccessToken} />
+                                <ChildRenameInline
+                                  id={ad.id}
+                                  name={ad.name}
+                                  platform={platformKey}
+                                  kind="lineItem"
+                                  metaAccessToken={metaAccessToken}
+                                  dv360={{ clientId: dv360ClientId, clientSecret: dv360ClientSecret, refreshToken: dv360RefreshToken, advertiserId: dv360AdvertiserId, partnerId: dv360PartnerId }}
+                                />
                               </td>
                             </tr>
                           ))}
@@ -561,9 +607,9 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                   <tr className="bg-gray-100 border-b border-gray-300">
                     <td colSpan={6} className="px-4 py-2 font-bold text-sm text-gray-800 flex items-center gap-2">
                       <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${platform === "meta" ? "bg-blue-100 text-blue-800" : "bg-green-100 text-green-800"}`}>
-                        {platform === "meta" ? "Meta" : "Google"}
+                        {platform === "meta" ? "Meta" : "DV360"}
                       </span>
-                      <span>{platform === "meta" ? "Meta Ads" : "Google Ads"}</span>
+                      <span>{platform === "meta" ? "Meta Ads" : "DV360"}</span>
                       <span className="text-xs font-normal text-gray-500 ml-1">({count} campaign{count !== 1 ? "s" : ""})</span>
                     </td>
                   </tr>
@@ -577,10 +623,10 @@ export default function NamingConventionAudit({ campaigns }: AuditProps) {
                         {metaRows.map((row) => renderRow(row, "meta"))}
                       </>
                     )}
-                    {googleRows.length > 0 && (
+                    {dv360Rows.length > 0 && (
                       <>
-                        <PlatformHeader platform="google" count={googleRows.length} />
-                        {googleRows.map((row) => renderRow(row, "google"))}
+                        <PlatformHeader platform="dv360" count={dv360Rows.length} />
+                        {dv360Rows.map((row) => renderRow(row, "dv360"))}
                       </>
                     )}
                   </>
@@ -660,19 +706,49 @@ function ChildRow({ id, name, status, type, editing, draft, renameStatus, onEdit
   );
 }
 
-// Minimal inline rename for AS/AD rows inside the naming table.
-function ChildRenameInline({ id, name, accessToken }: { id: string; name: string; accessToken: string | null }) {
+interface ChildRenameInlineProps {
+  id: string;
+  name: string;
+  platform: "meta" | "dv360";
+  kind?: "insertionOrder" | "lineItem";
+  metaAccessToken: string | null;
+  dv360?: {
+    clientId: string | null;
+    clientSecret: string | null;
+    refreshToken: string | null;
+    advertiserId: string | null;
+    partnerId?: string | null;
+  };
+}
+
+// Minimal inline rename for AS/AD (or IO/LI) rows inside the naming table.
+// Routes to Meta or DV360 write-back based on the parent campaign platform.
+function ChildRenameInline({ id, name, platform, kind = "lineItem", metaAccessToken, dv360 }: ChildRenameInlineProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const save = async () => {
-    if (!draft.trim() || draft === name || !accessToken) { setEditing(false); return; }
+    if (!draft.trim() || draft === name) { setEditing(false); return; }
     setStatus("loading");
     try {
-      const r = await fetch("/api/naming/rename/meta", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accessToken, nodeId: id, newName: draft }),
-      });
+      const r = platform === "dv360"
+        ? await fetch("/api/naming/rename/dv360", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientId: dv360?.clientId,
+              clientSecret: dv360?.clientSecret,
+              refreshToken: dv360?.refreshToken,
+              advertiserId: dv360?.advertiserId,
+              partnerId: dv360?.partnerId || undefined,
+              entityId: id,
+              newName: draft,
+              kind,
+            }),
+          })
+        : await fetch("/api/naming/rename/meta", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ accessToken: metaAccessToken, nodeId: id, newName: draft }),
+          });
       const d = await r.json();
       if (r.ok && d.success) { setStatus("done"); setEditing(false); setTimeout(() => setStatus("idle"), 3000); }
       else { setStatus("error"); }

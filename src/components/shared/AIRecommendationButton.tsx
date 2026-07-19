@@ -16,7 +16,7 @@ interface FixStep {
 
 interface FixApiResponse {
   title: string;
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   steps: FixStep[];
   source: "ai" | "fallback";
   creditsUsedUsd?: number;
@@ -26,7 +26,7 @@ export interface AIRecommendationButtonProps {
   metric: string;
   value: string | number;
   status: "bad" | "warn" | "critical" | "moderate";
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   threshold?: string;
   auditContext: {
     module: string;
@@ -49,12 +49,12 @@ export default function AIRecommendationButton({
   const [data, setData] = useState<FixApiResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { metaAccessToken, googleAccessToken, addAiCredits } = useAuthStore();
+  const { metaAccessToken, dv360RefreshToken, addAiCredits } = useAuthStore();
   const isDemo = useMemo(
     () =>
       (!metaAccessToken || isDemoCredential(metaAccessToken)) &&
-      (!googleAccessToken || isDemoCredential(googleAccessToken)),
-    [metaAccessToken, googleAccessToken]
+      (!dv360RefreshToken || isDemoCredential(dv360RefreshToken)),
+    [metaAccessToken, dv360RefreshToken]
   );
 
   // Cache key includes campaign name + exact value so each campaign gets its own

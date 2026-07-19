@@ -1,17 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuthStore } from "@/store/auth";
 import { useRouter } from "next/router";
 import PixelHealthTab from "@/components/dashboard/PixelHealthTab";
 import EventQualityTab from "@/components/dashboard/EventQualityTab";
 import FunnelAuditTab from "@/components/dashboard/FunnelAuditTab";
 import AttributionTab from "@/components/dashboard/AttributionTab";
+import FloodlightHealthTab from "@/components/dashboard/FloodlightHealthTab";
 import RecommendationsTab from "@/components/dashboard/RecommendationsTab";
 import AccountStructureTab from "@/components/dashboard/AccountStructureTab";
 import AudienceOverlapTab from "@/components/dashboard/tabs/AudienceOverlapTab";
 import AudiencePerformanceTab from "@/components/dashboard/tabs/AudiencePerformanceTab";
 import AudienceQualityTab from "@/components/dashboard/tabs/AudienceQualityTab";
 import AudienceSaturationTab from "@/components/dashboard/tabs/AudienceSaturationTab";
-import SearchIntentTab from "@/components/dashboard/tabs/SearchIntentTab";
 import ConversionMonitoringTab from "@/components/dashboard/tabs/ConversionMonitoringTab";
 import CampaignOverview from "@/components/dashboard/CampaignOverview";
 import ReportingOverview from "@/components/dashboard/reports/ReportingOverview";
@@ -58,6 +58,7 @@ import {
   Monitor,
   LineChart,
   Briefcase,
+  Flame,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -65,6 +66,8 @@ interface SubTab {
   id: string;
   label: string;
   Icon: LucideIcon;
+  /** Platforms this tab has meaningful data for. Absent = both. */
+  platforms?: Array<"meta" | "dv360">;
 }
 
 interface NavGroup {
@@ -74,17 +77,21 @@ interface NavGroup {
   children?: SubTab[];
 }
 
+// `platforms` tags which platforms a tab actually shows data for. When the
+// selected platform is DV360, tabs marked ["meta"] are hidden so the user
+// doesn't hit empty "N/A for DV360" states — and vice versa.
 const NAV: NavGroup[] = [
   {
     id: "audit",
     label: "Audit",
     Icon: ShieldCheck,
     children: [
-      { id: "pixel-health",  label: "Pixel Health",       Icon: Activity  },
-      { id: "event-quality", label: "Event Quality",      Icon: TrendingUp },
-      { id: "funnel",        label: "Funnel Audit",       Icon: Target    },
-      { id: "attribution",   label: "Attribution Audit",  Icon: Settings2 },
-      { id: "aud-overlap",   label: "Audience Overlap",   Icon: Users     },
+      { id: "pixel-health",  label: "Pixel Health",       Icon: Activity,   platforms: ["meta"] },
+      { id: "event-quality", label: "Event Quality",      Icon: TrendingUp, platforms: ["meta"] },
+      { id: "funnel",        label: "Funnel Audit",       Icon: Target,     platforms: ["meta"] },
+      { id: "attribution",   label: "Attribution Audit",  Icon: Settings2   },
+      { id: "aud-overlap",   label: "Audience Overlap",   Icon: Users,      platforms: ["meta"] },
+      { id: "floodlight",    label: "Floodlight",         Icon: Flame,      platforms: ["dv360"] },
     ],
   },
   {
@@ -93,9 +100,8 @@ const NAV: NavGroup[] = [
     Icon: Monitor,
     children: [
       { id: "account-structure",      label: "Account Structure",      Icon: Layers    },
-      { id: "aud-performance",        label: "Audience Performance",   Icon: BarChart2 },
+      { id: "aud-performance",        label: "Audience Performance",   Icon: BarChart2, platforms: ["meta"] },
       { id: "aud-saturation",         label: "Saturation",             Icon: Zap       },
-      { id: "search-intent",          label: "Search Intent",          Icon: Search    },
       { id: "conversion-monitoring",  label: "Conversion Monitoring",  Icon: LineChart },
     ],
   },
@@ -108,8 +114,8 @@ const NAV: NavGroup[] = [
       { id: "rep-key-metric",  label: "Key Metrics",         Icon: Megaphone },
       { id: "rep-audience",    label: "Audience Analysis",   Icon: Sparkles  },
       { id: "rep-creative",    label: "Creative Analysis",   Icon: ImageIcon },
-      { id: "rep-placement",   label: "Placement Analysis",  Icon: MapIcon   },
-      { id: "rep-attribution", label: "Attribution Report",  Icon: GitBranch },
+      { id: "rep-placement",   label: "Placement Analysis",  Icon: MapIcon,    platforms: ["meta"] },
+      { id: "rep-attribution", label: "Attribution Report",  Icon: GitBranch,  platforms: ["meta"] },
       { id: "rep-planning",    label: "Planning",            Icon: Briefcase },
       { id: "rep-generate",    label: "Generate Report",     Icon: Download  },
     ],
@@ -125,19 +131,31 @@ const NAV: NavGroup[] = [
   },
 ];
 
+/** True when the tab has meaningful data for the selected platform. */
+function isTabVisible(tab: SubTab, platform: "meta" | "dv360" | "both"): boolean {
+  if (!tab.platforms) return true;         // no restriction = both
+  if (platform === "both") return true;    // "All" shows everything
+  return tab.platforms.includes(platform);
+}
+
 export default function Dashboard() {
   const router = useRouter();
   const {
     isMetaConnected,
-    isGoogleConnected,
+    isDV360Connected,
+    dv360RefreshToken,
+    dv360AdvertiserId,
     clearAllCredentials,
+    clearMetaCredentials,
+    clearDV360Credentials,
     setMetaCredentials,
     setMetaPixelList,
-    setGoogleCredentials,
-    setGoogleAccountsList,
+    setDV360Credentials,
     totalAiCreditsUsd,
     alertEmail,
+    loginEmail,
     setAlertEmail,
+    setLoginEmail,
     demoMode,
     enterDemoMode,
     exitDemoMode,
@@ -154,10 +172,31 @@ export default function Dashboard() {
   const [selectedObjectives, setSelectedObjectives] = useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["audit", "tracking", "reporting", "insights"]));
   const [mounted, setMounted] = useState(false);
+  const [dv360AdvOptions, setDv360AdvOptions] = useState<{ id: string; name: string }[] | null>(null);
+  const [dv360NeedsAdvertiser, setDv360NeedsAdvertiser] = useState(false);
+  const [logoutMenuOpen, setLogoutMenuOpen] = useState(false);
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // NAV filtered to tabs that have real data for the currently-selected
+  // platform — groups whose children all get hidden are dropped too.
+  const visibleNav = useMemo(() => {
+    return NAV
+      .map((g) => ({ ...g, children: g.children?.filter((c) => isTabVisible(c, platform)) }))
+      .filter((g) => !g.children || g.children.length > 0);
+  }, [platform]);
+
+  // If the currently-active tab isn't visible for the selected platform,
+  // jump to the first visible tab so the user isn't stuck on a hidden view.
+  useEffect(() => {
+    const allVisibleIds = visibleNav.flatMap((g) => g.children?.map((c) => c.id) ?? [g.id]);
+    if (!allVisibleIds.includes(activeTab)) {
+      const first = allVisibleIds[0];
+      if (first) setActiveTab(first);
+    }
+  }, [platform, visibleNav, activeTab]);
 
   // Handle OAuth redirects
   useEffect(() => {
@@ -168,10 +207,6 @@ export default function Dashboard() {
       business_id,
       pixel_ids,
       pixel_names,
-      google_token,
-      customer_id,
-      property_id,
-      container_id,
     } = router.query;
 
     // Handle Meta OAuth
@@ -191,39 +226,53 @@ export default function Dashboard() {
       }));
 
       setMetaPixelList(pixelList);
-
-      // Clean up URL
       router.replace("/app/dashboard");
     }
 
-    // Handle Google OAuth
-    if (google_token && customer_id) {
-      setGoogleCredentials(
-        google_token as string,
-        customer_id as string,
-        property_id as string || "",
-        container_id as string || ""
-      );
+    // Handle DV360 OAuth
+    const {
+      dv360_refresh,
+      dv360_client_id,
+      dv360_client_secret,
+      dv360_adv_ids,
+      dv360_adv_names,
+      login_email,
+    } = router.query;
 
-      const accounts = [
-        {
-          customerId: customer_id as string,
-          name: "Google Account",
-          properties: property_id
-            ? [{ id: property_id as string, name: "GA4 Property" }]
-            : [],
-          containers: container_id
-            ? [{ id: container_id as string, name: "GTM Container" }]
-            : [],
-        },
-      ];
+    // Capture the Google sign-in email so alerts default to it (no manual entry).
+    if (login_email) setLoginEmail(login_email as string);
 
-      setGoogleAccountsList(accounts);
+    if (dv360_refresh && dv360_client_id && dv360_client_secret) {
+      const advIds = dv360_adv_ids ? (dv360_adv_ids as string).split(",") : [];
+      const advNames = dv360_adv_names ? (dv360_adv_names as string).split("|") : [];
 
-      // Clean up URL
+      if (advIds.length > 0) {
+        // Store first advertiser; if multiple, user picks via DV360AdvertiserPicker
+        setDV360Credentials({
+          clientId: dv360_client_id as string,
+          clientSecret: dv360_client_secret as string,
+          refreshToken: dv360_refresh as string,
+          advertiserId: advIds[0],
+        });
+
+        if (advIds.length > 1) {
+          setDv360AdvOptions(advIds.map((id, i) => ({ id, name: advNames[i] || id })));
+        }
+      } else {
+        // No advertisers found — save creds without advertiser ID, user pastes manually
+        setDV360Credentials({
+          clientId: dv360_client_id as string,
+          clientSecret: dv360_client_secret as string,
+          refreshToken: dv360_refresh as string,
+          advertiserId: "",
+        });
+        setDv360NeedsAdvertiser(true);
+      }
+
       router.replace("/app/dashboard");
     }
-  }, [router.isReady, router.query, setMetaCredentials, setMetaPixelList, setGoogleCredentials, setGoogleAccountsList, router]);
+
+  }, [router.isReady, router.query, setMetaCredentials, setMetaPixelList, setDV360Credentials, setLoginEmail, router]);
 
   // Hydrate demo mode from ?demo=1 — survives refresh / back-button within the
   // tab without leaking into localStorage.
@@ -236,14 +285,27 @@ export default function Dashboard() {
   useEffect(() => {
     if (!mounted || !router.isReady) return;
     if (router.query.demo === "1") return; // grace period while demoMode hydrates
-    if (!isMetaConnected() && !isGoogleConnected() && !demoMode) {
+    // A DV360 refresh token present but no advertiser yet = mid-connection
+    // (OAuth found no advertisers, user must paste the ID). Don't bounce them
+    // back to landing — let the "Paste your Advertiser ID" prompt show.
+    const dv360Pending = !!dv360RefreshToken;
+    if (!isMetaConnected() && !isDV360Connected() && !dv360Pending && !demoMode) {
       router.replace("/");
     }
-  }, [mounted, router.isReady, router.query.demo, isMetaConnected, isGoogleConnected, demoMode, router]);
+  }, [mounted, router.isReady, router.query.demo, isMetaConnected, isDV360Connected, dv360RefreshToken, demoMode, router]);
 
   const handleLogout = () => {
     clearAllCredentials();
     router.push("/");
+  };
+
+  // Disconnect one platform, keep the session alive if the other remains.
+  const handleDisconnect = (which: "meta" | "dv360") => {
+    if (which === "meta") clearMetaCredentials();
+    else clearDV360Credentials();
+    setLogoutMenuOpen(false);
+    const stillConnected = which === "meta" ? isDV360Connected() : isMetaConnected();
+    if (!stillConnected && !demoMode) router.push("/");
   };
 
   const handleDateChange = (range: DateRange, start?: string, end?: string) => {
@@ -265,6 +327,8 @@ export default function Dashboard() {
         return <FunnelAuditTab {...props} />;
       case "attribution":
         return <AttributionTab {...props} />;
+      case "floodlight":
+        return <FloodlightHealthTab {...props} />;
       case "aud-overlap":
         return <AudienceOverlapTab {...ctx} />;
       case "aud-quality":
@@ -278,8 +342,6 @@ export default function Dashboard() {
         return <AudiencePerformanceTab {...ctx} />;
       case "aud-saturation":
         return <AudienceSaturationTab {...ctx} />;
-      case "search-intent":
-        return <SearchIntentTab {...ctx} />;
       case "conversion-monitoring":
         return <ConversionMonitoringTab {...props} />;
       // Reporting
@@ -425,6 +487,7 @@ export default function Dashboard() {
                   <h3 className="text-sm font-bold text-gray-900 mb-1">Critical-issue alerts</h3>
                   <p className="text-[11px] text-gray-500 mb-3">
                     We&apos;ll email this address when Budget Allocation detects a budget spike (&gt;25% week-over-week) or a campaign stops delivering.
+                    {alertEmail && alertEmail === loginEmail && <span className="block mt-1 text-gray-400">Defaulted to your signed-in Google account — edit if you&apos;d like alerts elsewhere.</span>}
                   </p>
                   <input
                     type="email"
@@ -467,13 +530,62 @@ export default function Dashboard() {
               )}
             </div>
 
-            <button
-              onClick={handleLogout}
-              className="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition flex items-center gap-2"
-            >
-              <LogOut className="w-4 h-4" />
-              Logout
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setLogoutMenuOpen((v) => !v)}
+                className="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition flex items-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Logout
+                <ChevronDown className={`w-3.5 h-3.5 transition ${logoutMenuOpen ? "rotate-180" : ""}`} />
+              </button>
+              {logoutMenuOpen && (
+                <div className="absolute top-full right-0 mt-2 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                  {mounted && isMetaConnected() && (
+                    <button
+                      onClick={() => handleDisconnect("meta")}
+                      className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      Disconnect Meta only
+                    </button>
+                  )}
+                  {mounted && isDV360Connected() && (
+                    <button
+                      onClick={() => handleDisconnect("dv360")}
+                      className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      Disconnect DV360 only
+                    </button>
+                  )}
+                  {mounted && !isDV360Connected() && (
+                    <a
+                      href="/api/auth/google/start"
+                      className="w-full text-left px-3 py-2 text-sm text-blue-700 hover:bg-blue-50 flex items-center gap-2 border-t border-gray-100"
+                      onClick={() => setLogoutMenuOpen(false)}
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+                      Connect DV360
+                    </a>
+                  )}
+                  {mounted && isDV360Connected() && (
+                    <a
+                      href="/api/auth/google/start"
+                      className="w-full text-left px-3 py-2 text-sm text-blue-700 hover:bg-blue-50 flex items-center gap-2"
+                      onClick={() => setLogoutMenuOpen(false)}
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+                      Reconnect DV360
+                    </a>
+                  )}
+                  <button
+                    onClick={handleLogout}
+                    className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 border-t border-gray-100"
+                  >
+                    Logout (disconnect all)
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </nav>
@@ -481,7 +593,7 @@ export default function Dashboard() {
       <div className="flex h-[calc(100vh-80px)]">
         <aside className="w-64 bg-white border-r border-gray-200 overflow-y-auto">
           <nav className="space-y-1 p-4">
-            {NAV.map((group) => {
+            {visibleNav.map((group) => {
               const hasChildren = !!group.children?.length;
               const isExpanded = expandedGroups.has(group.id);
               const isActiveGroup = activeTab === group.id;
@@ -542,6 +654,64 @@ export default function Dashboard() {
         </aside>
 
         <main className="flex-1 overflow-y-auto bg-gray-50">
+          {/* DV360 Advertiser picker — shown when OAuth returned multiple advertisers */}
+          {dv360AdvOptions && (
+            <div className="bg-blue-50 border-b border-blue-200 px-8 py-4">
+              <p className="text-sm font-semibold text-blue-900 mb-2">Select a DV360 advertiser</p>
+              <div className="flex flex-wrap gap-2">
+                {dv360AdvOptions.map((adv) => (
+                  <button
+                    key={adv.id}
+                    onClick={() => {
+                      setDV360Credentials({
+                        clientId: useAuthStore.getState().dv360ClientId!,
+                        clientSecret: useAuthStore.getState().dv360ClientSecret!,
+                        refreshToken: useAuthStore.getState().dv360RefreshToken!,
+                        advertiserId: adv.id,
+                      });
+                      setDv360AdvOptions(null);
+                    }}
+                    className="px-3 py-1.5 bg-white border border-blue-300 rounded-lg text-sm text-blue-900 hover:bg-blue-100 transition-colors"
+                  >
+                    {adv.name} <span className="text-blue-400 text-xs ml-1">({adv.id})</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* DV360 needs advertiser ID — OAuth didn't find any advertisers, or
+              creds persisted (e.g. after reload) without an advertiser yet. */}
+          {(dv360NeedsAdvertiser || (dv360RefreshToken && !dv360AdvertiserId)) && (
+            <div className="bg-amber-50 border-b border-amber-200 px-8 py-4">
+              <p className="text-sm font-semibold text-amber-900 mb-1">Paste your DV360 Advertiser ID</p>
+              <p className="text-xs text-amber-700 mb-2">
+                Open <a href="https://displayvideo.google.com" target="_blank" rel="noreferrer" className="underline">displayvideo.google.com</a> — the number after <code className="text-xs">/a/</code> in the URL is your Advertiser ID.
+              </p>
+              <form
+                className="flex gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const input = (e.target as HTMLFormElement).elements.namedItem("advId") as HTMLInputElement;
+                  if (input.value.trim()) {
+                    setDV360Credentials({
+                      clientId: useAuthStore.getState().dv360ClientId!,
+                      clientSecret: useAuthStore.getState().dv360ClientSecret!,
+                      refreshToken: useAuthStore.getState().dv360RefreshToken!,
+                      advertiserId: input.value.trim(),
+                    });
+                    setDv360NeedsAdvertiser(false);
+                  }
+                }}
+              >
+                <input name="advId" placeholder="e.g. 1234567890" className="px-3 py-1.5 border border-amber-300 rounded-lg text-sm bg-white w-48 focus:outline-none focus:ring-2 focus:ring-amber-200" />
+                <button type="submit" className="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700">
+                  Save
+                </button>
+              </form>
+            </div>
+          )}
+
           <div className="p-8">{renderTabContent()}</div>
         </main>
       </div>

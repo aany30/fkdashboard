@@ -5,7 +5,7 @@ import AboCboPerformance from "./AboCboPerformance";
 
 /**
  * Classify a Meta campaign as CBO (budget at campaign level) vs ABO (budget at
- * ad-set level). Google campaigns or campaigns with no budget data fall back
+ * ad-set level). DV360 campaigns or campaigns with no budget data fall back
  * to "Unknown". Same logic used in `LearningPhaseAudit` and `AboCboPerformance`.
  */
 function classifyStructure(c: CampaignData): "ABO" | "CBO" | "Unknown" {

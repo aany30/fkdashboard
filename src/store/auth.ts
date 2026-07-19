@@ -10,13 +10,6 @@ interface PixelInfo {
   name: string;
 }
 
-interface GoogleAccount {
-  customerId: string;
-  name: string;
-  properties?: Array<{ id: string; name: string }>;
-  containers?: Array<{ id: string; name: string }>;
-}
-
 interface CustomBenchmarks {
   // Meta Benchmarks
   metaEMQScore: number;
@@ -24,12 +17,6 @@ interface CustomBenchmarks {
   metaCAPIHealthScore: number;
   metaPayloadCompleteness: number;
   metaEventLatencyMs: number;
-
-  // Google Benchmarks
-  googleEnhancedConversionsMatchRate: number;
-  googleEventCompleteness: number;
-  googleEventLatencyMs: number;
-  googleGAEventQuality: number;
 
   // Funnel Benchmarks
   funnelConversionRate: number;
@@ -53,10 +40,6 @@ const DEFAULT_BENCHMARKS: CustomBenchmarks = {
   metaCAPIHealthScore: 0.85,
   metaPayloadCompleteness: 0.9,
   metaEventLatencyMs: 500,
-  googleEnhancedConversionsMatchRate: 0.8,
-  googleEventCompleteness: 0.92,
-  googleEventLatencyMs: 1000,
-  googleGAEventQuality: 0.85,
   funnelConversionRate: 0.03,
   funnelDropOffThreshold: 0.3,
   eventFiringHealthThreshold: 0.9,
@@ -169,6 +152,9 @@ interface AuthState {
   // critical-campaign alerts from Budget Allocation, etc.). Persists across
   // sessions so the user only sets it once.
   alertEmail: string | null;
+  // Email of the Google account used to sign in (captured from the DV360 OAuth
+  // openid/email scope). Alerts default to this so no manual entry is needed.
+  loginEmail: string | null;
 
   // Optional user-set monthly budget cap (in their account's currency units).
   // Drives the Monthly Budget Tracking card on the Budget Allocation audit —
@@ -187,17 +173,21 @@ interface AuthState {
   metaPixelList: PixelInfo[];
   selectedMetaPixelId: string | null;
 
-  // Google Credentials
-  googleAccessToken: string | null;
-  googleCustomerId: string | null;
-  gaPropertyId: string | null;
-  gtmContainerId: string | null;
-  googleAdsDeveloperToken: string | null;
-  googleAdsLoginCustomerId: string | null;
-  googleAccountsList: GoogleAccount[];
-  selectedGoogleCustomerId: string | null;
-  selectedGAPropertyId: string | null;
-  selectedGTMContainerId: string | null;
+  // DV360 Credentials — OAuth client + refresh token minted via OAuth Playground
+  // (see DV360Guide). Server exchanges refresh → access token per request.
+  dv360ClientId: string | null;
+  dv360ClientSecret: string | null;
+  dv360RefreshToken: string | null;
+  dv360AdvertiserId: string | null;
+  dv360PartnerId: string | null;
+
+  // Account currencies, cached once detected so a later rate-limited campaign
+  // fetch can't lose the correct symbol (Account Structure fetches reliably;
+  // reporting tabs fire many concurrent calls and the campaign fetch can 429).
+  metaCurrency: string | null;
+  dv360Currency: string | null;
+  setMetaCurrency: (c: string) => void;
+  setDv360Currency: (c: string) => void;
 
   // Custom Benchmarks
   customBenchmarks: CustomBenchmarks;
@@ -225,6 +215,8 @@ interface AuthState {
 
   // Alerts
   setAlertEmail: (email: string | null) => void;
+  /** Set the signed-in Google email; defaults alertEmail to it when unset. */
+  setLoginEmail: (email: string | null) => void;
   setMonthlyBudget: (amount: number | null) => void;
   setEmqInput: (eventId: string, value: number | null) => void;
   /** Running total of AI API costs (USD) for the current session. */
@@ -236,23 +228,17 @@ interface AuthState {
   setMetaPixelList: (pixels: PixelInfo[]) => void;
   setSelectedMetaPixelId: (pixelId: string) => void;
 
-  setGoogleCredentials: (
-    token: string,
-    customerId: string,
-    propertyId: string,
-    containerId: string,
-    developerToken?: string,
-    loginCustomerId?: string
-  ) => void;
-  setGoogleAccountsList: (accounts: GoogleAccount[]) => void;
-  setSelectedGoogleCustomerId: (customerId: string) => void;
-  setSelectedGAPropertyId: (propertyId: string) => void;
-  setSelectedGTMContainerId: (containerId: string) => void;
-
+  setDV360Credentials: (creds: {
+    clientId: string;
+    clientSecret: string;
+    refreshToken: string;
+    advertiserId: string;
+    partnerId?: string;
+  }) => void;
   setDateRange: (range: DateRange) => void;
   setCustomDateRange: (range: CustomDateRange) => void;
   clearMetaCredentials: () => void;
-  clearGoogleCredentials: () => void;
+  clearDV360Credentials: () => void;
   clearAllCredentials: () => void;
   addMetaPixelId: (pixelId: string) => void;
   removeMetaPixelId: (pixelId: string) => void;
@@ -272,7 +258,7 @@ interface AuthState {
 
   // Utility Methods
   isMetaConnected: () => boolean;
-  isGoogleConnected: () => boolean;
+  isDV360Connected: () => boolean;
   getDateRangeLabel: () => string;
 
   // Demo mode — session-only, NOT persisted to localStorage.
@@ -288,6 +274,7 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
       alertEmail: null,
+      loginEmail: null,
       monthlyBudget: null,
       emqInputs: {},
       totalAiCreditsUsd: 0,
@@ -299,16 +286,15 @@ export const useAuthStore = create<AuthState>()(
       metaPixelIds: [],
       metaPixelList: [],
       selectedMetaPixelId: null,
-      googleAccessToken: null,
-      googleCustomerId: null,
-      gaPropertyId: null,
-      gtmContainerId: null,
-      googleAdsDeveloperToken: null,
-      googleAdsLoginCustomerId: null,
-      googleAccountsList: [],
-      selectedGoogleCustomerId: null,
-      selectedGAPropertyId: null,
-      selectedGTMContainerId: null,
+      dv360ClientId: null,
+      dv360ClientSecret: null,
+      dv360RefreshToken: null,
+      dv360AdvertiserId: null,
+      dv360PartnerId: null,
+      metaCurrency: null,
+      dv360Currency: null,
+      setMetaCurrency: (c: string) => { if (c && c !== get().metaCurrency) set({ metaCurrency: c }); },
+      setDv360Currency: (c: string) => { if (c && c !== get().dv360Currency) set({ dv360Currency: c }); },
       customBenchmarks: DEFAULT_BENCHMARKS,
       emqKeyBenchmarks: {},
       dateRange: "30d",
@@ -320,6 +306,11 @@ export const useAuthStore = create<AuthState>()(
       activeBenchmarkId: META_BENCHMARKS.id,
 
       setAlertEmail: (email) => set({ alertEmail: email }),
+      setLoginEmail: (email) => set((state) => ({
+        loginEmail: email,
+        // Default the alert recipient to the login email if the user hasn't set one.
+        alertEmail: state.alertEmail ?? email,
+      })),
       setMonthlyBudget: (amount) => set({ monthlyBudget: amount }),
       setEmqInput: (eventId, value) =>
         set((state) => ({ emqInputs: { ...state.emqInputs, [eventId]: value } })),
@@ -337,27 +328,14 @@ export const useAuthStore = create<AuthState>()(
       setSelectedMetaPixelId: (pixelId) =>
         set({ selectedMetaPixelId: pixelId }),
 
-      setGoogleCredentials: (token, customerId, propertyId, containerId, developerToken, loginCustomerId) =>
+      setDV360Credentials: ({ clientId, clientSecret, refreshToken, advertiserId, partnerId }) =>
         set({
-          googleAccessToken: token,
-          googleCustomerId: customerId,
-          gaPropertyId: propertyId,
-          gtmContainerId: containerId,
-          googleAdsDeveloperToken: developerToken || null,
-          googleAdsLoginCustomerId: loginCustomerId || null,
+          dv360ClientId: clientId,
+          dv360ClientSecret: clientSecret,
+          dv360RefreshToken: refreshToken,
+          dv360AdvertiserId: advertiserId,
+          dv360PartnerId: partnerId || null,
         }),
-
-      setGoogleAccountsList: (accounts) =>
-        set({ googleAccountsList: accounts, selectedGoogleCustomerId: accounts[0]?.customerId || null }),
-
-      setSelectedGoogleCustomerId: (customerId) =>
-        set({ selectedGoogleCustomerId: customerId }),
-
-      setSelectedGAPropertyId: (propertyId) =>
-        set({ selectedGAPropertyId: propertyId }),
-
-      setSelectedGTMContainerId: (containerId) =>
-        set({ selectedGTMContainerId: containerId }),
 
       setDateRange: (range) => set({ dateRange: range }),
       setCustomDateRange: (range) => set({ customDateRange: range }),
@@ -397,20 +375,17 @@ export const useAuthStore = create<AuthState>()(
           metaPixelIds: [],
           metaPixelList: [],
           selectedMetaPixelId: null,
+          metaCurrency: null,
         }),
 
-      clearGoogleCredentials: () =>
+      clearDV360Credentials: () =>
         set({
-          googleAccessToken: null,
-          googleCustomerId: null,
-          gaPropertyId: null,
-          gtmContainerId: null,
-          googleAdsDeveloperToken: null,
-          googleAdsLoginCustomerId: null,
-          googleAccountsList: [],
-          selectedGoogleCustomerId: null,
-          selectedGAPropertyId: null,
-          selectedGTMContainerId: null,
+          dv360ClientId: null,
+          dv360ClientSecret: null,
+          dv360RefreshToken: null,
+          dv360AdvertiserId: null,
+          dv360PartnerId: null,
+          dv360Currency: null,
         }),
 
       clearAllCredentials: () =>
@@ -420,16 +395,13 @@ export const useAuthStore = create<AuthState>()(
           metaPixelIds: [],
           metaPixelList: [],
           selectedMetaPixelId: null,
-          googleAccessToken: null,
-          googleCustomerId: null,
-          gaPropertyId: null,
-          gtmContainerId: null,
-          googleAdsDeveloperToken: null,
-          googleAdsLoginCustomerId: null,
-          googleAccountsList: [],
-          selectedGoogleCustomerId: null,
-          selectedGAPropertyId: null,
-          selectedGTMContainerId: null,
+          metaCurrency: null,
+          dv360ClientId: null,
+          dv360ClientSecret: null,
+          dv360RefreshToken: null,
+          dv360AdvertiserId: null,
+          dv360PartnerId: null,
+          dv360Currency: null,
           totalAiCreditsUsd: 0, // reset credit counter on logout
           demoMode: false,      // exit demo on logout
         }),
@@ -449,10 +421,10 @@ export const useAuthStore = create<AuthState>()(
         if (isDemoCredential(state.metaAccessToken)) return false;
         return true;
       },
-      isGoogleConnected: () => {
+      isDV360Connected: () => {
         const state = get();
-        if (!state.googleAccessToken || !state.googleCustomerId) return false;
-        if (isDemoCredential(state.googleAccessToken)) return false;
+        if (!state.dv360ClientId || !state.dv360ClientSecret || !state.dv360RefreshToken || !state.dv360AdvertiserId) return false;
+        if (isDemoCredential(state.dv360RefreshToken)) return false;
         return true;
       },
 
@@ -529,13 +501,12 @@ export const useAuthStore = create<AuthState>()(
       },
       // Bump this version any time DEFAULT_NAMING_CONVENTIONS / META_BENCHMARKS
       // change in a way that should override persisted user state.
-      version: 4,
-      // v4 migration: wipe persisted demo placeholder tokens (`demo-meta-token`,
-      // `demo-google-token`) that pre-fix users had stuck in their localStorage.
-      // Without this, old users would still see "Go to Dashboard" until they
-      // explicitly logged out.
+      version: 5,
+      // v4: wipe persisted demo placeholder tokens. v5: Google Ads/GA4/GTM
+      // integration removed — drop all google credential keys and google
+      // benchmark fields from persisted state; initialize DV360 fields.
       migrate: (persistedState: unknown, fromVersion: number) => {
-        let state = (persistedState as Partial<AuthState>) || {};
+        let state = (persistedState as Partial<AuthState> & Record<string, unknown>) || {};
         if (fromVersion < 3) {
           state = {
             ...state,
@@ -547,9 +518,32 @@ export const useAuthStore = create<AuthState>()(
           if (state.metaAccessToken && isDemoCredential(state.metaAccessToken)) {
             state = { ...state, metaAccessToken: null, metaBusinessId: null, metaPixelIds: [] };
           }
-          if (state.googleAccessToken && isDemoCredential(state.googleAccessToken)) {
-            state = { ...state, googleAccessToken: null, googleCustomerId: null, gaPropertyId: null, gtmContainerId: null };
+        }
+        if (fromVersion < 5) {
+          // Remove every legacy Google Ads/GA4/GTM key.
+          const googleKeys = [
+            "googleAccessToken", "googleCustomerId", "gaPropertyId", "gtmContainerId",
+            "googleAdsDeveloperToken", "googleAdsLoginCustomerId", "googleAccountsList",
+            "selectedGoogleCustomerId", "selectedGAPropertyId", "selectedGTMContainerId",
+          ];
+          for (const k of googleKeys) delete state[k];
+          // Strip google benchmark fields from persisted customBenchmarks.
+          if (state.customBenchmarks && typeof state.customBenchmarks === "object") {
+            const cb = { ...(state.customBenchmarks as unknown as Record<string, unknown>) };
+            delete cb.googleEnhancedConversionsMatchRate;
+            delete cb.googleEventCompleteness;
+            delete cb.googleEventLatencyMs;
+            delete cb.googleGAEventQuality;
+            state.customBenchmarks = { ...DEFAULT_BENCHMARKS, ...cb } as CustomBenchmarks;
           }
+          state = {
+            ...state,
+            dv360ClientId: null,
+            dv360ClientSecret: null,
+            dv360RefreshToken: null,
+            dv360AdvertiserId: null,
+            dv360PartnerId: null,
+          };
         }
         return state as AuthState;
       },

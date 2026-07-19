@@ -1,5 +1,5 @@
 /**
- * Test live connection to Meta / Google APIs before saving credentials.
+ * Test live connection to Meta / DV360 APIs before saving credentials.
  * Returns granular per-platform status so the UI can show exactly
  * which scope or token is missing.
  */
@@ -90,129 +90,88 @@ async function testMeta(accessToken: string, businessId: string, pixelIds: strin
   return results;
 }
 
-async function testGoogle(
-  accessToken: string,
-  customerId: string,
-  propertyId: string,
-  containerId: string,
-  developerToken?: string,
-  loginCustomerId?: string
+async function testDV360(
+  clientId: string,
+  clientSecret: string,
+  refreshToken: string,
+  advertiserId: string
 ): Promise<TestResult[]> {
   const results: TestResult[] = [];
 
-  // Test GA4
+  // Test 1: refresh -> access token exchange (validates client id/secret/refresh token)
+  let accessToken: string | null = null;
   try {
-    const r = await fetch(`https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`, {
+    const r = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        dateRanges: [{ startDate: "7daysAgo", endDate: "today" }],
-        metrics: [{ name: "eventCount" }],
-        limit: 1,
-      }),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }).toString(),
     });
-    if (!r.ok) {
-      const body = await r.text();
+    const body = await r.json();
+    if (!r.ok || !body.access_token) {
       results.push({
         ok: false,
-        platform: "GA4",
-        message: `Property ${propertyId} not accessible`,
-        details: body.slice(0, 200),
-        hint: "Token needs scope 'https://www.googleapis.com/auth/analytics.readonly' and viewer access to this GA4 property.",
+        platform: "Google OAuth",
+        message: "Refresh token exchange failed",
+        details: JSON.stringify(body).slice(0, 250),
+        hint: "Check Client ID/Secret match the OAuth client used in OAuth Playground, and that the refresh token hasn't expired (7-day expiry while the app is in 'Testing' status).",
       });
-    } else {
-      results.push({ ok: true, platform: "GA4", message: `Property ${propertyId} accessible` });
+      return results;
     }
-  } catch (e: any) {
-    results.push({ ok: false, platform: "GA4", message: "Network error", details: e.message });
+    accessToken = body.access_token as string;
+    results.push({ ok: true, platform: "Google OAuth", message: "Refresh token valid — access token issued" });
+  } catch (e: unknown) {
+    results.push({ ok: false, platform: "Google OAuth", message: "Network error", details: e instanceof Error ? e.message : String(e) });
+    return results;
   }
 
-  // Test GTM
+  // Test 2: DV360 advertiser access (validates display-video scope + seat)
   try {
-    const r = await fetch(`https://www.googleapis.com/tagmanager/v2/accounts`, {
+    const adv = advertiserId.replace(/[^0-9]/g, "");
+    const r = await fetch(`https://displayvideo.googleapis.com/v4/advertisers/${adv}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!r.ok) {
       const body = await r.text();
       results.push({
         ok: false,
-        platform: "GTM",
-        message: "Cannot list GTM accounts",
-        details: body.slice(0, 200),
-        hint: "Token needs scope 'https://www.googleapis.com/auth/tagmanager.readonly'.",
+        platform: "DV360 Advertiser",
+        message: `Advertiser ${advertiserId} not accessible`,
+        details: body.slice(0, 250),
+        hint: "Verify the Advertiser ID (from the DV360 URL after /a/) and that your Google account has a DV360 user seat on it. Also confirm the 'Display & Video 360 API' is enabled in your Cloud project.",
       });
     } else {
-      const data = await r.json();
-      const accounts = data.account || [];
-      let containerFound = false;
-      for (const acc of accounts) {
-        try {
-          const cr = await fetch(`https://www.googleapis.com/tagmanager/v2/accounts/${acc.accountId}/containers`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-          if (cr.ok) {
-            const cd = await cr.json();
-            if ((cd.container || []).some((c: any) => c.publicId === containerId)) {
-              containerFound = true;
-              break;
-            }
-          }
-        } catch {}
-      }
-      if (containerFound) {
-        results.push({ ok: true, platform: "GTM", message: `Container ${containerId} found` });
-      } else {
-        results.push({
-          ok: false,
-          platform: "GTM",
-          message: `Container ${containerId} not found`,
-          hint: "Ensure the GTM Container ID is correct (format: GTM-XXXXXX) and you have access to the account that owns it.",
-        });
-      }
+      const a = await r.json();
+      results.push({ ok: true, platform: "DV360 Advertiser", message: `Connected to "${a.displayName || advertiserId}"` });
     }
-  } catch (e: any) {
-    results.push({ ok: false, platform: "GTM", message: "Network error", details: e.message });
+  } catch (e: unknown) {
+    results.push({ ok: false, platform: "DV360 Advertiser", message: "Network error", details: e instanceof Error ? e.message : String(e) });
   }
 
-  // Test Google Ads
-  if (!developerToken) {
-    results.push({
-      ok: false,
-      platform: "Google Ads",
-      message: "Developer token missing",
-      hint: "Google Ads API requires a developer token in addition to OAuth. Apply at https://developers.google.com/google-ads/api/docs/first-call/dev-token",
+  // Test 3: Bid Manager reporting scope — list queries (cheap, proves the
+  // doubleclickbidmanager scope + API enablement without creating anything).
+  try {
+    const r = await fetch("https://doubleclickbidmanager.googleapis.com/v2/queries?pageSize=1", {
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
-  } else {
-    try {
-      const cid = customerId.replace(/-/g, "");
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${accessToken}`,
-        "developer-token": developerToken,
-        "Content-Type": "application/json",
-      };
-      if (loginCustomerId) headers["login-customer-id"] = loginCustomerId.replace(/-/g, "");
-
-      const r = await fetch(`https://googleads.googleapis.com/v15/customers/${cid}/googleAds:searchStream`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ query: "SELECT customer.descriptive_name FROM customer LIMIT 1" }),
+    if (!r.ok) {
+      const body = await r.text();
+      results.push({
+        ok: false,
+        platform: "Bid Manager (reports)",
+        message: "Reporting API not accessible",
+        details: body.slice(0, 250),
+        hint: "Enable the 'DoubleClick Bid Manager API' in your Cloud project and make sure the refresh token was minted with the doubleclickbidmanager scope.",
       });
-      if (!r.ok) {
-        const body = await r.text();
-        results.push({
-          ok: false,
-          platform: "Google Ads",
-          message: "Cannot access Google Ads account",
-          details: body.slice(0, 250),
-          hint:
-            "Verify Customer ID, developer token approval status, OAuth scope 'https://www.googleapis.com/auth/adwords', and that login-customer-id is set if accessing via a manager account.",
-        });
-      } else {
-        results.push({ ok: true, platform: "Google Ads", message: `Customer ${customerId} accessible` });
-      }
-    } catch (e: any) {
-      results.push({ ok: false, platform: "Google Ads", message: "Network error", details: e.message });
+    } else {
+      results.push({ ok: true, platform: "Bid Manager (reports)", message: "Reporting scope OK" });
     }
+  } catch (e: unknown) {
+    results.push({ ok: false, platform: "Bid Manager (reports)", message: "Network error", details: e instanceof Error ? e.message : String(e) });
   }
 
   return results;
@@ -232,14 +191,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({ results });
   }
 
-  if (platform === "google") {
-    const { accessToken, customerId, propertyId, containerId, developerToken, loginCustomerId } = req.body;
-    if (!accessToken || !customerId || !propertyId || !containerId) {
-      return res.status(400).json({ error: "accessToken, customerId, propertyId, containerId required" });
+  if (platform === "dv360") {
+    const { clientId, clientSecret, refreshToken, advertiserId } = req.body;
+    if (!clientId || !clientSecret || !refreshToken || !advertiserId) {
+      return res.status(400).json({ error: "clientId, clientSecret, refreshToken, advertiserId required" });
     }
-    const results = await testGoogle(accessToken, customerId, propertyId, containerId, developerToken, loginCustomerId);
+    const results = await testDV360(clientId, clientSecret, refreshToken, advertiserId);
     return res.status(200).json({ results });
   }
 
-  res.status(400).json({ error: "platform must be 'meta' or 'google'" });
+  res.status(400).json({ error: "platform must be 'meta' or 'dv360'" });
 }

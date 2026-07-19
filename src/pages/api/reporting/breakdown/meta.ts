@@ -186,6 +186,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       : await client.getInsightsBreakdown(accountPath, breakdown, startDate, endDate);
     res.status(200).json({ source: "live", rows });
   } catch (e) {
-    res.status(500).json({ error: e instanceof Error ? e.message : "Meta breakdown fetch failed" });
+    const message = e instanceof Error ? e.message : "Meta breakdown fetch failed";
+    console.error(`[Meta breakdown "${breakdown}"] failed:`, message);
+    res.status(500).json({ error: message });
   }
 }

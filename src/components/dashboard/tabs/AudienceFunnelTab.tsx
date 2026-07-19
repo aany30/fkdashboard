@@ -20,9 +20,10 @@ import { useAdSetInsights, type AdSetRow } from "@/hooks/useAdSetInsights";
 import { usePersistentColumns } from "@/hooks/useColumnPrefs";
 import { formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
+import LoadingState from "@/components/shared/LoadingState";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -819,6 +820,8 @@ export default function AudienceFunnelTab({ platform, dateRange, customStart, cu
   const [active, setActive] = useState("intent");
   const { adsets, loading, error, currency } = useAdSetInsights(platform, dateRange, customStart, customEnd);
 
+  if (loading && adsets.length === 0) return <LoadingState message="Loading audience funnel…" />;
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -845,10 +848,10 @@ export default function AudienceFunnelTab({ platform, dateRange, customStart, cu
         />
       </div>
 
-      {platform === "google" && (
+      {platform === "dv360" && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800 flex items-start gap-2">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-          Google Ads selected — this section uses Meta ad-set data. Switch to Meta or Both to see results.
+          DV360 selected — this section uses Meta ad-set data. Switch to Meta or Both to see results.
         </div>
       )}
 

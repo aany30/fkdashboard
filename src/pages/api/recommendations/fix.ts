@@ -23,7 +23,7 @@ interface FixRequest {
   metric: string;
   value: string | number;
   status: "bad" | "warn" | "critical" | "moderate";
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   threshold?: string;
   campaignContext?: Record<string, unknown>;
   accountContext?: Record<string, unknown>;
@@ -43,7 +43,7 @@ interface FixResponse extends FixRecipe { creditsUsedUsd?: number; // already ad
   source: "ai" | "fallback";
 }
 
-const SYSTEM_PROMPT = `You are an expert paid-media auditor at a top performance-marketing agency. You receive a JSON payload with a FAILING metric and full account context. Your job: produce 4-8 concrete, click-by-click fix steps for Meta Ads Manager or Google Ads.
+const SYSTEM_PROMPT = `You are an expert paid-media auditor at a top performance-marketing agency. You receive a JSON payload with a FAILING metric and full account context, including a "platform" field. Your job: produce 4-8 concrete, click-by-click fix steps for the RIGHT platform's UI — Meta Ads Manager when platform is "meta", Display & Video 360 (DV360) when platform is "dv360". For DV360, use DV360's real hierarchy and labels (Insertion Orders, Line Items, budget segments, flight dates, Audience Lists, Bid Strategy) — never Meta terms like "ad set" or "Advantage+", and never generic "Google Ads" (DV360 is a separate product from Google Ads). When platform is "both", give steps for whichever platform each finding belongs to and label them.
 
 HARD RULES — every rule is mandatory:
 1. Title MUST name the campaign (if campaignContext.name exists) AND state the exact failing number. E.g. "Fix ROAS for 'Summer_Sale_Promo' — currently 0.8× vs account avg 3.2×". Generic titles like "Improve ROAS" are forbidden.
@@ -51,8 +51,9 @@ HARD RULES — every rule is mandatory:
 3. Compare against accountContext when present. E.g. "This campaign's CPA ₹850 is 2.4× your account average ₹350 — scale back spend until creative is refreshed."
 4. Cross-check siblingMetrics. If multiple KPIs are bad, fix the root cause, not the symptom. E.g. low CTR + low CVR = likely audience-creative mismatch, not a bidding issue.
 5. If campaignContext is absent, use accountContext totals to make steps volume-specific (e.g. "Your ₹2.4L/month spend split across 14 campaigns means each campaign averages ₹17k — any campaign below ₹5k needs to be paused or merged").
-6. UI labels must be exact as they appear in Meta Ads Manager or Google Ads. No paraphrasing button names.
+6. UI labels must be exact as they appear in the target platform's UI (Meta Ads Manager or DV360). No paraphrasing button names, and never mix Meta and DV360 terminology.
 7. Skip all preamble. Start steps immediately. No "I understand your concern" or "Great question".
+8. WINDOW-STABLE RECOMMENDATIONS: if campaignContext.fullHistory is present, base your assessment and fix steps PRIMARILY on that full-history (all-time) performance — it is independent of the user's selected date range. Treat campaignContext.window as merely "the currently-displayed slice". The recommendation for a given campaign must be essentially the SAME regardless of whether the user picked 7/30/90 days. Never advise action solely because the current window shows zero (e.g. "no spend — investigate") when fullHistory shows the campaign did deliver; instead reason about the campaign's real all-time performance and flight dates.
 
 Output ONLY valid JSON matching the provided schema.`;
 
@@ -95,7 +96,7 @@ const OUTPUT_SCHEMA = {
     },
     platform: {
       type: "string" as const,
-      enum: ["meta", "google", "both"],
+      enum: ["meta", "dv360", "both"],
     },
   },
   required: ["title", "steps", "platform"],

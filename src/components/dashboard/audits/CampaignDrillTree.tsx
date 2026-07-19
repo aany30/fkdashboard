@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { ChevronRight, ChevronDown, ArrowUpDown, ChevronUp } from "lucide-react";
 import type { CampaignData } from "@/types";
-import { detectCurrency } from "@/lib/currency";
+import { currencyFor } from "@/lib/currency";
 import {
   useColPicker,
   ColumnPickerButton,
@@ -21,12 +21,16 @@ interface Props {
   currency?: string;
 }
 
-type NodeType = "CAMP" | "AS" | "AD";
+type NodeType = "CAMP" | "AS" | "AD" | "IO" | "LI" | "AG" | "CR";
 
 const CHIP_STYLES: Record<NodeType, string> = {
   CAMP: "bg-gray-100 text-gray-700",
   AS:   "bg-blue-100 text-blue-700",
   AD:   "bg-pink-100 text-pink-700",
+  IO:   "bg-emerald-100 text-emerald-700",   // DV360 Insertion Order
+  LI:   "bg-violet-100 text-violet-700",     // DV360 Line Item
+  AG:   "bg-teal-100 text-teal-700",         // DV360 Ad Group
+  CR:   "bg-amber-100 text-amber-700",       // DV360 Creative
 };
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
@@ -174,7 +178,7 @@ const DRILL_KPIS = ALL_STANDARD_KPIS.filter(
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function CampaignDrillTree({ campaigns, currency }: Props) {
-  const cur = currency || detectCurrency(campaigns);
+  const cur = currency || currencyFor(campaigns, "meta");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "spend", dir: "desc" });
 
@@ -232,7 +236,11 @@ export default function CampaignDrillTree({ campaigns, currency }: Props) {
           <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
             <tr>
               <th className={`${cellX} py-2 text-left font-semibold text-gray-700 ${firstMin}`}>
-                Campaigns / Ad Sets / Ads
+                {campaigns.every((c) => c.platform === "dv360")
+                  ? "Campaigns / Insertion Orders / Line Items / Ad Groups / Ads"
+                  : campaigns.some((c) => c.platform === "dv360")
+                  ? "Campaigns / Ad Sets · IOs / Ads · LIs / Ad Groups / Ads"
+                  : "Campaigns / Ad Sets / Ads"}
               </th>
               {activeCols.map((c) => (
                 <th
@@ -278,15 +286,45 @@ export default function CampaignDrillTree({ campaigns, currency }: Props) {
                     const asMetrics = derive(as.impressions, as.clicks, as.spend, as.reach);
                     return (
                       <RowFragment key={`as-${as.id}`}>
-                        <Row indent={1} type="AS" hasChildren={as.ads.length > 0} expanded={asOpen}
+                        <Row indent={1} type={c.platform === "dv360" ? "IO" : "AS"} hasChildren={as.ads.length > 0} expanded={asOpen}
                           onToggle={() => toggle(as.id)} name={as.name} metrics={asMetrics}
                           currency={rowCur} activeCols={activeCols} cellX={cellX} />
-                        {asOpen && as.ads.map((ad) => (
-                          <Row key={`ad-${ad.id}`} indent={2} type="AD" hasChildren={false}
-                            expanded={false} onToggle={() => {}} name={ad.name}
-                            metrics={derive(ad.impressions, ad.clicks, ad.spend, ad.reach)}
-                            currency={rowCur} activeCols={activeCols} cellX={cellX} />
-                        ))}
+                        {asOpen && as.ads.map((ad) => {
+                          const isDv360 = c.platform === "dv360";
+                          const adGroups = isDv360 ? (ad.adGroups || []) : [];
+                          const creatives = isDv360 ? (ad.creatives || []) : [];
+                          const adOpen = expanded.has(ad.id);
+                          return (
+                            <RowFragment key={`ad-${ad.id}`}>
+                              <Row indent={2} type={isDv360 ? "LI" : "AD"} hasChildren={adGroups.length > 0 || creatives.length > 0} expanded={adOpen}
+                                onToggle={() => toggle(ad.id)} name={ad.name}
+                                metrics={derive(ad.impressions, ad.clicks, ad.spend, ad.reach)}
+                                currency={rowCur} activeCols={activeCols} cellX={cellX} />
+                              {adOpen && adGroups.map((ag) => {
+                                const agAds = ag.ads || [];
+                                const agOpen = expanded.has(ag.id);
+                                return (
+                                  <RowFragment key={`ag-${ag.id}`}>
+                                    <Row indent={3} type="AG" hasChildren={agAds.length > 0} expanded={agOpen}
+                                      onToggle={() => toggle(ag.id)} name={ag.name}
+                                      metrics={derive()} currency={rowCur} activeCols={activeCols} cellX={cellX} />
+                                    {agOpen && agAds.map((agAd) => (
+                                      <Row key={`aga-${agAd.id}`} indent={4} type="AD" hasChildren={false}
+                                        expanded={false} onToggle={() => {}} name={agAd.name}
+                                        metrics={derive()} currency={rowCur} activeCols={activeCols} cellX={cellX} />
+                                    ))}
+                                  </RowFragment>
+                                );
+                              })}
+                              {adOpen && creatives.map((cr) => (
+                                <Row key={`cr-${ad.id}-${cr.id}`} indent={3} type="CR" hasChildren={false}
+                                  expanded={false} onToggle={() => {}} name={cr.name}
+                                  metrics={derive(cr.impressions, cr.clicks, cr.spend)}
+                                  currency={rowCur} activeCols={activeCols} cellX={cellX} />
+                              ))}
+                            </RowFragment>
+                          );
+                        })}
                       </RowFragment>
                     );
                   })}

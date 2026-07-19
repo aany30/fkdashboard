@@ -1,15 +1,13 @@
 import type { MetaPixelStats } from "@/lib/api-clients/meta";
-import type { GoogleAuditResult } from "@/lib/api-clients/google";
 import type { Recommendation } from "@/lib/recommendations/engine";
 import { ShieldAlert, TrendingDown, Target, AlertOctagon } from "lucide-react";
 
 interface Props {
   metaPixels: MetaPixelStats[];
-  google: GoogleAuditResult | null;
   recommendations: Recommendation[];
 }
 
-export default function RiskAnalysisPanel({ metaPixels, google, recommendations }: Props) {
+export default function RiskAnalysisPanel({ metaPixels, recommendations }: Props) {
   // Compute estimated total data loss
   const dataLoss = recommendations.reduce((s, r) => s + (r.estimatedDataLoss || 0), 0);
   const cappedLoss = Math.min(50, dataLoss);
@@ -33,11 +31,13 @@ export default function RiskAnalysisPanel({ metaPixels, google, recommendations 
       desc: "Quality of campaign-to-conversion attribution",
     },
     {
-      name: "Compliance risk",
+      name: "Signal completeness",
       icon: ShieldAlert,
-      value: google?.ga4.consentMode.v2Enabled ? "Low" : "High",
-      level: google?.ga4.consentMode.v2Enabled ? "Low" : "Critical",
-      desc: "GDPR/Consent Mode v2 readiness",
+      value: metaPixels.length > 0 && metaPixels[0]?.emq?.overallScore
+        ? `${metaPixels[0].emq.overallScore.toFixed(1)}/10`
+        : "—",
+      level: (metaPixels[0]?.emq?.overallScore ?? 10) < 6 ? "High" : "Low",
+      desc: "Event Match Quality of the primary pixel",
     },
     {
       name: "Anomalies detected",

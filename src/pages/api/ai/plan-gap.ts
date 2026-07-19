@@ -18,6 +18,7 @@ interface GapRequest {
   delivered: Record<string, number>;
   pacing?: Record<string, number | null>;
   dateRange?: string;
+  platform?: "meta" | "dv360";
   isDemo?: boolean;
 }
 
@@ -81,8 +82,8 @@ export default async function handler(
       messages: [
         {
           role: "user",
-          content: `Explain the planned vs delivered gap for this campaign (${body.dateRange ?? "selected period"}):\n\n${JSON.stringify(
-            { campaign: body.campaign, planned: body.planned, delivered: body.delivered, pacing: body.pacing },
+          content: `Explain the planned vs delivered gap for this ${body.platform === "dv360" ? "DV360" : "Meta"} campaign (${body.dateRange ?? "selected period"}). ${body.platform === "dv360" ? "This is a DV360 campaign — reach/frequency come from Floodlight/Bid Manager and conversion revenue may be unavailable; don't assume Meta-style optimisation levers." : ""}\n\n${JSON.stringify(
+            { campaign: body.campaign, platform: body.platform ?? "meta", planned: body.planned, delivered: body.delivered, pacing: body.pacing },
             null, 2
           )}`,
         },

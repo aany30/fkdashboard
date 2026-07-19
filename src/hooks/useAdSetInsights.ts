@@ -13,7 +13,7 @@ import { buildAudienceMap, type CustomAudienceDetail } from "@/lib/audience-clas
 export type { AdSetRow };
 
 export function useAdSetInsights(
-  platform: "meta" | "google" | "both",
+  platform: "meta" | "dv360" | "both",
   dateRange: DateRange,
   customStart?: string,
   customEnd?: string
@@ -21,7 +21,7 @@ export function useAdSetInsights(
   const { metaAccessToken, metaBusinessId, demoMode } = useAuthStore();
   const [adsets, setAdsets] = useState<AdSetRow[]>([]);
   const [audiences, setAudiences] = useState<CustomAudienceDetail[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currency, setCurrency] = useState("INR");
   const [accountReach, setAccountReach] = useState(0);
@@ -30,7 +30,7 @@ export function useAdSetInsights(
   const { startDate, endDate } = rangeToDates(dateRange, customStart, customEnd);
 
   useEffect(() => {
-    if (platform === "google") {
+    if (platform === "dv360") {
       setAdsets([]);
       setAudiences([]);
       return;

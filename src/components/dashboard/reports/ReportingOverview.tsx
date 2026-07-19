@@ -18,16 +18,17 @@ import {
   CartesianGrid, Tooltip, Legend, Area, AreaChart,
 } from "recharts";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import LoadingState from "@/components/shared/LoadingState";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useAdSetInsights } from "@/hooks/useAdSetInsights";
 import { useMetaDailyVsPrev, type DailyPoint } from "@/hooks/useMetaDailyVsPrev";
 import { usePersistentColumns, usePersistentValue } from "@/hooks/useColumnPrefs";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -241,12 +242,303 @@ function totalsOf(rows: DailyPoint[]) {
   );
 }
 
+/** Combined chart shown at the top of "both" mode: 4 aggregate KPIs + dual-line Meta vs DV360. */
+function CombinedOverview({ meta, dv360, metaCurrency }: {
+  meta:  { current: DailyPoint[]; previous: DailyPoint[] };
+  dv360: { current: DailyPoint[]; previous: DailyPoint[] };
+  metaCurrency: string;
+}) {
+  const metaT = totalsOf(meta.current);
+  const dvT   = totalsOf(dv360.current);
+  const combined = {
+    spend:       metaT.spend       + dvT.spend,
+    impressions: metaT.impressions + dvT.impressions,
+    clicks:      metaT.clicks      + dvT.clicks,
+    conversions: metaT.conversions + dvT.conversions,
+  };
+
+  const chartData = useMemo(() => {
+    const metaByDate = new Map(meta.current.map(r => [r.label, r]));
+    const dvByDate   = new Map(dv360.current.map(r => [r.label, r]));
+    const zero = { spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0 };
+    const allDates = Array.from(new Set([...metaByDate.keys(), ...dvByDate.keys()])).sort();
+    return allDates.map(d => {
+      const m  = metaByDate.get(d) ?? zero;
+      const dv = dvByDate.get(d)   ?? zero;
+      return {
+        date:           d.slice(5),
+        metaSpend:      m.spend,
+        dvSpend:        dv.spend,
+        metaImpr:       m.impressions,
+        dvImpr:         dv.impressions,
+      };
+    });
+  }, [meta.current, dv360.current]);
+
+  const kpis = [
+    { label: "Total Spend",        value: fmt(combined.spend,       "money", metaCurrency) },
+    { label: "Total Impressions",  value: fmt(combined.impressions,  "k",    metaCurrency) },
+    { label: "Total Clicks",       value: fmt(combined.clicks,       "k",    metaCurrency) },
+    { label: "Total Conversions",  value: fmt(combined.conversions,  "k",    metaCurrency) },
+  ];
+
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center gap-2">
+        <span className="text-sm font-bold text-gray-600 uppercase tracking-wide">Combined Overview</span>
+        <span className="text-xs text-gray-400">Meta + DV360</span>
+      </div>
+
+      <div className="bg-white p-5 space-y-5">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {kpis.map(k => (
+            <div key={k.label} className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+              <p className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide">{k.label}</p>
+              <p className="text-2xl font-bold text-gray-900 mt-1.5">{k.value}</p>
+              <p className="text-[10px] text-gray-400 mt-0.5">Meta + DV360</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Spend comparison */}
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+            <div className="px-5 py-3 border-b border-gray-100">
+              <h3 className="text-sm font-bold text-gray-900">Daily Spend</h3>
+              <p className="text-xs text-gray-500 mt-0.5">Meta vs DV360</p>
+            </div>
+            <div className="px-3 py-4">
+              {chartData.length === 0 ? (
+                <div className="h-52 flex items-center justify-center text-sm text-gray-400">No data.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={220}>
+                  <ComposedChart data={chartData} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                    <XAxis dataKey="date" stroke="#6b7280" fontSize={10} tickLine={false} interval="preserveStartEnd" />
+                    <YAxis yAxisId="meta"  stroke="#6366f1" fontSize={10} tickLine={false} tickFormatter={v => fmt(v, "money", metaCurrency)} />
+                    <YAxis yAxisId="dv360" orientation="right" stroke="#10b981" fontSize={10} tickLine={false} tickFormatter={v => fmt(v, "money", metaCurrency)} />
+                    <Tooltip
+                      contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
+                      formatter={(v: number, name: string) => [fmt(v, "money", metaCurrency), name]}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Bar  yAxisId="meta"  dataKey="metaSpend" name="Meta"  fill="#6366f1" radius={[2,2,0,0]} animationDuration={600} />
+                    <Line yAxisId="dv360" dataKey="dvSpend"   name="DV360" stroke="#10b981" strokeWidth={2} dot={false} animationDuration={700} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+
+          {/* Impressions comparison */}
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+            <div className="px-5 py-3 border-b border-gray-100">
+              <h3 className="text-sm font-bold text-gray-900">Daily Impressions</h3>
+              <p className="text-xs text-gray-500 mt-0.5">Meta vs DV360</p>
+            </div>
+            <div className="px-3 py-4">
+              {chartData.length === 0 ? (
+                <div className="h-52 flex items-center justify-center text-sm text-gray-400">No data.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={220}>
+                  <ComposedChart data={chartData} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                    <XAxis dataKey="date" stroke="#6b7280" fontSize={10} tickLine={false} interval="preserveStartEnd" />
+                    <YAxis yAxisId="meta"  stroke="#6366f1" fontSize={10} tickLine={false} tickFormatter={v => fmt(v, "k", metaCurrency)} />
+                    <YAxis yAxisId="dv360" orientation="right" stroke="#10b981" fontSize={10} tickLine={false} tickFormatter={v => fmt(v, "k", metaCurrency)} />
+                    <Tooltip
+                      contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
+                      formatter={(v: number, name: string) => [fmt(v, "k", metaCurrency), name]}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Bar  yAxisId="meta"  dataKey="metaImpr" name="Meta"  fill="#6366f1" radius={[2,2,0,0]} animationDuration={600} />
+                    <Line yAxisId="dv360" dataKey="dvImpr"   name="DV360" stroke="#10b981" strokeWidth={2} dot={false} animationDuration={700} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Full platform block: header + swappable KPI cards + configurable trend chart. Used in "both" mode. */
+function PlatformBlock({ name, accent, cur, prev, currency, reach = 0 }: {
+  name: string;
+  accent: "blue" | "emerald";
+  cur: DailyPoint[];
+  prev: DailyPoint[];
+  currency: string;
+  reach?: number;
+}) {
+  const platformKey = name.toLowerCase();
+  const t = totalsOf(cur);
+  const p = totalsOf(prev);
+  const sorted = [...cur].sort((a, b) => a.label.localeCompare(b.label));
+  const chartData = sorted.map(r => ({ date: r.label.slice(5), ...deriveRow(r) }));
+
+  const headerBorder = accent === "blue" ? "border-blue-300" : "border-emerald-300";
+  const chip = accent === "blue" ? "bg-blue-100 text-blue-800" : "bg-emerald-100 text-emerald-800";
+  const barColor = accent === "blue" ? "#6366f1" : "#10b981";
+  const lineColor = accent === "blue" ? "#10b981" : "#6366f1";
+
+  // Per-platform persistent KPI slot selection
+  const defaultSlots: MetricId[] = name === "Meta"
+    ? ["spend", "impressions", "clicks", "conversions", "reach"]
+    : ["spend", "impressions", "clicks", "cpm", "ctr"];
+  const [slotMetrics, setSlotMetrics] = usePersistentColumns<MetricId>(
+    `overview-kpi-slots-${platformKey}`,
+    defaultSlots
+  );
+
+  // Per-platform persistent trend metric pickers
+  const [primary, setPrimary]     = usePersistentValue<MetricId>(`overview-trend-primary-${platformKey}`, "impressions");
+  const [secondary, setSecondary] = usePersistentValue<MetricId>(`overview-trend-secondary-${platformKey}`, "spend");
+
+  const reachPeriod = reach;
+  const frequencyCur = reachPeriod > 0 ? t.impressions / reachPeriod : 0;
+  const cpmCur  = t.impressions > 0 ? (t.spend / t.impressions) * 1000 : 0;
+  const cpmPrev = p.impressions > 0 ? (p.spend / p.impressions) * 1000 : 0;
+
+  const curMap: Record<MetricId, number> = {
+    spend: t.spend, impressions: t.impressions, reach: reachPeriod, frequency: frequencyCur,
+    clicks: t.clicks, conversions: t.conversions, conversionValue: t.conversionValue,
+    ctr: t.impressions > 0 ? (t.clicks / t.impressions) * 100 : 0,
+    cpc: t.clicks > 0 ? t.spend / t.clicks : 0,
+    cpm: cpmCur,
+    cpa: t.conversions > 0 ? t.spend / t.conversions : 0,
+    roas: t.spend > 0 ? t.conversionValue / t.spend : 0,
+    cvr: t.clicks > 0 ? (t.conversions / t.clicks) * 100 : 0,
+    aov: t.conversions > 0 ? t.conversionValue / t.conversions : 0,
+  };
+  const prevMap: Record<MetricId, number> = {
+    spend: p.spend, impressions: p.impressions, reach: 0, frequency: 0,
+    clicks: p.clicks, conversions: p.conversions, conversionValue: p.conversionValue,
+    ctr: p.impressions > 0 ? (p.clicks / p.impressions) * 100 : 0,
+    cpc: p.clicks > 0 ? p.spend / p.clicks : 0,
+    cpm: cpmPrev,
+    cpa: p.conversions > 0 ? p.spend / p.conversions : 0,
+    roas: p.spend > 0 ? p.conversionValue / p.spend : 0,
+    cvr: p.clicks > 0 ? (p.conversions / p.clicks) * 100 : 0,
+    aov: p.conversions > 0 ? p.conversionValue / p.conversions : 0,
+  };
+
+  const sparkSeriesBlock: Record<MetricId, number[]> = {
+    spend:           sorted.map(d => d.spend),
+    impressions:     sorted.map(d => d.impressions),
+    reach:           sorted.map(d => d.impressions),
+    frequency:       sorted.map(d => d.impressions),
+    clicks:          sorted.map(d => d.clicks),
+    conversions:     sorted.map(d => d.conversions),
+    conversionValue: sorted.map(d => d.conversionValue),
+    ctr:             sorted.map(d => d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0),
+    cpc:             sorted.map(d => d.clicks > 0 ? d.spend / d.clicks : 0),
+    cpm:             sorted.map(d => d.impressions > 0 ? (d.spend / d.impressions) * 1000 : 0),
+    cpa:             sorted.map(d => d.conversions > 0 ? d.spend / d.conversions : 0),
+    roas:            sorted.map(d => d.spend > 0 ? d.conversionValue / d.spend : 0),
+    cvr:             sorted.map(d => d.clicks > 0 ? (d.conversions / d.clicks) * 100 : 0),
+    aov:             sorted.map(d => d.conversions > 0 ? d.conversionValue / d.conversions : 0),
+  };
+
+  function valueForBlock(id: MetricId): string {
+    const def = METRICS.find(m => m.id === id)!;
+    const v = curMap[id];
+    if (id === "frequency") return v > 0 ? v.toFixed(2) : "—";
+    if (id === "cpm")       return v > 0 ? formatMoney(v, currency, 2) : "—";
+    if (def.fmt === "money") return fmt(v, "money", currency);
+    if (def.fmt === "int")   return fmt(v, "k", currency);
+    return fmt(v, def.fmt, currency);
+  }
+
+  const primaryDef   = METRICS.find(m => m.id === primary)!;
+  const secondaryDef = METRICS.find(m => m.id === secondary)!;
+
+  return (
+    <div className={`border ${headerBorder} rounded-xl overflow-hidden`}>
+      {/* Header */}
+      <div className={`px-5 py-3 border-b ${headerBorder} flex items-center gap-2 ${accent === "blue" ? "bg-blue-50" : "bg-emerald-50"}`}>
+        <span className={`text-sm font-bold px-2.5 py-0.5 rounded-full ${chip}`}>{name}</span>
+        {cur.length === 0 && <span className="text-xs text-gray-400 ml-1">no data in window</span>}
+      </div>
+
+      <div className="bg-white p-5 space-y-5">
+        {/* Swappable KPI cards */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+          {slotMetrics.map((m, i) => (
+            <KpiCard
+              key={`${name}-${m}-${i}`}
+              metric={m}
+              value={valueForBlock(m)}
+              delta={pctDelta(curMap[m], prevMap[m])}
+              spark={sparkSeriesBlock[m]}
+              onSwap={(next) => setSlotMetrics(prev => prev.map((x, j) => j === i ? next : x))}
+            />
+          ))}
+        </div>
+
+        {/* Trend chart with metric pickers */}
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+          <div className="px-5 py-4 border-b border-gray-100">
+            <h3 className="text-sm font-bold text-gray-900">Performance Trend</h3>
+            <p className="text-xs text-gray-500 mt-0.5">Date locked on X. Pick metrics for Y axes.</p>
+          </div>
+          <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">X axis:</span>
+              <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Date (frozen)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">Primary Y:</span>
+              <MetricPicker value={primary}   onChange={setPrimary}   label="Primary metric" />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">Secondary Y:</span>
+              <MetricPicker value={secondary} onChange={setSecondary} label="Secondary metric" />
+            </div>
+          </div>
+          <div className="px-3 py-4">
+            {chartData.length === 0 ? (
+              <div className="h-64 flex items-center justify-center text-sm text-gray-400">No daily data for this window.</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                  <XAxis dataKey="date" stroke="#6b7280" fontSize={11} tickLine={false} />
+                  <YAxis yAxisId="left"  stroke={barColor}  fontSize={11} tickLine={false}
+                    tickFormatter={(v) => fmt(v, primaryDef.fmt === "int" ? "k" : primaryDef.fmt, currency)} />
+                  <YAxis yAxisId="right" orientation="right" stroke={lineColor} fontSize={11} tickLine={false}
+                    tickFormatter={(v) => fmt(v, secondaryDef.fmt === "int" ? "k" : secondaryDef.fmt, currency)} />
+                  <Tooltip
+                    contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
+                    formatter={(value: number, _name: string, item: { dataKey?: string | number }) => {
+                      const k = typeof item?.dataKey === "string" ? item.dataKey : "";
+                      if (k === primary)   return [fmt(value, primaryDef.fmt,   currency), primaryDef.label] as [string, string];
+                      if (k === secondary) return [fmt(value, secondaryDef.fmt, currency), secondaryDef.label] as [string, string];
+                      return [String(value), k] as [string, string];
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar  yAxisId="left"  dataKey={primary}   name={primaryDef.label}   fill={barColor}  radius={[3, 3, 0, 0]} animationDuration={600} animationEasing="ease-out" />
+                  <Line yAxisId="right" dataKey={secondary} name={secondaryDef.label} stroke={lineColor} strokeWidth={2} dot={false} animationDuration={700} animationEasing="ease-out" />
+                </ComposedChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ReportingOverview({ platform, dateRange, customStart, customEnd }: Props) {
-  const effective: "meta" | "both" = platform === "google" ? "meta" : platform;
-  const { campaigns, startDate, endDate } = useCampaigns(effective, dateRange, customStart, customEnd);
-  const currency = detectCurrency(campaigns);
-  const { current, previous, loading, prevStartDate, prevEndDate } = useMetaDailyVsPrev(effective, dateRange, customStart, customEnd);
-  const { adsets } = useAdSetInsights(effective, dateRange, customStart, customEnd);
+  const { platformErrors, startDate, endDate, metaCurrency, dv360Currency } = useCampaigns(platform, dateRange, customStart, customEnd);
+  // Single-platform views format in that platform's currency; the "both" view
+  // formats each PlatformBlock in its own currency (passed explicitly below).
+  const currency = platform === "dv360" ? dv360Currency : metaCurrency;
+  const { current, previous, byPlatform, loading, prevStartDate, prevEndDate } = useMetaDailyVsPrev(platform, dateRange, customStart, customEnd);
+  const { adsets } = useAdSetInsights(platform, dateRange, customStart, customEnd);
 
   const reachPeriod = useMemo(() => adsets.reduce((s, a) => s + (a.reach || 0), 0), [adsets]);
   const totalsCur = useMemo(() => totalsOf(current), [current]);
@@ -358,91 +650,165 @@ export default function ReportingOverview({ platform, dateRange, customStart, cu
           tabName="Reporting Overview"
           context={{
             window: `${startDate} → ${endDate}`,
-            totalSpend: totalsCur.spend, totalImpressions: totalsCur.impressions, reach: reachPeriod,
-            frequency: frequencyCur, cpm: cpmCur,
-            prevSpend: totalsPrev.spend, prevImpressions: totalsPrev.impressions, prevCpm: cpmPrev,
+            currency,
+            combined: {
+              spend: Math.round(totalsCur.spend), impressions: totalsCur.impressions, reach: reachPeriod,
+              frequency: +frequencyCur.toFixed(2), cpm: +cpmCur.toFixed(2),
+            },
+            previous: { spend: Math.round(totalsPrev.spend), impressions: totalsPrev.impressions, cpm: +cpmPrev.toFixed(2) },
+            // Per-platform split so the LLM never blends Meta + DV360 into one number.
+            ...(platform === "meta" || platform === "both" ? { meta: { spend: Math.round(totalsOf(byPlatform.meta.current).spend), impressions: totalsOf(byPlatform.meta.current).impressions } } : {}),
+            ...(platform === "dv360" || platform === "both" ? { dv360: { spend: Math.round(totalsOf(byPlatform.dv360.current).spend), impressions: totalsOf(byPlatform.dv360.current).impressions } } : {}),
           }}
-          platform="meta"
+          platform={platform}
           inline
         />
       </div>
 
-      {platform === "google" && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800">
-          Overview deltas + reach/frequency are Meta-specific — switch Platform to Meta or Both to see data.
+      {platformErrors.dv360 && platform !== "meta" && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+          <span className="font-semibold">DV360 data unavailable:</span> {platformErrors.dv360}
+        </div>
+      )}
+      {platformErrors.meta && platform !== "dv360" && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+          <span className="font-semibold">Meta data unavailable:</span> {platformErrors.meta}
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-        {slotMetrics.map((m, i) => (
-          <KpiCard
-            key={`${m}-${i}`}
-            metric={m}
-            value={valueFor(m)}
-            delta={pctDelta(totalsCurMap[m], totalsPrevMap[m])}
-            spark={sparkSeries[m]}
-            onSwap={(next) => setSlotMetrics(prev => prev.map((x, j) => j === i ? next : x))}
-          />
-        ))}
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
-        <div className="px-5 py-4 border-b border-gray-100">
-          <h3 className="text-sm font-bold text-gray-900">Performance Trend</h3>
-          <p className="text-xs text-gray-500 mt-0.5">Date is locked on X. Pick any metric for Y primary + secondary.</p>
-        </div>
-        <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-4 flex-wrap">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">X axis:</span>
-            <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Date (frozen)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">Primary Y:</span>
-            <MetricPicker value={primary}   onChange={setPrimary}   label="Primary metric" />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">Secondary Y:</span>
-            <MetricPicker value={secondary} onChange={setSecondary} label="Secondary metric" />
-          </div>
-        </div>
-        <div className="px-3 py-4">
+      {/* ── Both mode: combined overview + two separate platform blocks ── */}
+      {platform === "both" ? (
+        <div className="space-y-6">
           {loading ? (
-            <div className="h-80 flex items-center justify-center text-sm text-gray-500">Loading daily data…</div>
-          ) : chartData.length === 0 ? (
-            <div className="h-80 flex items-center justify-center text-sm text-gray-500">No daily data for this window.</div>
+            <LoadingState message="Loading reporting data…" height="h-40" />
           ) : (
-            <ResponsiveContainer width="100%" height={360}>
-              <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                <XAxis dataKey="date" stroke="#6b7280" fontSize={11} tickLine={false} />
-                <YAxis yAxisId="left"  stroke="#6366f1" fontSize={11} tickLine={false}
-                  tickFormatter={(v) => fmt(v, primaryDef.fmt === "int" ? "k" : primaryDef.fmt, currency)} />
-                <YAxis yAxisId="right" orientation="right" stroke="#10b981" fontSize={11} tickLine={false}
-                  tickFormatter={(v) => fmt(v, secondaryDef.fmt === "int" ? "k" : secondaryDef.fmt, currency)} />
-                <Tooltip
-                  contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
-                  formatter={(value: number, _name: string, item: { dataKey?: string | number }) => {
-                    const k = typeof item?.dataKey === "string" ? item.dataKey : "";
-                    if (k === primary)   return [fmt(value, primaryDef.fmt,   currency), primaryDef.label] as [string, string];
-                    if (k === secondary) return [fmt(value, secondaryDef.fmt, currency), secondaryDef.label] as [string, string];
-                    return [String(value), k] as [string, string];
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar  yAxisId="left"  dataKey={primary}   name={primaryDef.label}   fill="#6366f1" radius={[3, 3, 0, 0]} animationDuration={600} animationEasing="ease-out" />
-                <Line yAxisId="right" dataKey={secondary} name={secondaryDef.label} stroke="#10b981" strokeWidth={2} dot={false} animationDuration={700} animationEasing="ease-out" />
-              </ComposedChart>
-            </ResponsiveContainer>
+            <>
+              <CombinedOverview
+                meta={byPlatform.meta}
+                dv360={byPlatform.dv360}
+                metaCurrency={metaCurrency}
+              />
+              <PlatformBlock
+                name="Meta"
+                accent="blue"
+                cur={byPlatform.meta.current}
+                prev={byPlatform.meta.previous}
+                currency={metaCurrency}
+                reach={reachPeriod}
+              />
+              <PlatformBlock
+                name="DV360"
+                accent="emerald"
+                cur={byPlatform.dv360.current}
+                prev={byPlatform.dv360.previous}
+                currency={dv360Currency}
+              />
+            </>
           )}
         </div>
-      </div>
+      ) : (
+        <>
+          {/* Single-platform: blended KPI cards + trend */}
+          {platform === "dv360" && (
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-800">
+              Reach and frequency are not available for DV360 — those cards show 0.
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            {slotMetrics.map((m, i) => (
+              <KpiCard
+                key={`${m}-${i}`}
+                metric={m}
+                value={valueFor(m)}
+                delta={pctDelta(totalsCurMap[m], totalsPrevMap[m])}
+                spark={sparkSeries[m]}
+                onSwap={(next) => setSlotMetrics(prev => prev.map((x, j) => j === i ? next : x))}
+              />
+            ))}
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <h3 className="text-sm font-bold text-gray-900">Performance Trend</h3>
+              <p className="text-xs text-gray-500 mt-0.5">Date is locked on X. Pick any metric for Y primary + secondary.</p>
+            </div>
+            <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-4 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">X axis:</span>
+                <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Date (frozen)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">Primary Y:</span>
+                <MetricPicker value={primary}   onChange={setPrimary}   label="Primary metric" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">Secondary Y:</span>
+                <MetricPicker value={secondary} onChange={setSecondary} label="Secondary metric" />
+              </div>
+            </div>
+            <div className="px-3 py-4">
+              {loading ? (
+                <div className="h-80 flex items-center justify-center text-sm text-gray-500">Loading daily data…</div>
+              ) : chartData.length === 0 ? (
+                <div className="h-80 flex items-center justify-center text-sm text-gray-500">No daily data for this window.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={360}>
+                  <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                    <XAxis dataKey="date" stroke="#6b7280" fontSize={11} tickLine={false} />
+                    <YAxis yAxisId="left"  stroke="#6366f1" fontSize={11} tickLine={false}
+                      tickFormatter={(v) => fmt(v, primaryDef.fmt === "int" ? "k" : primaryDef.fmt, currency)} />
+                    <YAxis yAxisId="right" orientation="right" stroke="#10b981" fontSize={11} tickLine={false}
+                      tickFormatter={(v) => fmt(v, secondaryDef.fmt === "int" ? "k" : secondaryDef.fmt, currency)} />
+                    <Tooltip
+                      contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
+                      formatter={(value: number, _name: string, item: { dataKey?: string | number }) => {
+                        const k = typeof item?.dataKey === "string" ? item.dataKey : "";
+                        if (k === primary)   return [fmt(value, primaryDef.fmt,   currency), primaryDef.label] as [string, string];
+                        if (k === secondary) return [fmt(value, secondaryDef.fmt, currency), secondaryDef.label] as [string, string];
+                        return [String(value), k] as [string, string];
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Bar  yAxisId="left"  dataKey={primary}   name={primaryDef.label}   fill="#6366f1" radius={[3, 3, 0, 0]} animationDuration={600} animationEasing="ease-out" />
+                    <Line yAxisId="right" dataKey={secondary} name={secondaryDef.label} stroke="#10b981" strokeWidth={2} dot={false} animationDuration={700} animationEasing="ease-out" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
       <TabSummaryFooter
-        lines={[
-          `Period: ${startDate} → ${endDate} — ${totalsCur.impressions.toLocaleString("en-IN")} impressions with ${reachPeriod > 0 ? reachPeriod.toLocaleString("en-IN") + " unique reach" : "reach data loading"}.`,
-          `Frequency: ${frequencyCur > 0 ? frequencyCur.toFixed(2) + "× avg per user" : "—"} — CPM: ${cpmCur > 0 ? formatMoney(cpmCur, currency, 2) : "—"}.`,
-          `Total spend: ${formatMoney(totalsCur.spend, currency, 0)} across the reporting window.`,
-        ]}
+        lines={(() => {
+          const showMeta  = platform === "meta"  || platform === "both";
+          const showDV360 = platform === "dv360" || platform === "both";
+          const dv360T = totalsOf(byPlatform.dv360.current);
+          const metaT  = totalsOf(byPlatform.meta.current);
+          const dv360Cpm = dv360T.impressions > 0 ? (dv360T.spend / dv360T.impressions) * 1000 : 0;
+          const metaCpm  = metaT.impressions  > 0 ? (metaT.spend  / metaT.impressions)  * 1000 : 0;
+          const lines: string[] = [
+            `Period: ${startDate} → ${endDate}.`,
+          ];
+          if (showMeta) {
+            lines.push(
+              `Meta — ${metaT.impressions.toLocaleString("en-IN")} impressions · ${reachPeriod > 0 ? reachPeriod.toLocaleString("en-IN") + " reach" : "reach loading"} · ${frequencyCur > 0 ? frequencyCur.toFixed(2) + "× freq" : "—"} · CPM: ${metaCpm > 0 ? formatMoney(metaCpm, currency, 2) : "—"} · Spend: ${formatMoney(metaT.spend, currency, 0)}.`
+            );
+          }
+          if (showDV360) {
+            lines.push(
+              `DV360 — ${dv360T.impressions.toLocaleString("en-IN")} impressions · CPM: ${dv360Cpm > 0 ? formatMoney(dv360Cpm, currency, 2) : "—"} · Spend: ${formatMoney(dv360T.spend, currency, 0)}.`
+            );
+          }
+          if (showMeta && showDV360) {
+            lines.push(
+              `Combined — ${totalsCur.impressions.toLocaleString("en-IN")} impressions · Spend: ${formatMoney(totalsCur.spend, currency, 0)}.`
+            );
+          }
+          return lines;
+        })()}
         tabName="Reporting Overview"
         context={{
           startDate,
@@ -455,7 +821,7 @@ export default function ReportingOverview({ platform, dateRange, customStart, cu
           platform,
           dateRange,
         }}
-        platform={platform === "both" ? "meta" : platform}
+        platform={platform}
         dateRange={String(dateRange)}
       />
     </div>

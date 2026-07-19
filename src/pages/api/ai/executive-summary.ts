@@ -16,6 +16,9 @@ import { calcCost } from "@/lib/ai-cost";
 interface SummaryRequest {
   tabName: string;
   context: Record<string, unknown>;
+  /** Rule-based insight bullets already shown on the tab — treated as verified
+   *  ground-truth facts the LLM should expand on (sent by TabSummaryFooter). */
+  precomputedFacts?: string[];
   platform?: string;
   dateRange?: string;
   isDemo?: boolean;
@@ -36,15 +39,15 @@ HARD RULES — violating any of these makes the output useless:
 1. Every keyFinding bullet MUST quote at least one specific number from the data (e.g. "ROAS: 2.4×", "CPM ₹31.2", "CTR 1.8%"). A finding that contains no number is forbidden.
 2. Every recommendation MUST name a specific metric, campaign, audience type, or platform UI step. Never write "review your campaigns", "optimize your budget", or any advice that could apply to ANY account.
 3. If a campaign name, audience label, or ad set name is present in the data, use it explicitly in the finding or recommendation.
-4. If the context data is sparse or empty, state what IS visible and what's missing — do not invent generic filler.
+4. If the context data is sparse or empty, state what IS visible and what's missing — do not invent generic filler. If the payload includes "precomputedFacts" (verified rule-based insight lines already shown to the user), treat them as ground truth: quantify and expand on them into findings and recommendations, and never contradict them.
 5. The headline must state the single most important number or trend visible in THIS data snapshot.
 6. Recommendations must cite the current state (e.g. "Your Interest audience has CPA ₹420 vs Broad's ₹280 — pause Interest and reallocate budget") not abstract best-practices.
 
 Format:
 - Headline: under 90 chars, names the biggest takeaway with a number.
-- Overview: 2-3 sentences, big picture with actual totals.
-- Key Findings: 3-5 bullets, each with specific metric + value from the data.
-- Recommendations: 3-5 bullets, each naming what to do, where, and why based on THIS account's numbers.
+- Overview: 3-4 sentences, big picture with actual totals. When data spans both Meta and DV360, give each platform at least one sentence.
+- Key Findings: 4-6 bullets, each with specific metric + value from the data. When both platforms are present, cover BOTH — do not let one platform dominate all bullets.
+- Recommendations: 4-6 bullets, each naming what to do, where, and why based on THIS account's numbers. When both platforms are present, include at least one platform-specific action for each.
 - Output ONLY valid JSON. No prose outside JSON.`;
 
 const OUTPUT_SCHEMA = {
@@ -105,7 +108,7 @@ export default async function handler(
 ) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { tabName, context, platform, dateRange, isDemo } = (req.body || {}) as SummaryRequest;
+  const { tabName, context, precomputedFacts, platform, dateRange, isDemo } = (req.body || {}) as SummaryRequest;
   if (!tabName) return res.status(400).json({ error: "Missing tabName" });
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -117,16 +120,21 @@ export default async function handler(
   try {
     const client = new Anthropic({ apiKey });
 
+    const platformLabel = platform === "both" ? "Meta + DV360" : platform === "dv360" ? "DV360" : "Meta";
     const userPayload = {
       tabName,
-      platform: platform ?? "meta",
+      platform: platformLabel,
+      platformNote: platform === "both"
+        ? "Data spans BOTH Meta and DV360. Keep them separate — don't sum or average across platforms, don't mix currencies (each platform has its own). If the snapshot only contains one platform's data, say the other platform's data wasn't provided rather than inventing it."
+        : undefined,
       dateRange: dateRange ?? "last 30 days",
       data: context,
+      precomputedFacts: precomputedFacts?.length ? precomputedFacts : undefined,
     };
 
     const response = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
+      max_tokens: 1600,
       system: [
         {
           type: "text",

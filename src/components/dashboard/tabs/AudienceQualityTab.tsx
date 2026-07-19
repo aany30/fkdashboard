@@ -16,9 +16,10 @@ import type { DateRange } from "@/components/shared/DateRangePicker";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useColPicker, ColumnPickerButton, ColHeader, ALL_STANDARD_KPIS, STD_KPI_MAP } from "@/components/shared/ColumnPicker";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import LoadingState from "@/components/shared/LoadingState";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -83,7 +84,7 @@ function AudienceQuality({ adsets, loading, currency }: { adsets: ReturnType<typ
 
   const { cols, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, tableRef, toggleCol, swapCol, resetCols } = useColPicker(AQ_DEFAULTS, "aud-quality");
 
-  if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
+  if (loading) return <LoadingState message="Loading audience quality…" />;
   if (!adsets.length) return (
     <div className="bg-white border-2 border-dashed border-gray-300 rounded-xl p-10 text-center text-sm text-gray-500">
       No ad set data. Connect a Meta account or widen the date range.
@@ -254,6 +255,8 @@ export default function AudienceQualityTab({ platform, dateRange, customStart, c
   const [active, setActive] = useState("quality");
   const { adsets, loading, error, currency } = useAdSetInsights(platform, dateRange, customStart, customEnd);
 
+  if (loading && adsets.length === 0) return <LoadingState message="Loading audience quality…" />;
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -268,10 +271,23 @@ export default function AudienceQualityTab({ platform, dateRange, customStart, c
           tabName="Audience Quality & Value"
           context={{
             adSetCount: adsets.length,
-            totalSpend: adsets.reduce((s, a) => s + a.spend, 0),
+            currency,
+            totalSpend: Math.round(adsets.reduce((s, a) => s + a.spend, 0)),
             totalOrders: adsets.reduce((s, a) => s + a.conversions, 0),
-            totalRevenue: adsets.reduce((s, a) => s + a.conversionValue, 0),
+            totalRevenue: Math.round(adsets.reduce((s, a) => s + a.conversionValue, 0)),
             avgRoas: adsets.length > 0 ? +(adsets.reduce((s, a) => s + (a.spend > 0 ? a.conversionValue / a.spend : 0), 0) / adsets.length).toFixed(2) : 0,
+            // Per-ad-set rows (top 25 by spend) so the LLM can name best/worst audiences.
+            adSets: [...adsets]
+              .sort((a, b) => b.spend - a.spend)
+              .slice(0, 25)
+              .map((a) => ({
+                name: a.name,
+                spend: Math.round(a.spend),
+                conversions: a.conversions,
+                revenue: Math.round(a.conversionValue),
+                roas: a.spend > 0 ? +(a.conversionValue / a.spend).toFixed(2) : 0,
+                cpa: a.conversions > 0 ? Math.round(a.spend / a.conversions) : null,
+              })),
           }}
           platform={platform === "both" ? "meta" : platform}
           dateRange={String(dateRange)}

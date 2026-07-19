@@ -39,7 +39,7 @@ export const GLOSSARY: Record<string, TermDef> = {
     long: "Meta's automated targeting and placement system — lets the algorithm pick audiences and ad surfaces (Feed, Reels, Stories) instead of fixed manual rules. Usually wins on broad-funnel campaigns.",
   },
 
-  // ----- Google -----
+  // ----- Google / DV360 -----
   GA4: {
     short: "Google Analytics 4",
     long: "Google's analytics platform — the successor to Universal Analytics. Event-based model; tracks user behaviour across web + app.",
@@ -415,6 +415,64 @@ export const GLOSSARY: Record<string, TermDef> = {
   "EU GDPR Compliance": {
     short: "Consent + data-handling for EU traffic",
     long: "Whether your tracking setup honours EU privacy law — explicit consent before firing pixels, Consent Mode v2 in GTM, data-retention controls. Non-compliance: fines AND loss of tracking signal for non-consented users.",
+  },
+
+  // ─── DV360 / newer report + attribution terms ──────────────────────────────
+  Floodlight: {
+    short: "DV360/CM360 conversion tracking",
+    long: "Google's conversion-tracking system for DV360 & Campaign Manager 360 (the equivalent of the Meta Pixel). Floodlight activities record conversions and define the lookback windows used to attribute them.",
+  },
+  Lookback: {
+    short: "Attribution lookback window",
+    long: "How far back before a conversion the platform looks for an ad interaction to credit it. E.g. a 30-day click lookback credits a conversion to any ad the user clicked within the prior 30 days.",
+  },
+  "Click Lookback": {
+    short: "Post-click attribution window",
+    long: "How many days after clicking an ad a conversion still gets credited to that click. A 30d click lookback = clicks up to 30 days before the conversion get the credit.",
+  },
+  "View Lookback": {
+    short: "Post-view (view-through) window",
+    long: "How many days after merely seeing an ad (no click) a conversion still gets credited to that impression. View windows are usually short (e.g. 1 day) since a view is a weaker signal than a click.",
+  },
+  VTR: {
+    short: "View-Through Rate",
+    long: "Video views ÷ impressions × 100 — the share of people who watched your video (to the platform's view threshold). A core awareness/video KPI; higher = more engaging creative.",
+  },
+  CVR: {
+    short: "Conversion Rate",
+    long: "Conversions ÷ clicks × 100 — the share of clicks that turned into a conversion (purchase, lead, signup). Measures how well the landing page + offer convert the traffic your ads send.",
+  },
+  Saturation: {
+    short: "Audience saturation",
+    long: "How thoroughly you've already reached your target audience. As frequency climbs and incremental reach flattens, the audience is 'saturated' — extra spend mostly re-hits the same people, so efficiency drops.",
+  },
+  "Site Language": {
+    short: "Content language of the placement",
+    long: "The language of the site/app/content where a DV360 ad served (Bid Manager's FILTER_SITE_LANGUAGE) — a strong proxy for the audience's language. It's an inventory attribute, not a declared user attribute.",
+  },
+  Native: {
+    short: "Native ad format",
+    long: "An ad that matches the look & feel of the surrounding content (in-feed, content-recommendation units) rather than a standard banner. Blends in; typically higher engagement, lower banner-blindness.",
+  },
+  CM360: {
+    short: "Campaign Manager 360",
+    long: "Google's ad-serving & measurement platform (part of Google Marketing Platform). Hosts Floodlight conversion tracking and cross-channel reporting; DV360 links to it for unified attribution.",
+  },
+  "Insertion Order": {
+    short: "DV360 budget/flight container",
+    long: "A DV360 grouping under a campaign that holds line items and carries the budget, flight dates, and pacing. Roughly the DV360 equivalent of a Meta campaign-budget container.",
+  },
+  "Line Item": {
+    short: "DV360 buying unit",
+    long: "The lowest DV360 buying unit — sets targeting, bid strategy, creatives, and delivers the impressions. Roughly the DV360 equivalent of a Meta ad set.",
+  },
+  Exchange: {
+    short: "Ad exchange / supply source",
+    long: "The programmatic marketplace (e.g. Google Ad Manager, Xandr, PubMatic) where DV360 buys impressions in real-time auctions. Reporting by exchange shows where inventory was sourced.",
+  },
+  Blended: {
+    short: "Combined across the selection",
+    long: "A metric averaged/summed across all campaigns (and platforms) in view rather than for a single one — e.g. blended ROAS = total revenue ÷ total spend across everything selected.",
   },
 };
 

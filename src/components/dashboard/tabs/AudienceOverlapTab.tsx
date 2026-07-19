@@ -7,11 +7,14 @@
  */
 
 import React, { useState, useMemo } from "react";
-import { Users, ExternalLink, AlertCircle, Info, Plus, X, PieChart as PieIcon } from "lucide-react";
+import { Users, ExternalLink, AlertCircle, Info, Plus, X, PieChart as PieIcon, Loader2, Repeat2 } from "lucide-react";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import SortTh from "@/components/shared/SortTh";
 import { useSort } from "@/hooks/useSort";
 import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
+import { useDV360Audiences } from "@/hooks/useDV360Audiences";
+import { useDV360FrequencyBurden } from "@/hooks/useDV360FrequencyBurden";
+import { useAuthStore } from "@/store/auth";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip as ReTooltip,
   XAxis, YAxis, CartesianGrid,
@@ -19,6 +22,7 @@ import {
 } from "recharts";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
+import LoadingState from "@/components/shared/LoadingState";
 import { useAdSetInsights, type AdSetRow } from "@/hooks/useAdSetInsights";
 import { useAnnualFrequency } from "@/hooks/useAnnualFrequency";
 import { formatMoney } from "@/lib/currency";
@@ -31,7 +35,7 @@ const MAX_AUDIENCES = 10;
 const SLOT_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -426,10 +430,25 @@ function stageBadge(stage: FunnelStage) {
 }
 
 export default function AudienceOverlapTab({ platform, dateRange, customStart, customEnd }: Props) {
+  const { isMetaConnected, isDV360Connected, demoMode } = useAuthStore();
+  const metaOn = isMetaConnected() || demoMode;
+  const dv360On = isDV360Connected() || demoMode;
+  const showMeta = metaOn && (platform === "meta" || platform === "both");
+  const showDV360 = dv360On && (platform === "dv360" || platform === "both");
+
   const { adsets, audiences, audienceMap, loading, error: insightsError, currency, accountReach, accountFrequency } = useAdSetInsights(
     platform === "both" ? "meta" : platform,
     dateRange, customStart, customEnd
   );
+
+  const { audiences: dv360Audiences, loading: dvAudLoading, error: dvAudError } = useDV360Audiences(showDV360);
+  const { sorted: sortedDvAud, sort: dvAudSort, toggle: dvAudToggle } = useSort(dv360Audiences, "name", "asc");
+  const dvFirstParty = dv360Audiences.filter((a) => a.type === "First Party");
+  const dvThirdParty = dv360Audiences.filter((a) => a.type === "Third Party");
+  const {
+    crossCampaign, crossCampaignPending, monthly: dvMonthlyFreq, monthlyPending: dvMonthlyPending, loading: dvFreqLoading,
+  } = useDV360FrequencyBurden(dateRange, customStart, customEnd, showDV360);
+
   // Classify every ad set once, reused below.
   const classifyRow = (a: AdSetRow): AudienceClassification =>
     classifyAdSet(a.targeting, audienceMap, a.campaignObjective, a.name);
@@ -524,6 +543,8 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
 
   const chosenNames = analysis?.items.map((it) => it.row.name) ?? [];
 
+  if (loading && adsets.length === 0) return <LoadingState message="Loading overlap data…" />;
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -534,28 +555,44 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
             <p className="text-gray-600 mt-1">Compare 2–4 ad sets to estimate audience cannibalization.</p>
           </div>
         </div>
-        {platform !== "google" && (
-          <AIExecutiveSummary
-            tabName="Audience Overlap"
-            context={{
-              adSetCount: adsets.length,
-              lastCompared: chosenNames.length >= 2 ? chosenNames : null,
-              lastResult: analysis?.topPair ? { topOverlapPct: analysis.topPair.pct } : null,
-            }}
-            platform="meta"
-            inline
-          />
-        )}
+        <AIExecutiveSummary
+          tabName="Audience Overlap"
+          context={{
+            ...(showMeta ? {
+              meta: {
+                adSetCount: adsets.length,
+                lastCompared: chosenNames.length >= 2 ? chosenNames : null,
+                topOverlapPct: analysis?.topPair ? Number(analysis.topPair.pct.toFixed(1)) : null,
+                overlapPairs: analysis?.pairs.length ?? 0,
+                note: "Meta audience overlap is estimated heuristically (Meta deprecated the overlap API). DV360 overlap isn't available via API at all.",
+              },
+            } : {}),
+            ...(showDV360 ? {
+              dv360: {
+                audienceCount: dv360Audiences.length,
+                firstParty: dvFirstParty.length,
+                thirdParty: dvThirdParty.length,
+                crossCampaignUniqueReach: crossCampaign?.reach ?? null,
+                avgFrequencyBurden: crossCampaign?.frequency ?? null,
+                currency,
+                note: "DV360 audience overlap between segments is not exposed by any API; only inventory + cross-campaign frequency burden are real.",
+              },
+            } : {}),
+          }}
+          platform={platform}
+          inline
+        />
       </div>
 
-      {platform === "google" && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800 flex items-start gap-2">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-          Audience Overlap is Meta-specific — not applicable to Google Ads keyword targeting.
+      {/* ── Meta Section ─────────────────────────────────────────────── */}
+      {showMeta && platform === "both" && (
+        <div className="flex items-center gap-3 pt-2 pb-1 border-b border-gray-200">
+          <h2 className="text-xl font-bold text-gray-900">Meta</h2>
+          <span className="text-xs text-gray-400 font-medium">Meta Ads</span>
         </div>
       )}
 
-      {platform !== "google" && (
+      {showMeta && (
         <>
           <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 flex items-start gap-2 text-xs text-blue-800">
             <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
@@ -870,14 +907,199 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
         </>
       )}
 
-      {platform !== "google" && (
+      {/* ── DV360 Audience Inventory ─────────────────────────────────── */}
+      {showDV360 && platform === "both" && (
+        <div className="flex items-center gap-3 pt-4 pb-1 border-b border-gray-200">
+          <h2 className="text-xl font-bold text-gray-900">DV360</h2>
+          <span className="text-xs text-gray-400 font-medium">Display &amp; Video 360</span>
+        </div>
+      )}
+
+      {showDV360 && (
+        <>
+          {/* KPI cards — only show when audiences actually exist */}
+          {dv360Audiences.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-sm">
+                <div className="text-sm text-gray-600">Total Audiences</div>
+                <div className="text-3xl font-bold text-gray-900 mt-1">{dv360Audiences.length}</div>
+                <div className="text-xs text-gray-500 mt-1">Accessible to this advertiser</div>
+              </div>
+              <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-sm">
+                <div className="text-sm text-gray-600">First-Party</div>
+                <div className="text-3xl font-bold text-blue-600 mt-1">{dvFirstParty.length}</div>
+                <div className="text-xs text-gray-500 mt-1">Activity-based, Customer Match, etc.</div>
+              </div>
+              <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-sm">
+                <div className="text-sm text-gray-600">Third-Party / Google</div>
+                <div className="text-3xl font-bold text-purple-600 mt-1">{dvThirdParty.length}</div>
+                <div className="text-xs text-gray-500 mt-1">In-market, affinity, custom intent</div>
+              </div>
+              <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-sm">
+                <div className="text-sm text-gray-600">Customer Match</div>
+                <div className="text-3xl font-bold text-green-600 mt-1">
+                  {dv360Audiences.filter((a) => a.source.toLowerCase().includes("customer match")).length}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">CRM list uploads</div>
+              </div>
+            </div>
+          )}
+
+          {dvAudError && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{dvAudError}</div>
+          )}
+
+          {/* Audience inventory table — only when audiences exist */}
+          {dv360Audiences.length > 0 && (
+            <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
+              <div className="p-6 border-b border-gray-200">
+                <h2 className="text-lg font-bold text-gray-900">DV360 Audience Inventory</h2>
+                <p className="text-sm text-gray-600 mt-1">All first-party and third-party audiences accessible to this advertiser</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
+                    <tr>
+                      <SortTh col="name" sort={dvAudSort} onToggle={dvAudToggle} className="px-6 py-3">Audience Name</SortTh>
+                      <SortTh col="type" sort={dvAudSort} onToggle={dvAudToggle} className="px-6 py-3">Type</SortTh>
+                      <SortTh col="source" sort={dvAudSort} onToggle={dvAudToggle} className="px-6 py-3">Source</SortTh>
+                      <SortTh col="activeSize" sort={dvAudSort} onToggle={dvAudToggle} className="px-6 py-3" align="right">Active Size</SortTh>
+                      <SortTh col="membershipDays" sort={dvAudSort} onToggle={dvAudToggle} className="px-6 py-3" align="right">Membership</SortTh>
+                      <th className="px-6 py-3 text-left font-semibold text-gray-700">Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedDvAud.map((a) => (
+                      <tr key={a.id} className="border-b border-gray-100 hover:bg-gray-50">
+                        <td className="px-6 py-3 font-medium text-gray-900 max-w-[250px] truncate">{a.name}</td>
+                        <td className="px-6 py-3">
+                          <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                            a.type === "First Party" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+                          }`}>{a.type}</span>
+                        </td>
+                        <td className="px-6 py-3 text-gray-700 text-xs">{a.source}</td>
+                        <td className="px-6 py-3 text-right text-gray-900 font-medium">{a.activeSize}</td>
+                        <td className="px-6 py-3 text-right text-gray-700">{a.membershipDays ? `${a.membershipDays}d` : "—"}</td>
+                        <td className="px-6 py-3 text-gray-500 text-xs max-w-[200px] truncate">{a.description || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Overlap is a UI-only DV360 feature — no API endpoint exists. This is
+              a static fact, so show it immediately rather than behind a spinner —
+              audience inventory below fills in when its (slower) fetch completes. */}
+          <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-6">
+            <div className="flex items-start gap-3">
+              <Info className="w-5 h-5 mt-0.5 shrink-0 text-blue-500" />
+              <div className="space-y-2">
+                <h2 className="text-base font-bold text-gray-900">Audience overlap isn&apos;t available via the DV360 API</h2>
+                <p className="text-sm text-gray-600">
+                  DV360 exposes audience overlap only in its own UI — there is no API endpoint that returns
+                  shared-user counts or overlap percentages between audiences. Check it directly in DV360:
+                  <span className="font-medium text-gray-800"> Audiences → Audience Insights → Overlap Report</span>.
+                </p>
+                <p className="text-xs text-gray-500">
+                  Audience lists and line-item targeting (geo, demographics, device, etc.) are shown under
+                  <span className="font-medium"> Audience Analysis</span> and <span className="font-medium">Account Structure</span>.
+                  {dvAudLoading && <span className="italic"> Loading audience inventory…</span>}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {dv360Audiences.length > 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-xs text-blue-800 flex items-start gap-2">
+              <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <div>Audience sizes shown are approximate ranges provided by Google — exact counts are not exposed via API.</div>
+            </div>
+          )}
+
+          {/* Cross-Campaign Frequency Burden — real REACH-report data, unlike
+              overlap % which DV360's API doesn't expose. */}
+          <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
+            <div className="p-6 border-b border-gray-200 flex items-start gap-3">
+              <Repeat2 className="w-5 h-5 text-indigo-600 mt-0.5 shrink-0" />
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Cross-Campaign Frequency Burden</h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  De-duplicated unique reach across ALL campaigns combined — a person shown ads by 3 different
+                  campaigns is counted once, not three times. Computed from a Bid Manager REACH report scoped to the
+                  whole advertiser (real data, not a per-campaign sum).
+                </p>
+              </div>
+            </div>
+            <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-gray-50 rounded-lg border border-gray-200 p-5">
+                <div className="text-sm text-gray-600">Unique Reach (whole period, all campaigns)</div>
+                <div className="text-3xl font-bold text-gray-900 mt-1">
+                  {(crossCampaignPending || dvFreqLoading) && !crossCampaign
+                    ? <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                    : crossCampaign ? crossCampaign.reach.toLocaleString("en-IN") : "—"}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {crossCampaignPending ? "Report still generating on Google's side…" : "People, not impressions"}
+                </div>
+              </div>
+              <div className="bg-gray-50 rounded-lg border border-gray-200 p-5">
+                <div className="text-sm text-gray-600">Avg Frequency Burden (per person)</div>
+                <div className="text-3xl font-bold text-gray-900 mt-1">
+                  {(crossCampaignPending || dvFreqLoading) && !crossCampaign
+                    ? <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                    : crossCampaign ? `${crossCampaign.frequency.toFixed(1)}×` : "—"}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">Impressions per unique person, summed across all campaigns</div>
+              </div>
+            </div>
+
+            {dvMonthlyFreq.length > 0 && (
+              <div className="px-6 pb-6">
+                <div className="text-sm font-semibold text-gray-900 mb-3">Monthly Exposure Intensity</div>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={dvMonthlyFreq} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                      <YAxis yAxisId="reach" tick={{ fontSize: 11 }} />
+                      <YAxis yAxisId="freq" orientation="right" tick={{ fontSize: 11 }} />
+                      <ReTooltip formatter={(v: number, name: string) => [name === "Frequency" ? `${v.toFixed(1)}×` : v.toLocaleString("en-IN"), name]} />
+                      <ReLegend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar yAxisId="reach" dataKey="reach" name="Unique Reach" fill="#6366F1" radius={[4, 4, 0, 0]} />
+                      <Line yAxisId="freq" type="monotone" dataKey="frequency" name="Frequency" stroke="#F59E0B" strokeWidth={2} dot={{ r: 3 }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Each month is its own independently de-duplicated REACH query — not a slice of the period total, so
+                  monthly reach numbers won&apos;t sum to the whole-period figure above (the same person seen in two
+                  months counts once per month, but only once for the whole period).
+                  {dvMonthlyFreq.some((m) => m.partial) && (
+                    <> A label like &ldquo;Jun 16–30&rdquo; means the selected date range only covers part of that
+                    month, so its bar isn&apos;t a full-month figure and isn&apos;t comparable to a complete month.</>
+                  )}
+                </p>
+              </div>
+            )}
+            {dvMonthlyPending && dvMonthlyFreq.length === 0 && (
+              <div className="px-6 pb-6 text-sm text-gray-400 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Monthly breakdown still generating…
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {(showMeta || showDV360) && (
         <TabSummaryFooter
           lines={(() => {
             // Chart-derived insight lines (always shown when data exists).
             const chartLines: string[] = [];
 
             // Line 1 — peak frequency month from Monthly Exposure Intensity chart.
-            if (monthlyTrend.length > 0) {
+            if (showMeta && monthlyTrend.length > 0) {
               const peakFreqMonth = [...monthlyTrend].sort((a, b) => b.frequency - a.frequency)[0];
               const peakReachMonth = [...monthlyTrend].sort((a, b) => b.reach - a.reach)[0];
               chartLines.push(
@@ -886,18 +1108,18 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
             }
 
             // Line 2 — frequency distribution breakdown (Annual Frequency Distribution donut).
-            if (freqDist.length > 0 && annual.reach > 0) {
+            if (showMeta && freqDist.length > 0 && annual.reach > 0) {
               const low = freqDist[0];   // 1–5×
               const high = freqDist.find((b) => b.lo >= 11); // 11–20× bucket
               const veryHigh = freqDist[freqDist.length - 1]; // 21×+
               const oversatPct = ((veryHigh.share + (high?.share ?? 0)) * 100).toFixed(0);
               chartLines.push(
-                `${(low.share * 100).toFixed(0)}% of your annual reach saw ads 1–5× (light touch); ${oversatPct}% saw 11×+ (potential ad fatigue).`
+                `Meta: ${(low.share * 100).toFixed(0)}% of your annual reach saw ads 1–5× (light touch); ${oversatPct}% saw 11×+ (potential ad fatigue).`
               );
             }
 
-            // Line 3 — months of activity or overlap insight.
-            if (analysis) {
+            // Line 3 — months of activity or overlap insight (Meta).
+            if (showMeta && analysis) {
               const { topPair, unionReach } = analysis;
               chartLines.push(
                 topPair && topPair.pct > 30
@@ -906,12 +1128,24 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
                     ? `Compared ${analysis.items.length} ad sets — est. union reach ${fmtSize(unionReach)}; overlap within healthy range (<30%).`
                     : `Avg exposure spread: ${monthsOfActivity.avg.toFixed(1)} months per reached user — ${monthsOfActivity.avg >= 3 ? "broad continuity across the year" : "concentrated bursts; consider always-on spend"}.`
               );
-            } else if (monthsOfActivity.avg > 0) {
+            } else if (showMeta && monthsOfActivity.avg > 0) {
               chartLines.push(
                 `Avg ${monthsOfActivity.avg.toFixed(1)} months of active exposure per reached user — ${monthsOfActivity.avg >= 3 ? "healthy spread across the year" : "mostly burst activity; consider more even pacing"}.`
               );
-            } else if (adsets.length > 0) {
+            } else if (showMeta && adsets.length > 0) {
               chartLines.push(`${adsets.length} ad sets available — select 2 or more above to compare audience overlap.`);
+            }
+
+            // DV360 lines — real inventory + cross-campaign frequency burden.
+            if (showDV360) {
+              chartLines.push(
+                `DV360: ${dv360Audiences.length} audiences available (${dvFirstParty.length} first-party, ${dvThirdParty.length} third-party). Segment-to-segment overlap isn't exposed by the DV360 API.`
+              );
+              if (crossCampaign?.reach) {
+                chartLines.push(
+                  `DV360 cross-campaign unique reach: ${fmtSize(crossCampaign.reach)} people at ${crossCampaign.frequency?.toFixed(1) ?? "—"}× avg frequency burden (de-duplicated across all campaigns).`
+                );
+              }
             }
 
             return chartLines.length > 0
@@ -919,8 +1153,18 @@ export default function AudienceOverlapTab({ platform, dateRange, customStart, c
               : ["No reach/frequency data available for the trailing 12 months."];
           })()}
           tabName="Audience Overlap"
-          context={{ adSetCount: adsets.length, overlapPairs: analysis?.pairs.length ?? 0 }}
-          platform="meta"
+          context={{
+            ...(showMeta ? { meta: { adSetCount: adsets.length, overlapPairs: analysis?.pairs.length ?? 0 } } : {}),
+            ...(showDV360 ? { dv360: {
+              audienceCount: dv360Audiences.length,
+              firstParty: dvFirstParty.length,
+              thirdParty: dvThirdParty.length,
+              crossCampaignUniqueReach: crossCampaign?.reach ?? null,
+              avgFrequencyBurden: crossCampaign?.frequency ?? null,
+              currency,
+            } } : {}),
+          }}
+          platform={platform}
           dateRange={String(dateRange)}
         />
       )}

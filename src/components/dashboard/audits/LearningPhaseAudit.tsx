@@ -6,7 +6,8 @@ import type { CampaignData } from "@/types";
 import { useAuthStore } from "@/store/auth";
 import { useSort } from "@/hooks/useSort";
 import SortTh from "@/components/shared/SortTh";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { currencyFor, formatMoney } from "@/lib/currency";
+
 // ─── date + formatting helpers ──────────────────────────────────────────────
 
 function fmtDate(iso?: string): string {
@@ -320,7 +321,7 @@ function whyStuck(
 
 export default function LearningPhaseAudit({ campaigns }: AuditProps) {
   const { metaAccessToken } = useAuthStore();
-  const currency = detectCurrency(campaigns);
+  const currency = currencyFor(campaigns, "meta");
 
   // Active-only filter (client pointer #9).
   const activeCampaigns = useMemo(

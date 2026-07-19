@@ -4,7 +4,7 @@ import CreativeFunnelMappingAudit from "./audits/CreativeFunnelMappingAudit";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: string;
   customStart?: string;
   customEnd?: string;

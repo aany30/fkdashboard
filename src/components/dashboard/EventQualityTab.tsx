@@ -4,7 +4,8 @@ import { isDemoCredential } from "@/lib/demo-data";
 import { Sparkles, Loader2, Wrench, TrendingUp, Pencil, RotateCcw } from "lucide-react";
 import { useAudit } from "@/hooks/useAudit";
 import type { DateRange } from "@/components/shared/DateRangePicker";
-import { Info, ExternalLink, RefreshCw } from "lucide-react";
+import { Info, ExternalLink } from "lucide-react";
+import LoadingState from "@/components/shared/LoadingState";
 import { useSort } from "@/hooks/useSort";
 import SortTh from "@/components/shared/SortTh";
 import { TermText } from "@/components/shared/Term";
@@ -13,7 +14,7 @@ import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   dateRange?: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -313,12 +314,7 @@ export default function EventQualityTab({ platform = "both", dateRange = "30d", 
   //  above — Rules of Hooks. See comment there.)
   if (isRealMeta) {
     if (loading) {
-      return (
-        <div className="flex flex-col items-center justify-center py-24">
-          <RefreshCw className="w-10 h-10 text-blue-600 animate-spin mb-3" />
-          <p className="text-gray-600">Loading match-key data…</p>
-        </div>
-      );
+      return <LoadingState message="Loading match-key data…" />;
     }
     if (error) {
       return (

@@ -9,11 +9,12 @@ import BudgetAllocationAudit from "./audits/BudgetAllocationAudit";
 import LearningPhaseAudit from "./audits/LearningPhaseAudit";
 import AboCboAudit from "./audits/AboCboAudit";
 import VerificationBanner from "@/components/shared/VerificationBanner";
+import LoadingState from "@/components/shared/LoadingState";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: string;
   customStart?: string;
   customEnd?: string;
@@ -23,12 +24,12 @@ interface Props {
 
 type SubTab = "naming" | "funnel-sep" | "budget" | "learning" | "abo-cbo";
 
-const SUB_TABS: Array<{ id: SubTab; label: string; description: string }> = [
+const SUB_TABS: Array<{ id: SubTab; label: string; description: string; metaOnly?: boolean }> = [
   { id: "naming", label: "Naming Convention", description: "Standardized naming Pass/Fail" },
   { id: "funnel-sep", label: "Funnel Separation", description: "TOF/MOF/BOF segmentation" },
   { id: "budget", label: "Budget Allocation", description: "Budget fragmentation %" },
-  { id: "learning", label: "Learning Phase", description: "Learning-limited campaigns" },
-  { id: "abo-cbo", label: "ABO vs CBO", description: "Correct structure usage" },
+  { id: "learning", label: "Learning Phase", description: "Learning-limited campaigns", metaOnly: true },
+  { id: "abo-cbo", label: "ABO vs CBO", description: "Correct structure usage", metaOnly: true },
 ];
 
 // Map the dashboard's DateRange prop → concrete since/until ISO dates Meta
@@ -46,10 +47,11 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
   const {
     metaAccessToken,
     metaBusinessId,
-    googleAccessToken,
-    googleCustomerId,
-    googleAdsDeveloperToken,
-    googleAdsLoginCustomerId,
+    dv360ClientId,
+    dv360ClientSecret,
+    dv360RefreshToken,
+    dv360AdvertiserId,
+    dv360PartnerId,
     demoMode,
   } = useAuthStore();
   const effectiveMetaToken = demoMode ? "demo-meta-token" : metaAccessToken;
@@ -59,16 +61,18 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [active, setActive] = useState<SubTab>("naming");
 
-  // User-defined window override (independent of the global navbar picker).
-  // When set, it drives the fetch for ALL sub-audits. Null → global picker.
+  const visibleTabs = useMemo(
+    () => SUB_TABS.filter(t => !t.metaOnly || platform !== "dv360"),
+    [platform]
+  );
+
+  useEffect(() => {
+    if (!visibleTabs.some(t => t.id === active)) setActive(visibleTabs[0]?.id ?? "naming");
+  }, [visibleTabs, active]);
+
   const globalRange = rangeToDates(dateRange, customStart, customEnd);
-  const [ovStart, setOvStart] = useState<string | null>(null);
-  const [ovEnd, setOvEnd] = useState<string | null>(null);
-  const winStart = ovStart ?? globalRange.startDate;
-  const winEnd = ovEnd ?? globalRange.endDate;
-  // Draft values for the inline date inputs before "Apply".
-  const [draftStart, setDraftStart] = useState(winStart);
-  const [draftEnd, setDraftEnd] = useState(winEnd);
+  const winStart = globalRange.startDate;
+  const winEnd = globalRange.endDate;
 
   useEffect(() => {
     let cancelled = false;
@@ -92,15 +96,21 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
             if (!cancelled) setFetchError(body.error || `Meta API error (HTTP ${r.status})`);
           }
         }
-        if ((platform === "google" || platform === "both") && googleAccessToken && googleCustomerId && googleAdsDeveloperToken) {
-          const r = await fetch("/api/naming/campaigns/google", {
+        const effectiveDv360Refresh = demoMode ? "demo-dv360-refresh" : dv360RefreshToken;
+        if (
+          (platform === "dv360" || platform === "both") &&
+          effectiveDv360Refresh &&
+          (demoMode || (dv360ClientId && dv360ClientSecret && dv360AdvertiserId))
+        ) {
+          const r = await fetch("/api/naming/campaigns/dv360", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              accessToken: googleAccessToken,
-              customerId: googleCustomerId,
-              developerToken: googleAdsDeveloperToken,
-              loginCustomerId: googleAdsLoginCustomerId || googleCustomerId,
+              clientId: demoMode ? "demo-client" : dv360ClientId,
+              clientSecret: demoMode ? "demo-secret" : dv360ClientSecret,
+              refreshToken: effectiveDv360Refresh,
+              advertiserId: demoMode ? "demo-advertiser-1" : dv360AdvertiserId,
+              partnerId: dv360PartnerId || undefined,
               startDate,
               endDate,
             }),
@@ -109,7 +119,7 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
             all.push(...(await r.json()));
           } else {
             const body = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-            if (!cancelled) setFetchError(body.error || `Google API error (HTTP ${r.status})`);
+            if (!cancelled) setFetchError(body.error || `DV360 API error (HTTP ${r.status})`);
           }
         }
       } catch (e) {
@@ -125,13 +135,8 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
     return () => {
       cancelled = true;
     };
-  }, [platform, winStart, winEnd, effectiveMetaToken, effectiveMetaBiz, googleAccessToken, googleCustomerId, googleAdsDeveloperToken, googleAdsLoginCustomerId]);
+  }, [platform, winStart, winEnd, effectiveMetaToken, effectiveMetaBiz, dv360ClientId, dv360ClientSecret, dv360RefreshToken, dv360AdvertiserId, dv360PartnerId, demoMode]);
 
-  // Keep draft inputs in sync when the effective window changes (e.g. global picker moves while no override is set).
-  useEffect(() => {
-    setDraftStart(winStart);
-    setDraftEnd(winEnd);
-  }, [winStart, winEnd]);
 
   const filteredCampaigns = useMemo(() => {
     if (!selectedObjectives || selectedObjectives.size === 0) return campaigns;
@@ -142,6 +147,8 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
   // correctly. dateRange="custom" forces sub-components to honor the explicit
   // start/end (their resolveWindow only uses custom dates when range==="custom").
   const auditProps = { campaigns: filteredCampaigns, loading, platform, accountTotal: campaigns.length, dateRange: "custom", customStart: winStart, customEnd: winEnd };
+  // ABO/CBO is Meta-only. Learning Phase now handles both Meta and DV360.
+  const metaAuditProps = { ...auditProps, campaigns: filteredCampaigns.filter((c) => c.platform === "meta") };
 
   const windowDays = Math.max(
     1,
@@ -173,60 +180,44 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
         </div>
         <AIExecutiveSummary
           tabName="Account Structure"
-          context={{ activeAudit: active, platform, campaignCount: campaigns.length, dateRange }}
-          platform={platform === "both" ? "meta" : platform}
+          context={{
+            activeAudit: active,
+            platform,
+            windowDays,
+            campaignCount: filteredCampaigns.length,
+            activeCount,
+            pausedCount,
+            totals: {
+              spend: Math.round(filteredCampaigns.reduce((s, c) => s + (c.spend || 0), 0)),
+              impressions: filteredCampaigns.reduce((s, c) => s + (c.impressions || 0), 0),
+              clicks: filteredCampaigns.reduce((s, c) => s + (c.clicks || 0), 0),
+              conversions: filteredCampaigns.reduce((s, c) => s + (c.conversions || 0), 0),
+            },
+            zeroConversionSpenders: filteredCampaigns.filter((c) => (c.conversions || 0) === 0 && (c.spend || 0) > 0).map((c) => c.name).slice(0, 15),
+            // Per-campaign rows (top 40 by spend) so the LLM cites real names/numbers.
+            campaigns: [...filteredCampaigns]
+              .sort((a, b) => (b.spend || 0) - (a.spend || 0))
+              .slice(0, 40)
+              .map((c) => ({
+                name: c.name, platform: c.platform, status: c.status, objective: c.objective,
+                spend: Math.round(c.spend || 0), impressions: c.impressions || 0,
+                clicks: c.clicks || 0, conversions: c.conversions || 0, currency: c.currency,
+              })),
+          }}
+          platform={platform}
           dateRange={dateRange}
           inline
         />
       </div>
 
-      {/* User-defined window — drives the data fetch for ALL sub-audits.
-          Like Meta Ads Manager's from→to report range. */}
-      <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 flex flex-wrap items-center gap-3 text-xs text-gray-700">
-        <span className="font-semibold text-gray-700">Window</span>
-        <input
-          type="date"
-          value={draftStart}
-          max={draftEnd}
-          onChange={(e) => setDraftStart(e.target.value)}
-          className="border border-gray-300 rounded px-2 py-1 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <span className="text-gray-400">→</span>
-        <input
-          type="date"
-          value={draftEnd}
-          min={draftStart}
-          onChange={(e) => setDraftEnd(e.target.value)}
-          className="border border-gray-300 rounded px-2 py-1 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <button
-          onClick={() => { setOvStart(draftStart); setOvEnd(draftEnd); }}
-          disabled={draftStart === winStart && draftEnd === winEnd}
-          className="px-3 py-1 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-40"
-        >
-          Apply
-        </button>
-        {(ovStart || ovEnd) && (
-          <button
-            onClick={() => { setOvStart(null); setOvEnd(null); }}
-            className="px-2 py-1 rounded-lg text-gray-600 hover:bg-gray-200 font-semibold"
-          >
-            Reset to global
-          </button>
-        )}
-        <span className="text-gray-400">·</span>
-        <span className="text-gray-500">{windowDays} days</span>
-        {filteredCampaigns.length > 0 && (
-          <>
-            <span className="text-gray-400">·</span>
-            <span className="font-semibold text-gray-900">{activeCount} active</span>
-            {pausedCount > 0 && <span className="text-gray-500">· {pausedCount} paused/archived</span>}
-            <span className="text-gray-400">·</span>
-            <span>Currency: <span className="font-semibold text-gray-900">{acctCurrency}</span></span>
-          </>
-        )}
-        {(ovStart || ovEnd) && <span className="text-blue-700 font-semibold">· custom window active</span>}
-      </div>
+      {filteredCampaigns.length > 0 && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 flex flex-wrap items-center gap-3 text-xs text-gray-700">
+          <span className="font-semibold text-gray-900">{activeCount} active</span>
+          {pausedCount > 0 && <span className="text-gray-500">· {pausedCount} paused/archived</span>}
+          <span className="text-gray-400">·</span>
+          <span>Currency: <span className="font-semibold text-gray-900">{acctCurrency}</span></span>
+        </div>
+      )}
 
       {/* Passive auto-verification banner — runs in background, surfaces drift. */}
       {filteredCampaigns.length > 0 && (
@@ -241,7 +232,7 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
       )}
 
       <div className="flex gap-2 border-b border-gray-200 overflow-x-auto">
-        {SUB_TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setActive(t.id)}
@@ -255,11 +246,17 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
         ))}
       </div>
 
-      {active === "naming" && <NamingConventionAudit {...auditProps} />}
-      {active === "funnel-sep" && <FunnelSeparationAudit {...auditProps} />}
-      {active === "budget" && <BudgetAllocationAudit {...auditProps} />}
-      {active === "learning" && <LearningPhaseAudit {...auditProps} />}
-      {active === "abo-cbo" && <AboCboAudit {...auditProps} />}
+      {loading ? (
+        <LoadingState message="Loading campaign data…" />
+      ) : (
+        <>
+          {active === "naming" && <NamingConventionAudit {...auditProps} />}
+          {active === "funnel-sep" && <FunnelSeparationAudit {...auditProps} />}
+          {active === "budget" && <BudgetAllocationAudit {...auditProps} />}
+          {active === "learning" && <LearningPhaseAudit {...metaAuditProps} />}
+          {active === "abo-cbo" && <AboCboAudit {...metaAuditProps} />}
+        </>
+      )}
 
       <TabSummaryFooter
         lines={(() => {
@@ -273,14 +270,31 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
             ];
           }
           if (active === "budget") {
-            const totalSpend = filteredCampaigns.reduce((s, c) => s + (c.spend || 0), 0);
-            const top = [...filteredCampaigns].sort((a, b) => (b.spend || 0) - (a.spend || 0))[0];
-            const zeroCPA = filteredCampaigns.filter(c => (c.conversions || 0) === 0 && (c.spend || 0) > 0).length;
-            return [
-              base,
-              top ? `Top spender: "${top.name}" at ₹${(top.spend || 0).toLocaleString("en-IN")} (${(((top.spend || 0) / Math.max(totalSpend, 1)) * 100).toFixed(0)}% of total).` : base,
-              zeroCPA > 0 ? `${zeroCPA} campaign${zeroCPA !== 1 ? "s" : ""} spent budget with 0 conversions — review or pause these.` : "All active campaigns recorded at least one conversion.",
-            ];
+            const lines: string[] = [base];
+            const metaC = filteredCampaigns.filter(c => c.platform === "meta");
+            const dv360C = filteredCampaigns.filter(c => c.platform === "dv360");
+            const fmtSpend = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
+            const platformSummary = (label: string, camps: CampaignData[]) => {
+              if (camps.length === 0) return;
+              const spend = camps.reduce((s, c) => s + (c.spend || 0), 0);
+              const impr = camps.reduce((s, c) => s + (c.impressions || 0), 0);
+              const clicks = camps.reduce((s, c) => s + (c.clicks || 0), 0);
+              const activeC = camps.filter(c => {
+                const st = (c.status || "").toUpperCase();
+                return st === "ACTIVE" || st === "ENABLED" || st === "ENTITY_STATUS_ACTIVE" || st === "ENTITY_STATUS_ENABLED";
+              });
+              const delivering = activeC.filter(c => (c.spend || 0) > 0);
+              const noDelivery = activeC.filter(c => (c.spend || 0) === 0);
+              const top = [...camps].sort((a, b) => (b.spend || 0) - (a.spend || 0))[0];
+              const zeroCPA = camps.filter(c => (c.conversions || 0) === 0 && (c.spend || 0) > 0).length;
+              lines.push(`${label}: ${camps.length} campaigns — ${fmtSpend(spend)} spend · ${Math.round(impr).toLocaleString("en-IN")} impressions · ${clicks.toLocaleString("en-IN")} clicks. ${delivering.length} delivering, ${noDelivery.length} active with no delivery.`);
+              if (top && spend > 0) lines.push(`${label} top spender: "${top.name}" at ${fmtSpend(top.spend || 0)} (${(((top.spend || 0) / Math.max(spend, 1)) * 100).toFixed(0)}% of ${label} total).`);
+              if (zeroCPA > 0) lines.push(`${label}: ${zeroCPA} campaign${zeroCPA !== 1 ? "s" : ""} spent budget with 0 conversions — review targeting or pause.`);
+            };
+            if (platform === "both" || platform === "meta") platformSummary("Meta", metaC);
+            if (platform === "both" || platform === "dv360") platformSummary("DV360", dv360C);
+            if (lines.length === 1) lines.push("No campaign data for the selected platform in this window.");
+            return lines;
           }
           if (active === "funnel-sep") {
             const tof = filteredCampaigns.filter(c => ["AWARENESS", "REACH", "VIDEO_VIEWS", "STORE_VISITS", "BRAND_AWARENESS"].includes(c.objective || "")).length;
@@ -304,7 +318,7 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
           }
           return [
             base,
-            `Currently viewing the ${SUB_TABS.find((t) => t.id === active)?.label ?? active} sub-audit across a ${windowDays}-day window.`,
+            `Currently viewing the ${visibleTabs.find((t) => t.id === active)?.label ?? active} sub-audit across a ${windowDays}-day window.`,
             filteredCampaigns.length > 0 ? `Account currency: ${acctCurrency}.` : "No campaign data loaded yet — connect your ad account to begin.",
           ];
         })()}
@@ -321,6 +335,7 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
           totalConversions: filteredCampaigns.reduce((s, c) => s + (c.conversions || 0), 0),
           campaigns: filteredCampaigns.map(c => ({
             name: c.name,
+            platform: c.platform ?? "meta",
             objective: c.objective ?? null,
             status: c.status,
             spend: c.spend ?? 0,
@@ -332,7 +347,7 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
           })),
           zeroCPACampaigns: filteredCampaigns.filter(c => (c.conversions || 0) === 0 && (c.spend || 0) > 0).map(c => c.name),
         }}
-        platform={platform === "both" ? "meta" : platform}
+        platform={platform}
         dateRange={String(dateRange)}
       />
     </div>

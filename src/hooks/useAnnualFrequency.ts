@@ -19,12 +19,12 @@ interface AnnualFrequency {
 
 const EMPTY: AnnualFrequency = { reach: 0, frequency: 0, impressions: 0, monthly: [], currency: "USD", loading: false };
 
-export function useAnnualFrequency(platform: "meta" | "google" | "both"): AnnualFrequency {
+export function useAnnualFrequency(platform: "meta" | "dv360" | "both"): AnnualFrequency {
   const { metaAccessToken, metaBusinessId, demoMode } = useAuthStore();
   const [state, setState] = useState<AnnualFrequency>(EMPTY);
 
   useEffect(() => {
-    if (platform === "google") { setState(EMPTY); return; }
+    if (platform === "dv360") { setState(EMPTY); return; }
     const token = demoMode ? "demo-meta-token" : metaAccessToken;
     const biz   = demoMode ? "demo-business-123" : metaBusinessId;
     if (!token || !biz) { setState(EMPTY); return; }

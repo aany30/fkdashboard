@@ -17,13 +17,15 @@ export function dotColor(id: string): string {
 }
 
 export default function CampaignMultiPicker({
-  options, values, onChange, allLabelText = "All campaigns",
+  options, values, onChange, allLabelText = "All campaigns", loading = false,
 }: {
   options: { id: string; name: string }[];
   values: string[];
   onChange: (next: string[]) => void;
   /** Label shown when nothing is selected (e.g. "All campaigns" or "Unassigned"). */
   allLabelText?: string;
+  /** When true and options is empty, show "Loading…" instead of "No campaigns match." */
+  loading?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -72,7 +74,7 @@ export default function CampaignMultiPicker({
             </div>
             <div className="max-h-72 overflow-y-auto">
               {filtered.length === 0 ? (
-                <div className="px-3 py-6 text-center text-xs text-gray-400">No campaigns match.</div>
+                <div className="px-3 py-6 text-center text-xs text-gray-400">{loading && options.length === 0 ? "Loading campaigns…" : "No campaigns match."}</div>
               ) : filtered.map(c => {
                 const selected = values.includes(c.id);
                 return (

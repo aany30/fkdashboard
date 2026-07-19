@@ -1660,8 +1660,18 @@ export class MetaApiClient {
     conversions: number;
     conversionValue: number;
   }>> {
+    // Meta rejects `platform_position` on its own with a (#100) error — it must
+    // be paired with `publisher_platform` (the only valid groupings are
+    // publisher_platform[,platform_position][,impression_device]). Request the
+    // valid pair, then collapse the rows back down to the caller's dimension.
+    // Ref: Marketing API → Insights → Breakdowns ("Combining breakdowns").
+    const wantDims = breakdown.split(",");
+    const needsPub = wantDims.includes("platform_position") && !wantDims.includes("publisher_platform");
+    const reqBreakdown = needsPub ? ["publisher_platform", ...wantDims].join(",") : breakdown;
+    const reqDims = reqBreakdown.split(",");
+
     const params: Record<string, string> = {
-      breakdowns: breakdown,
+      breakdowns: reqBreakdown,
       fields: "spend,impressions,clicks,actions,action_values",
       limit: "500",
       action_attribution_windows: JSON.stringify([...META_ATTRIBUTION_WINDOW.raw]),
@@ -1669,7 +1679,7 @@ export class MetaApiClient {
     if (startDate && endDate) params.time_range = `{"since":"${startDate}","until":"${endDate}"}`;
     else params.date_preset = "last_30d";
 
-    const out: Array<{
+    type BRow = {
       label: string;
       breakdownValues: Record<string, string>;
       spend: number;
@@ -1677,7 +1687,8 @@ export class MetaApiClient {
       clicks: number;
       conversions: number;
       conversionValue: number;
-    }> = [];
+    };
+    const out: BRow[] = [];
 
     // Inner runner handles a 400 by retrying without attribution windows
     // (matches the resilience pattern used by getCampaignInsights).
@@ -1693,9 +1704,10 @@ export class MetaApiClient {
           : await this.fetchAbsolute<{ data?: any[]; paging?: { next?: string } }>(path);
 
         for (const row of res.data || []) {
-          // Collect the breakdown values (e.g. { age: "25-34", gender: "female" })
+          // Collect the requested breakdown values (e.g. { publisher_platform:
+          // "facebook", platform_position: "feed" }).
           const breakdownValues: Record<string, string> = {};
-          for (const dim of breakdown.split(",")) {
+          for (const dim of reqDims) {
             if (row[dim] !== undefined) breakdownValues[dim] = String(row[dim]);
           }
           const label = Object.values(breakdownValues).join(" · ") || "Unknown";
@@ -1722,6 +1734,22 @@ export class MetaApiClient {
       // non-standard window (e.g. engaged-view) the default rejects.
       out.length = 0;
       await runFetch(false);
+    }
+
+    // If we augmented with publisher_platform to satisfy Meta, collapse the rows
+    // back to the caller's requested dimensions (sum metrics across publishers).
+    if (needsPub) {
+      const merged = new Map<string, BRow>();
+      for (const r of out) {
+        const bv: Record<string, string> = {};
+        for (const dim of wantDims) if (r.breakdownValues[dim] !== undefined) bv[dim] = r.breakdownValues[dim];
+        const label = Object.values(bv).join(" · ") || "Unknown";
+        const cur = merged.get(label) ?? { label, breakdownValues: bv, spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0 };
+        cur.spend += r.spend; cur.impressions += r.impressions; cur.clicks += r.clicks;
+        cur.conversions += r.conversions; cur.conversionValue += r.conversionValue;
+        merged.set(label, cur);
+      }
+      return Array.from(merged.values());
     }
 
     return out;
@@ -1791,6 +1819,31 @@ export class MetaApiClient {
   /** Fetch per-ad-set targeting + promoted_object + campaign objective.
    *  Used by the audience tabs to classify ad sets by their REAL Meta targeting
    *  setup instead of regex-parsing the ad-set name. Batched via the IDs param. */
+  /**
+   * The full Meta ad-locale table: numeric locale key → language name
+   * (e.g. 6 → "English (US)", 23 → "Hindi"). Meta's targeting.locales stores
+   * these numeric keys; this resolves ANY of them (not just a hardcoded subset),
+   * so targeted languages render with their real names. Paged; best-effort.
+   */
+  async getAdLocales(): Promise<Map<number, string>> {
+    const map = new Map<number, string>();
+    try {
+      let page = await this.fetch<{ data?: Array<{ key: number; name: string }>; paging?: { next?: string } }>(
+        "/search",
+        { type: "adlocale", limit: "1000" }
+      );
+      let guard = 0;
+      while (page?.data?.length && guard < 10) {
+        for (const l of page.data) {
+          if (l.key != null && l.name) map.set(Number(l.key), l.name);
+        }
+        if (page.paging?.next) { page = await this.fetchAbsolute(page.paging.next); guard++; }
+        else break;
+      }
+    } catch { /* return whatever resolved — caller falls back gracefully */ }
+    return map;
+  }
+
   async getAdSetsTargeting(
     accountPath: string,
     adSetIds: string[]

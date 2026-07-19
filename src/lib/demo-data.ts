@@ -5,7 +5,6 @@
 
 import type { MetaPixelStats } from "./api-clients/meta";
 import { computeCapiHealthScore, detectAnomalies } from "./api-clients/meta";
-import type { GoogleAuditResult } from "./api-clients/google";
 
 export function isDemoCredential(token: string | undefined | null): boolean {
   if (!token) return true;
@@ -130,105 +129,6 @@ export function getDemoMetaAudit(pixelId: string): MetaPixelStats {
       isUnavailable: false,
       lastFiredTime: new Date(Date.now() - 15 * 60000).toISOString(),
     },
-  };
-}
-
-export function getDemoGA4(): GoogleAuditResult["ga4"] {
-  return {
-    propertyId: "GA4-DEMO-001",
-    totalEvents: 412000,
-    eventBreakdown: [
-      { event: "page_view", count: 130000, users: 45000 },
-      { event: "view_item", count: 95000, users: 38000 },
-      { event: "add_to_cart", count: 42000, users: 18000 },
-      { event: "begin_checkout", count: 14200, users: 8500 },
-      { event: "purchase", count: 8500, users: 7800 },
-      { event: "newsletter_signup", count: 3200, users: 2900 },
-      { event: "video_play", count: 12000, users: 6500 },
-    ],
-    ecommerceConfigured: true,
-    conversionEvents: ["purchase", "begin_checkout"],
-    customEventsCount: 2,
-    utm: { consistencyScore: 72, missingSources: 4, inconsistentCampaigns: 8 },
-    crossDomainTracking: { enabled: true, configuredDomains: ["shop.demo.com", "checkout.demo.com"], brokenLinks: 1 },
-    referralExclusions: {
-      configured: ["paypal.com"],
-      missingPaymentGateways: ["stripe.com", "razorpay.com"],
-    },
-    consentMode: { v2Enabled: false, adUserDataSet: false, adPersonalizationSet: false },
-    dataRetention: "14 months",
-    source: "demo",
-  };
-}
-
-export function getDemoGoogleAds(): GoogleAuditResult["ads"] {
-  return {
-    customerId: "123-456-7890",
-    customerName: "Demo Advertiser",
-    currency: "USD",
-    timezone: "America/Los_Angeles",
-    conversions: 8500,
-    conversionValue: 425000,
-    conversionActions: [
-      { name: "Purchase", type: "WEBPAGE", status: "ENABLED", countingType: "ONE_PER_CLICK", category: "PRIMARY", enhancedConversionsEnabled: true, includeInConversions: true, missingValue: false },
-      { name: "Lead Submit", type: "WEBPAGE", status: "ENABLED", countingType: "EVERY", category: "PRIMARY", enhancedConversionsEnabled: false, includeInConversions: true, missingValue: true },
-      { name: "Add to Cart", type: "WEBPAGE", status: "ENABLED", countingType: "EVERY", category: "SECONDARY", enhancedConversionsEnabled: false, includeInConversions: false, missingValue: false },
-      { name: "Newsletter Signup", type: "WEBPAGE", status: "ENABLED", countingType: "ONE_PER_CLICK", category: "SECONDARY", enhancedConversionsEnabled: false, includeInConversions: false, missingValue: false },
-      { name: "Old Lead Action", type: "WEBPAGE", status: "REMOVED", countingType: "EVERY", category: "PRIMARY", enhancedConversionsEnabled: false, includeInConversions: true, missingValue: false, duplicateConversionCount: 120 },
-    ],
-    duplicateConversions: 120,
-    missingConversionTags: ["AddPaymentInfo"],
-    enhancedConversions: {
-      enabled: true,
-      emailMatchRate: 65,
-      phoneMatchRate: 45,
-      overallMatchRate: 73,
-      consentCompatible: false,
-    },
-    attributionModel: "last-click",
-    source: "demo",
-  };
-}
-
-export function getDemoGTM(): GoogleAuditResult["gtm"] {
-  return {
-    containerId: "GTM-DEMO",
-    accountId: "demo-account-001",
-    containerName: "Main Website Container",
-    usageContext: ["web"],
-    totalTags: 45,
-    activeTags: 41,
-    brokenTags: 1,
-    duplicateTags: 1,
-    unusedTags: 3,
-    missingVariables: 2,
-    triggerConflicts: 1,
-    jsErrors: [
-      { tag: "Custom HTML — Newsletter Modal", message: "Uncaught ReferenceError: dataLayer is not defined", severity: "error" },
-      { tag: "Custom HTML — A/B Test", message: "Tag fires after DOMContentLoaded — may miss early events", severity: "warning" },
-    ],
-    builtInTagsByType: {
-      gaawe: 15,
-      googtag: 8,
-      ua: 5,
-      img: 7,
-      html: 10,
-    },
-    triggers: {
-      total: 22,
-      types: { pageview: 4, click: 6, formSubmission: 3, customEvent: 9 },
-    },
-    publishedVersion: "v47",
-    lastPublished: new Date().toISOString(),
-    source: "demo",
-  };
-}
-
-export function getDemoGoogleAudit(): GoogleAuditResult {
-  return {
-    ga4: getDemoGA4(),
-    ads: getDemoGoogleAds(),
-    gtm: getDemoGTM(),
   };
 }
 
@@ -383,87 +283,403 @@ export function getDemoMetaCampaigns() {
   ];
 }
 
-export function getDemoGoogleCampaigns() {
+
+// ─── DV360 demo data ─────────────────────────────────────────────────────────
+// Campaign → Insertion Order → Line Item hierarchy mapped into CampaignData's
+// nesting slots (adSets = insertion orders, adSets[].ads = line items).
+// Metrics sum correctly up the tree so drill rollups verify.
+
+export function getDemoDV360Campaigns() {
+  const aga = (id: string, name: string) => ({ id, name, status: "ENTITY_STATUS_ACTIVE" });
+  const ag = (id: string, name: string, fmt: string, ads: ReturnType<typeof aga>[]) => ({
+    id, name, status: "ENTITY_STATUS_ACTIVE", format: fmt, ads: ads.length ? ads : undefined,
+  });
+  type BidStrategyDef = { type: "fixed" | "maximize_spend" | "performance_goal"; label: string; targetAmount?: number; goalType?: string };
+  const li = (id: string, name: string, type: string, spend: number, imp: number, clicks: number,
+    opts?: { adGroups?: ReturnType<typeof ag>[]; conversions?: number; bidStrategy?: BidStrategyDef; updateTime?: string; liFlightStart?: string; liFlightEnd?: string }) => {
+    const short = name.replace(/^LI — /, "");
+    return {
+      id, name, status: "ENTITY_STATUS_ACTIVE", lineItemType: type,
+      spend, impressions: imp, clicks, reach: Math.round(imp * 0.42),
+      conversions: opts?.conversions ?? 0,
+      adGroups: opts?.adGroups?.length ? opts.adGroups : undefined,
+      dv360BidStrategy: opts?.bidStrategy,
+      updateTime: opts?.updateTime,
+      liFlightStart: opts?.liFlightStart,
+      liFlightEnd: opts?.liFlightEnd,
+      creatives: [
+        { id: `${id}-cr1`, name: `${short} — 300x250`, impressions: Math.round(imp * 0.58), clicks: Math.round(clicks * 0.6), spend: Math.round(spend * 0.58) },
+        { id: `${id}-cr2`, name: `${short} — 728x90`,  impressions: Math.round(imp * 0.42), clicks: Math.round(clicks * 0.4), spend: Math.round(spend * 0.42) },
+      ],
+    };
+  };
+  const io = (id: string, name: string, lis: ReturnType<typeof li>[]) => ({
+    id, name, status: "ENTITY_STATUS_ACTIVE",
+    spend: lis.reduce((s, l) => s + l.spend, 0),
+    impressions: lis.reduce((s, l) => s + l.impressions, 0),
+    clicks: lis.reduce((s, l) => s + l.clicks, 0),
+    reach: Math.round(lis.reduce((s, l) => s + l.impressions, 0) * 0.4),
+    ads: lis,
+  });
+
+  const mk = (
+    id: string, name: string, objective: string, status: string,
+    ios: ReturnType<typeof io>[], conversions: number, conversionValue: number, videoViews: number
+  ) => ({
+    id, name, objective, status,
+    platform: "dv360" as const,
+    createdTime: "2026-05-05T09:00:00Z",
+    spend: ios.reduce((s, x) => s + x.spend, 0),
+    impressions: ios.reduce((s, x) => s + x.impressions, 0),
+    clicks: ios.reduce((s, x) => s + x.clicks, 0),
+    reach: Math.round(ios.reduce((s, x) => s + x.impressions, 0) * 0.38),
+    // Demo IO budget = ~25% headroom over spend (flight total) so the
+    // "Budget (setting)" column renders in demo mode too.
+    lifetimeBudget: Math.round((ios.reduce((s, x) => s + x.spend, 0) * 1.25) / 100) * 100,
+    // All-time delivery ≈ 2.4× the window slice, so recommendations have full
+    // history to reason over even in demo mode.
+    allTimeSpend: Math.round(ios.reduce((s, x) => s + x.spend, 0) * 2.4),
+    allTimeImpressions: Math.round(ios.reduce((s, x) => s + x.impressions, 0) * 2.4),
+    allTimeClicks: Math.round(ios.reduce((s, x) => s + x.clicks, 0) * 2.4),
+    allTimeConversions: Math.round(conversions * 2.4),
+    conversions, conversionValue, videoViews,
+    currency: "INR",
+    adSets: ios,
+  });
+
   return [
+    mk("dv-3001", "GW_Brand_Awareness_CTV_Jun'26", "Brand awareness", "ENTITY_STATUS_ACTIVE", [
+      io("dvio-1a", "IO — CTV India Metros", [
+        li("dvli-1a1", "LI — YouTube CTV 18-44", "LINE_ITEM_TYPE_YOUTUBE_AND_PARTNERS_VIDEO_SEQUENCE", 92000, 3_800_000, 4100, {
+          adGroups: [
+            ag("dvag-1a1a", "AG — In-Stream Skippable", "AD_GROUP_FORMAT_IN_STREAM", [
+              aga("dvaga-1", "Ad — Brand Film 30s"),
+              aga("dvaga-2", "Ad — Product Hero 15s"),
+            ]),
+            ag("dvag-1a1b", "AG — Bumper 6s", "AD_GROUP_FORMAT_BUMPER", [
+              aga("dvaga-3", "Ad — Bumper Skincare"),
+            ]),
+          ],
+          // Maximize Spend — brand awareness, CPM-capped. Uses automated bidding.
+          bidStrategy: { type: "maximize_spend", label: "Maximize Spend", targetAmount: 85, goalType: "PERFORMANCE_GOAL_TYPE_CPM" },
+          conversions: 0,
+          updateTime: "2026-06-01T08:00:00Z",
+          liFlightStart: "2026-06-01", liFlightEnd: "2026-06-30",
+        }),
+        li("dvli-1a2", "LI — Video Open Auction 1080p", "LINE_ITEM_TYPE_VIDEO_DEFAULT", 64000, 2_600_000, 3600, {
+          adGroups: [
+            ag("dvag-1a2a", "AG — Video Pre-Roll", "AD_GROUP_FORMAT_IN_STREAM", [
+              aga("dvaga-4", "Ad — Awareness 20s"),
+              aga("dvaga-5", "Ad — Testimonial 15s"),
+            ]),
+          ],
+          bidStrategy: { type: "fixed", label: "Fixed Bid", targetAmount: 45 },
+          conversions: 0,
+          updateTime: "2026-06-01T08:00:00Z",
+          liFlightStart: "2026-06-01", liFlightEnd: "2026-06-30",
+        }),
+      ]),
+      io("dvio-1b", "IO — Audio + Display Support", [
+        li("dvli-1b1", "LI — Audio Streaming 15s", "LINE_ITEM_TYPE_AUDIO_DEFAULT", 21000, 900_000, 700, {
+          bidStrategy: { type: "fixed", label: "Fixed Bid", targetAmount: 30 },
+          conversions: 0,
+          updateTime: "2026-06-01T08:00:00Z",
+          liFlightStart: "2026-06-01", liFlightEnd: "2026-06-30",
+        }),
+        li("dvli-1b2", "LI — Display Rich Media", "LINE_ITEM_TYPE_DISPLAY_DEFAULT", 18000, 1_450_000, 5200, {
+          adGroups: [
+            ag("dvag-1b2a", "AG — Rich Media 300x250", "AD_GROUP_FORMAT_NON_SKIPPABLE_IN_STREAM", [
+              aga("dvaga-6", "Ad — Interactive Expandable"),
+              aga("dvaga-7", "Ad — Standard Banner"),
+            ]),
+          ],
+          bidStrategy: { type: "fixed", label: "Fixed Bid", targetAmount: 22 },
+          conversions: 0,
+          updateTime: "2026-06-01T08:00:00Z",
+          liFlightStart: "2026-06-01", liFlightEnd: "2026-06-30",
+        }),
+      ]),
+    ], 310, 96000, 1_240_000),
+    mk("dv-3002", "GW_Perf_Prospecting_Display_Jun'26", "Conversions", "ENTITY_STATUS_ACTIVE", [
+      io("dvio-2a", "IO — Prospecting In-Market", [
+        // Target CPA — optimizing, hit 50+ conversions
+        li("dvli-2a1", "LI — In-Market Beauty", "LINE_ITEM_TYPE_DISPLAY_DEFAULT", 42000, 2_050_000, 9800, {
+          bidStrategy: { type: "performance_goal", label: "Target CPA", targetAmount: 780, goalType: "PERFORMANCE_GOAL_TYPE_CPA" },
+          conversions: 68,
+          updateTime: "2026-05-20T10:30:00Z",
+          liFlightStart: "2026-05-01", liFlightEnd: "2026-07-31",
+        }),
+        // Target CPA — limited, only 22 conversions in 30d window
+        li("dvli-2a2", "LI — Affinity Skincare", "LINE_ITEM_TYPE_DISPLAY_DEFAULT", 31000, 1_600_000, 6200, {
+          bidStrategy: { type: "performance_goal", label: "Target CPA", targetAmount: 900, goalType: "PERFORMANCE_GOAL_TYPE_CPA" },
+          conversions: 22,
+          updateTime: "2026-06-10T09:00:00Z",
+          liFlightStart: "2026-05-01", liFlightEnd: "2026-07-31",
+        }),
+        // Target ROAS — new line item, still warming up
+        li("dvli-2a3", "LI — Similar Audiences", "LINE_ITEM_TYPE_DISPLAY_DEFAULT", 26000, 1_200_000, 5400, {
+          bidStrategy: { type: "performance_goal", label: "Target ROAS", targetAmount: 3.5, goalType: "PERFORMANCE_GOAL_TYPE_ROAS" },
+          conversions: 11,
+          updateTime: "2026-07-05T11:00:00Z",
+          liFlightStart: "2026-07-05", liFlightEnd: "2026-08-31",
+        }),
+      ]),
+    ], 540, 410000, 0),
+    mk("dv-3003", "GW_Retargeting_DPA_Jun'26", "Conversions", "ENTITY_STATUS_ACTIVE", [
+      io("dvio-3a", "IO — Site Visitors 30d", [
+        // Target CPA — optimizing
+        li("dvli-3a1", "LI — Cart Abandoners Dynamic", "LINE_ITEM_TYPE_DISPLAY_DEFAULT", 28000, 820_000, 7100, {
+          bidStrategy: { type: "performance_goal", label: "Target CPA", targetAmount: 550, goalType: "PERFORMANCE_GOAL_TYPE_CPA" },
+          conversions: 87,
+          updateTime: "2026-05-15T08:00:00Z",
+          liFlightStart: "2026-05-01", liFlightEnd: "2026-07-31",
+        }),
+        li("dvli-3a2", "LI — Product Viewers Dynamic", "LINE_ITEM_TYPE_DISPLAY_DEFAULT", 19000, 640_000, 4800, {
+          bidStrategy: { type: "performance_goal", label: "Target CPA", targetAmount: 650, goalType: "PERFORMANCE_GOAL_TYPE_CPA" },
+          conversions: 55,
+          updateTime: "2026-05-15T08:00:00Z",
+          liFlightStart: "2026-05-01", liFlightEnd: "2026-07-31",
+        }),
+      ]),
+    ], 620, 520000, 0),
+    mk("dv-3004", "GW_Video_Reach_Festive_Teaser", "Brand awareness", "ENTITY_STATUS_PAUSED", [
+      io("dvio-4a", "IO — Festive Teaser Wave 1", [
+        li("dvli-4a1", "LI — Video 6s Bumpers", "LINE_ITEM_TYPE_VIDEO_DEFAULT", 15000, 1_900_000, 900, {
+          bidStrategy: { type: "fixed", label: "Fixed Bid", targetAmount: 18 },
+          conversions: 0,
+          liFlightStart: "2026-04-01", liFlightEnd: "2026-04-30",
+        }),
+      ]),
+    ], 20, 4000, 860_000),
+    mk("dv-3005", "GW_AlwaysOn_Display_Traffic", "Clicks", "ENTITY_STATUS_ACTIVE", [
+      io("dvio-5a", "IO — Always-On Display", [
+        li("dvli-5a1", "LI — Standard Display 300x250", "LINE_ITEM_TYPE_DISPLAY_DEFAULT", 12000, 1_150_000, 8600, {
+          bidStrategy: { type: "maximize_spend", label: "Maximize Spend", goalType: "PERFORMANCE_GOAL_TYPE_CPC" },
+          conversions: 8,
+          updateTime: "2026-07-10T10:00:00Z",
+          liFlightStart: "2026-07-01", liFlightEnd: "2026-09-30",
+        }),
+        li("dvli-5a2", "LI — Native Content Feed", "LINE_ITEM_TYPE_DISPLAY_DEFAULT", 9800, 760_000, 5900, {
+          bidStrategy: { type: "maximize_spend", label: "Maximize Spend", goalType: "PERFORMANCE_GOAL_TYPE_CPC" },
+          conversions: 6,
+          updateTime: "2026-07-10T10:00:00Z",
+          liFlightStart: "2026-07-01", liFlightEnd: "2026-09-30",
+        }),
+      ]),
+    ], 95, 31000, 0),
+  ];
+}
+
+export function getDemoDV360Breakdown(dimension: string) {
+  const mk = (label: string, spend: number, imp: number, clicks: number, conv: number, val: number) =>
+    ({ label, breakdownValues: { [dimension]: label }, spend, impressions: imp, clicks, conversions: conv, conversionValue: val });
+  switch (dimension) {
+    case "age":
+      return [
+        mk("18-24", 52000, 2_400_000, 9800, 210, 138000),
+        mk("25-34", 118000, 4_900_000, 22400, 585, 428000),
+        mk("35-44", 86000, 3_300_000, 14100, 388, 289000),
+        mk("45-54", 51000, 1_900_000, 7300, 195, 141000),
+        mk("55-64", 39000, 1_300_000, 4100, 130, 92000),
+        mk("65+", 31800, 1_020_000, 2900, 77, 53000),
+      ];
+    case "gender":
+      return [
+        mk("Female", 208000, 8_400_000, 36800, 940, 690000),
+        mk("Male", 152000, 5_900_000, 22100, 590, 421000),
+        mk("Unknown", 17800, 520_000, 1700, 55, 30000),
+      ];
+    case "age,gender":
+      return [
+        mk("18-24 · Female", 31000, 1_400_000, 5900, 128, 84000),
+        mk("18-24 · Male",   21000, 1_000_000, 3900,  82, 54000),
+        mk("25-34 · Female", 71000, 2_950_000, 13600, 356, 261000),
+        mk("25-34 · Male",   47000, 1_950_000,  8800, 229, 167000),
+        mk("35-44 · Female", 52000, 2_000_000,  8600, 236, 176000),
+        mk("35-44 · Male",   34000, 1_300_000,  5500, 152, 113000),
+        mk("45-54 · Female", 30000, 1_120_000,  4300, 115,  83000),
+        mk("45-54 · Male",   21000,   780_000,  3000,  80,  58000),
+        mk("55-64 · Female", 23000,   770_000,  2400,  77,  54000),
+        mk("55-64 · Male",   16000,   530_000,  1700,  53,  38000),
+      ];
+    case "country":
+      return [
+        mk("India", 289000, 11_600_000, 48200, 1240, 905000),
+        mk("United Arab Emirates", 41000, 1_500_000, 6100, 170, 128000),
+        mk("Singapore", 24000, 830_000, 3300, 92, 64000),
+        mk("United Kingdom", 15800, 540_000, 2100, 58, 32000),
+        mk("United States", 8000, 350_000, 900, 25, 12000),
+      ];
+    case "region":
+      return [
+        mk("Maharashtra", 92000, 3_700_000, 15400, 396, 289000),
+        mk("Karnataka",   68000, 2_720_000, 11300, 291, 213000),
+        mk("Delhi",       54000, 2_160_000,  9000, 231, 169000),
+        mk("Tamil Nadu",  41000, 1_640_000,  6800, 175, 128000),
+        mk("Telangana",   29000, 1_160_000,  4800, 124,  90000),
+        mk("West Bengal", 18000,   720_000,  3000,  77,  56000),
+        mk("Gujarat",     14000,   560_000,  2330,  60,  44000),
+      ];
+    case "city":
+    case "region,city": {
+      // region · city with per-dimension breakdownValues so the geo drilldown
+      // can nest cities under their region.
+      const city = (region: string, cityName: string, spend: number, imp: number, clicks: number, conv: number, val: number) => ({
+        label: `${region} · ${cityName}`,
+        breakdownValues: { region, city: cityName, "region,city": `${region} · ${cityName}` },
+        spend, impressions: imp, clicks, conversions: conv, conversionValue: val,
+      });
+      return [
+        city("Maharashtra", "Mumbai",     48000, 1_920_000, 8000, 206, 150000),
+        city("Maharashtra", "Pune",       27000, 1_080_000, 4500, 116,  85000),
+        city("Karnataka",   "Bengaluru",  44000, 1_760_000, 7300, 189, 138000),
+        city("Karnataka",   "Mysuru",     10000,   400_000, 1660,  43,  31000),
+        city("Delhi",       "New Delhi",  39000, 1_560_000, 6500, 167, 122000),
+        city("Telangana",   "Hyderabad",  24000,   960_000, 4000, 103,  75000),
+        city("Tamil Nadu",  "Chennai",    22000,   880_000, 3670,  94,  69000),
+        city("West Bengal", "Kolkata",    15000,   600_000, 2500,  64,  47000),
+        city("Gujarat",     "Ahmedabad",  11000,   440_000, 1830,  47,  34000),
+      ];
+    }
+    case "zip":
+      return [
+        mk("400001", 12000, 480_000, 2000, 52, 38000),
+        mk("560001", 11000, 440_000, 1830, 47, 34000),
+        mk("110001",  9500, 380_000, 1580, 41, 30000),
+        mk("500081",  7800, 312_000, 1300, 34, 24500),
+        mk("600002",  6400, 256_000, 1070, 27, 20000),
+        mk("411001",  5200, 208_000,  870, 22, 16000),
+      ];
+    case "language":
+      return [
+        mk("English", 198000, 7_900_000, 33800, 890, 640000),
+        mk("Hindi",   96000, 3_840_000, 15900, 410, 300000),
+        mk("Telugu",  38000, 1_520_000,  6300, 165, 120000),
+        mk("Tamil",   24000,   960_000,  4000, 104,  76000),
+        mk("Kannada", 15000,   600_000,  2500,  64,  47000),
+        mk("Marathi", 11000,   440_000,  1830,  47,  34000),
+      ];
+    case "device":
+      return [
+        mk("Smart Phone", 218000, 9_100_000, 41800, 1010, 742000),
+        mk("Connected TV", 92000, 3_400_000, 1900, 105, 74000),
+        mk("Desktop", 48000, 1_700_000, 13200, 390, 285000),
+        mk("Tablet", 19800, 620_000, 3700, 80, 40000),
+      ];
+    case "daily": {
+      // 30-day deterministic wave, same shape as the Meta daily demo.
+      const out: ReturnType<typeof mk>[] = [];
+      const today = new Date();
+      for (let i = 29; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        const label = d.toISOString().slice(0, 10);
+        const wave = 1 + 0.45 * Math.sin(i / 4.5) + (i % 7 === 0 ? 0.35 : 0);
+        const spend = Math.round(9800 * wave);
+        const imp = Math.round(410_000 * wave);
+        const clicks = Math.round(1750 * wave);
+        const conv = Math.round(48 * wave);
+        out.push(mk(label, spend, imp, clicks, conv, conv * 720));
+      }
+      return out;
+    }
+    default:
+      return [];
+  }
+}
+
+export function getDemoFloodlight() {
+  const day = (offset: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - offset);
+    return d.toISOString().slice(0, 10);
+  };
+  // 14-day trend arrays: [oldest … newest]
+  const trend = (base: number, slope: number, noiseSeed = 1) =>
+    Array.from({ length: 14 }, (_, i) =>
+      Math.max(0, Math.round(base + slope * i + Math.sin((i + noiseSeed) * 1.7) * base * 0.12))
+    );
+
+  const activities = [
     {
-      id: "2001",
-      name: "ThreeZinc >> DV360 >> Sales >> Google SEM >> RSA >> Brand-Defense",
-      objective: "Sales",
-      status: "ENABLED",
-      platform: "google" as const,
-      createdTime: "2026-04-08T09:00:00Z",
-      dailyBudget: 350,
-      spend: 9100,
-      impressions: 245000,
-      clicks: 8200,
-      conversions: 285,
-      conversionValue: 42750,
-      impressionShare: 78,
-      currency: "USD",
+      id: "fl-9001", name: "Purchase — Thank You Page", type: "TRANSACTIONS", countingMethod: "TRANSACTIONS_COUNTING",
+      clickLookbackDays: 30, viewLookbackDays: 1, servingStatus: "ENABLED",
+      conversions14d: trend(46, 0.6), revenue14d: trend(33000, 420, 2),
     },
     {
-      id: "2002",
-      name: "winter_2024",
-      objective: "Traffic",
-      status: "ENABLED",
-      platform: "google" as const,
-      createdTime: "2026-04-12T09:00:00Z",
-      dailyBudget: 100,
-      spend: 2400,
-      impressions: 64000,
-      clicks: 1800,
-      conversions: 22,
-      conversionValue: 1100,
-      impressionShare: 42,
-      currency: "USD",
+      id: "fl-9002", name: "Add To Cart", type: "STANDARD", countingMethod: "STANDARD_COUNTING",
+      clickLookbackDays: 30, viewLookbackDays: 1, servingStatus: "ENABLED",
+      conversions14d: trend(210, 1.4, 3), revenue14d: trend(0, 0),
     },
     {
-      id: "2003",
-      name: "ThreeZinc >> Mova >> Awareness >> Google SEM >> Video >> YouTube-Prelaunch",
-      objective: "Awareness",
-      status: "ENABLED",
-      platform: "google" as const,
-      createdTime: "2026-04-18T09:00:00Z",
-      dailyBudget: 220,
-      spend: 5060,
-      impressions: 720000,
-      clicks: 3400,
-      conversions: 48,
-      conversionValue: 2400,
-      impressionShare: 56,
-      currency: "USD",
+      id: "fl-9003", name: "Lead Form Submit", type: "STANDARD", countingMethod: "UNIQUE_COUNTING",
+      clickLookbackDays: 14, viewLookbackDays: 1, servingStatus: "ENABLED",
+      conversions14d: trend(38, -1.9, 4), revenue14d: trend(0, 0), // declining
     },
     {
-      id: "2004",
-      name: "pmax-new",
-      objective: "Sales",
-      status: "ENABLED",
-      platform: "google" as const,
-      createdTime: "2026-04-22T09:00:00Z",
-      dailyBudget: 500,
-      spend: 12800,
-      impressions: 312000,
-      clicks: 10500,
-      conversions: 376,
-      conversionValue: 56400,
-      impressionShare: 65,
-      currency: "USD",
+      id: "fl-9004", name: "Newsletter Signup", type: "STANDARD", countingMethod: "STANDARD_COUNTING",
+      clickLookbackDays: 30, viewLookbackDays: 1, servingStatus: "ENABLED",
+      conversions14d: trend(24, 0.3, 5), revenue14d: trend(0, 0),
     },
     {
-      id: "2005",
-      name: "EcomAgency >> Mova >> Conversions >> Google SEM >> Static >> Q2-Performance",
-      objective: "Conversions",
-      status: "ENABLED",
-      platform: "google" as const,
-      createdTime: "2026-05-02T09:00:00Z",
-      dailyBudget: 300,
-      spend: 7200,
-      impressions: 168000,
-      clicks: 5900,
-      conversions: 198,
-      conversionValue: 23760,
-      impressionShare: 71,
-      currency: "USD",
+      id: "fl-9005", name: "App Install (legacy)", type: "STANDARD", countingMethod: "STANDARD_COUNTING",
+      clickLookbackDays: 90, viewLookbackDays: 14, servingStatus: "ENABLED",
+      conversions14d: Array(14).fill(0), revenue14d: Array(14).fill(0), // zero — likely dead tag
+    },
+    {
+      id: "fl-9006", name: "Store Locator View", type: "STANDARD", countingMethod: "STANDARD_COUNTING",
+      clickLookbackDays: 7, viewLookbackDays: 1, servingStatus: "ENABLED",
+      conversions14d: Array(14).fill(0), revenue14d: Array(14).fill(0), // zero — unmapped
+    },
+    {
+      id: "fl-9007", name: "Old Promo Landing (2024)", type: "STANDARD", countingMethod: "STANDARD_COUNTING",
+      clickLookbackDays: 30, viewLookbackDays: 1, servingStatus: "DISABLED",
+      conversions14d: Array(14).fill(0), revenue14d: Array(14).fill(0), // inactive
+    },
+    {
+      id: "fl-9008", name: "Begin Checkout", type: "STANDARD", countingMethod: "STANDARD_COUNTING",
+      clickLookbackDays: 30, viewLookbackDays: 1, servingStatus: "ENABLED",
+      conversions14d: trend(96, 0.9, 6), revenue14d: trend(0, 0),
     },
   ];
+
+  return {
+    group: { id: "fg-555001", name: "GW Floodlight Group" },
+    windowStart: day(13),
+    windowEnd: day(0),
+    activities,
+  };
+}
+
+export function getDemoDV360FrequencyBurden(startDate: string, endDate: string) {
+  const monthLabel = (offset: number) => {
+    const d = new Date(`${endDate}T00:00:00Z`);
+    d.setUTCMonth(d.getUTCMonth() - offset);
+    return d.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  };
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const spanMonths = Math.max(1, Math.min(6, Math.round((end.getTime() - start.getTime()) / (30 * 86_400_000)) + 1));
+
+  const monthly = Array.from({ length: spanMonths }, (_, i) => {
+    const idx = spanMonths - 1 - i;
+    return {
+      month: monthLabel(idx),
+      partial: false,
+      reach: Math.round(38_000 + Math.sin(i * 1.3) * 6_000 + i * 1_500),
+      frequency: Number((3.1 + Math.sin(i * 0.9) * 0.6 + i * 0.08).toFixed(1)),
+    };
+  });
+
+  const crossCampaignReach = Math.round(monthly.reduce((s, m) => s + m.reach, 0) * 0.62); // dedup across months, not a plain sum
+  const crossCampaignFrequency = Number((monthly.reduce((s, m) => s + m.frequency, 0) / monthly.length + 1.4).toFixed(1));
+
+  return {
+    source: "demo",
+    crossCampaign: { reach: crossCampaignReach, frequency: crossCampaignFrequency },
+    crossCampaignPending: false,
+    monthly,
+    monthlyPending: false,
+    notes: [] as string[],
+  };
 }

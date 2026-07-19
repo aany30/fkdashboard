@@ -1,14 +1,19 @@
 /**
  * Reporting → Placement
  *
- * 3 sections matching dv360-intel placement report:
- *   1. Placement Type — donut chart (Video / Native / Rich Media / Display / Audio / CTV)
- *   2. Placement / Target URL — top-N ranked bar list
- *   3. Placement Detailing — publisher-level detail table with columns picker
+ * Meta section:
+ *   1. Placement Type chart — real platform_position rows classified to type
+ *   2. Placement Ranked List — platform_position rows ranked by metric
+ *   3. Publisher Detail Table — publisher_platform rows with KPI columns
+ *
+ * DV360 section:
+ *   1. Environment chart — FILTER_ENVIRONMENT rows (Web / App / Connected TV)
+ *   2. Exchange Ranked List — FILTER_EXCHANGE_ID rows ranked by metric
+ *   3. Exchange Detail Table — same rows in tabular form
  */
 
 import React, { useMemo, useRef, useState } from "react";
-import { Map as MapIcon, ChevronDown } from "lucide-react";
+import { Map as MapIcon, ChevronDown, Info } from "lucide-react";
 import SortTh from "@/components/shared/SortTh";
 import { useSort } from "@/hooks/useSort";
 import {
@@ -18,70 +23,84 @@ import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import { ColumnPickerButton, useColPicker, ColHeader, ColDef, ALL_STANDARD_KPIS } from "@/components/shared/ColumnPicker";
 import { useMetaBreakdown, BreakdownRow } from "@/hooks/useMetaBreakdown";
+import { useDV360Breakdown } from "@/hooks/useDV360Breakdown";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { usePersistentValue } from "@/hooks/useColumnPrefs";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PLACEMENT_TYPES = ["Video", "Native", "Rich Media", "Display", "Audio", "CTV"] as const;
+const PLACEMENT_TYPES = ["Video", "Native", "Rich Media", "Display", "Audio", "CTV", "Other"] as const;
 type PlacementType = typeof PLACEMENT_TYPES[number];
 
-const TYPE_COLORS: Record<PlacementType, string> = {
-  "Video":      "#6366f1",
-  "Native":     "#10b981",
-  "Rich Media": "#f59e0b",
-  "Display":    "#8b5cf6",
-  "Audio":      "#06b6d4",
-  "CTV":        "#ef4444",
+const TYPE_COLORS: Record<string, string> = {
+  "Video":       "#6366f1",
+  "Native":      "#10b981",
+  "Rich Media":  "#f59e0b",
+  "Display":     "#8b5cf6",
+  "Audio":       "#06b6d4",
+  "CTV":         "#ef4444",
+  "Other":       "#9ca3af",
+  // DV360 environment types
+  "Web":          "#3b82f6",
+  "App":          "#10b981",
+  "Connected TV": "#ef4444",
+  "AMP":          "#8b5cf6",
+  "Unknown":      "#9ca3af",
 };
 
-// Friendly placement name for ranked list / detail
-const POSITION_NAMES: Record<string, string> = {
-  feed:               "native_feed_Facebook",
-  instagram_reels:    "video_reels_Instagram",
-  video_feeds:        "video_feed_Facebook",
-  instagram_stories:  "story_Instagram",
-  facebook_stories:   "story_Facebook",
-  marketplace:        "marketplace_Facebook",
-  right_hand_column:  "display_sidebar_Facebook",
-  messenger_inbox:    "native_inbox_Messenger",
-  messenger_stories:  "story_Messenger",
-  audio:              "audio_stream_Facebook",
-  connected_tv:       "video_ctv_Facebook",
-  classic:            "display_app_AudienceNetwork",
-  rewarded_video:     "video_rewarded_AudienceNetwork",
-  interstitial:       "richmedia_interstitial_AudienceNetwork",
+// Deterministic mapping from Meta platform_position labels to placement types.
+// No synthetic guessing — each key is a real value the Meta API returns.
+const META_POSITION_TO_TYPE: Record<string, PlacementType> = {
+  feed:                "Native",
+  marketplace:         "Native",
+  messenger_inbox:     "Native",
+  search:              "Native",
+  instagram_explore:   "Native",
+  instagram_reels:     "Video",
+  video_feeds:         "Video",
+  rewarded_video:      "Video",
+  facebook_reels:      "Video",
+  instream_video:      "Video",
+  facebook_stories:    "Rich Media",
+  instagram_stories:   "Rich Media",
+  messenger_stories:   "Rich Media",
+  right_hand_column:   "Display",
+  classic:             "Display",
+  interstitial:        "Display",
+  audio:               "Audio",
+  connected_tv:        "CTV",
 };
 
-function placementName(label: string): string {
-  return POSITION_NAMES[label] ?? label.replace(/_/g, "_");
+function classifyPosition(label: string): PlacementType {
+  return META_POSITION_TO_TYPE[label] ?? "Other";
 }
 
-// Sub-placements per publisher (for detail section)
-const PUBLISHER_POSITIONS: Record<string, { pos: string; type: PlacementType; share: number }[]> = {
-  facebook:         [
-    { pos: "feed",              type: "Native",     share: 0.48 },
-    { pos: "video_feeds",       type: "Video",      share: 0.24 },
-    { pos: "facebook_stories",  type: "Rich Media", share: 0.18 },
-    { pos: "marketplace",       type: "Native",     share: 0.10 },
-  ],
-  instagram:        [
-    { pos: "instagram_reels",   type: "Video",      share: 0.45 },
-    { pos: "instagram_stories", type: "Rich Media", share: 0.35 },
-    { pos: "feed",              type: "Native",     share: 0.20 },
-  ],
-  audience_network: [
-    { pos: "classic",           type: "Display",    share: 0.55 },
-    { pos: "rewarded_video",    type: "Video",      share: 0.30 },
-    { pos: "interstitial",      type: "Rich Media", share: 0.15 },
-  ],
-  messenger:        [
-    { pos: "messenger_inbox",   type: "Native",     share: 0.65 },
-    { pos: "messenger_stories", type: "Rich Media", share: 0.35 },
-  ],
-};
+// Friendly display names for Meta platform_position values
+function friendlyPosition(label: string): string {
+  const map: Record<string, string> = {
+    feed:               "Feed (Facebook/Instagram)",
+    instagram_reels:    "Instagram Reels",
+    video_feeds:        "Video Feeds",
+    facebook_stories:   "Facebook Stories",
+    instagram_stories:  "Instagram Stories",
+    marketplace:        "Marketplace",
+    right_hand_column:  "Right Column (Desktop)",
+    messenger_inbox:    "Messenger Inbox",
+    messenger_stories:  "Messenger Stories",
+    audio:              "Audio Stream",
+    connected_tv:       "Connected TV",
+    classic:            "App Display (AN)",
+    rewarded_video:     "Rewarded Video (AN)",
+    interstitial:       "Interstitial (AN)",
+    facebook_reels:     "Facebook Reels",
+    instream_video:     "In-Stream Video",
+    search:             "Search",
+    instagram_explore:  "Instagram Explore",
+  };
+  return map[label] ?? label.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
 
 function fmtK(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -89,7 +108,7 @@ function fmtK(n: number): string {
   return n.toLocaleString("en-IN");
 }
 
-// ─── Placement Type Donut ─────────────────────────────────────────────────────
+// ─── Placement Type Chart ─────────────────────────────────────────────────────
 
 type DonutMetric = "spend" | "impressions" | "clicks" | "conversions";
 const DONUT_METRICS: { id: DonutMetric; label: string }[] = [
@@ -99,33 +118,16 @@ const DONUT_METRICS: { id: DonutMetric; label: string }[] = [
   { id: "conversions", label: "Conversions" },
 ];
 
-function PlacementTypeDonut({
-  rows, loading, currency,
-}: { rows: BreakdownRow[]; loading: boolean; currency: string }) {
-  const [metric, setMetric] = usePersistentValue<DonutMetric>("placement-donut-metric", "spend");
+interface TypeRow { type: string; spend: number; impressions: number; clicks: number; conversions: number }
+
+function PlacementTypeChart({
+  typeRows, loading, currency, ns,
+}: { typeRows: TypeRow[]; loading: boolean; currency: string; ns: string }) {
+  const [metric, setMetric] = usePersistentValue<DonutMetric>(`${ns}-donut-metric`, "spend");
   const cur = (n: number) => formatMoney(n, currency, 0);
 
-  // Distribute each publisher's metrics across placement types using known position shares
-  const grouped = useMemo(() => {
-    const map = new Map<PlacementType, { spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number }>();
-    PLACEMENT_TYPES.forEach(t => map.set(t, { spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0 }));
-    rows.forEach(r => {
-      const positions = PUBLISHER_POSITIONS[r.label] ?? PUBLISHER_POSITIONS["facebook"];
-      for (const p of positions) {
-        const acc = map.get(p.type)!;
-        acc.spend           += r.spend * p.share;
-        acc.impressions     += r.impressions * p.share;
-        acc.clicks          += r.clicks * p.share;
-        acc.conversions     += r.conversions * p.share;
-        acc.conversionValue += r.conversionValue * p.share;
-      }
-    });
-    return PLACEMENT_TYPES
-      .map(t => ({ type: t, ...map.get(t)! }))
-      .filter(d => d[metric] > 0);
-  }, [rows, metric]);
-
-  const total = grouped.reduce((s, d) => s + d[metric], 0);
+  const sorted = useMemo(() => [...typeRows].sort((a, b) => b[metric] - a[metric]).filter(d => d[metric] > 0), [typeRows, metric]);
+  const total = sorted.reduce((s, d) => s + d[metric], 0);
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
@@ -148,16 +150,15 @@ function PlacementTypeDonut({
 
       {loading ? (
         <div className="h-56 flex items-center justify-center text-sm text-gray-400">Loading…</div>
-      ) : grouped.length === 0 ? (
+      ) : sorted.length === 0 ? (
         <div className="h-56 flex items-center justify-center text-sm text-gray-400">No data.</div>
       ) : (
         <div className="flex flex-col sm:flex-row items-center gap-6 px-6 py-5">
-          {/* Donut */}
           <div className="shrink-0 chart-enter">
             <ResponsiveContainer width={220} height={220}>
               <PieChart>
                 <Pie
-                  data={grouped}
+                  data={sorted}
                   dataKey={metric}
                   nameKey="type"
                   innerRadius={65}
@@ -166,29 +167,27 @@ function PlacementTypeDonut({
                   startAngle={90}
                   endAngle={-270}
                 >
-                  {grouped.map((d, i) => (
-                    <Cell key={d.type} fill={TYPE_COLORS[d.type]} />
+                  {sorted.map((d) => (
+                    <Cell key={d.type} fill={TYPE_COLORS[d.type] ?? "#9ca3af"} />
                   ))}
                 </Pie>
                 <ReTooltip
                   contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
                   formatter={(v: number, _: string, entry: any) => [
-                    metric === "spend" ? cur(v) : fmtK(v),
-                    entry.payload.type,
+                    metric === "spend" ? cur(v as number) : fmtK(v as number),
+                    (entry?.payload as TypeRow)?.type ?? "",
                   ]}
                 />
               </PieChart>
             </ResponsiveContainer>
           </div>
-
-          {/* Legend */}
           <div className="flex-1 space-y-0 divide-y divide-gray-100 w-full">
-            {grouped.sort((a, b) => b[metric] - a[metric]).map(d => {
+            {sorted.map(d => {
               const pct = total > 0 ? (d[metric] / total) * 100 : 0;
               const val = metric === "spend" ? cur(d[metric]) : fmtK(d[metric]);
               return (
                 <div key={d.type} className="flex items-center gap-3 py-2.5">
-                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: TYPE_COLORS[d.type] }} />
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: TYPE_COLORS[d.type] ?? "#9ca3af" }} />
                   <span className="flex-1 text-sm text-gray-800 font-medium">{d.type}</span>
                   <span className="text-sm font-semibold text-gray-900 tabular-nums">{val}</span>
                   <span className="w-12 text-right text-sm text-gray-500 tabular-nums">{pct.toFixed(1)}%</span>
@@ -198,23 +197,11 @@ function PlacementTypeDonut({
           </div>
         </div>
       )}
-
-      {/* Bottom color legend */}
-      {!loading && grouped.length > 0 && (
-        <div className="px-6 pb-4 flex flex-wrap gap-x-4 gap-y-1.5 border-t border-gray-50 pt-3">
-          {grouped.map(d => (
-            <span key={d.type} className="flex items-center gap-1.5 text-xs text-gray-600">
-              <span className="w-2 h-2 rounded-full" style={{ background: TYPE_COLORS[d.type] }} />
-              {d.type}
-            </span>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
 
-// ─── Placement / Target URL ranked list ───────────────────────────────────────
+// ─── Placement Ranked List ────────────────────────────────────────────────────
 
 type RankMetric = "spend" | "impressions" | "clicks" | "conversions";
 const RANK_METRICS: { id: RankMetric; label: string }[] = [
@@ -226,40 +213,20 @@ const RANK_METRICS: { id: RankMetric; label: string }[] = [
 const TOP_N_OPTIONS = [5, 10, 20] as const;
 
 function PlacementRankList({
-  rows, loading, currency,
-}: { rows: BreakdownRow[]; loading: boolean; currency: string }) {
-  const [metric, setMetric] = usePersistentValue<RankMetric>("placement-rank-metric", "spend");
-  const [topNStr, setTopNStr] = usePersistentValue<"5" | "10" | "20">("placement-rank-topn", "5");
+  rows, loading, currency, title, labelFmt, ns,
+}: {
+  rows: BreakdownRow[]; loading: boolean; currency: string;
+  title: string; labelFmt?: (s: string) => string; ns: string;
+}) {
+  const [metric, setMetric] = usePersistentValue<RankMetric>(`${ns}-rank-metric`, "spend");
+  const [topNStr, setTopNStr] = usePersistentValue<"5" | "10" | "20">(`${ns}-rank-topn`, "5");
   const topN = Number(topNStr) as 5 | 10 | 20;
   const setTopN = (n: 5 | 10 | 20) => setTopNStr(String(n) as "5" | "10" | "20");
   const [showTopN, setShowTopN] = useState(false);
   const dropRef = useRef<HTMLDivElement>(null);
   const cur = (n: number) => formatMoney(n, currency, 2);
 
-  // Expand each publisher into its sub-placements so the ranked list has meaningful entries
-  type FlatRow = { label: string; spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number };
-  const expanded = useMemo<FlatRow[]>(() => {
-    const out: FlatRow[] = [];
-    rows.forEach(r => {
-      const positions = PUBLISHER_POSITIONS[r.label] ?? PUBLISHER_POSITIONS["facebook"];
-      positions.forEach(p => {
-        out.push({
-          label:           POSITION_NAMES[p.pos] ?? p.pos,
-          spend:           r.spend * p.share,
-          impressions:     r.impressions * p.share,
-          clicks:          r.clicks * p.share,
-          conversions:     r.conversions * p.share,
-          conversionValue: r.conversionValue * p.share,
-        });
-      });
-    });
-    return out;
-  }, [rows]);
-
-  const sorted = useMemo(
-    () => [...expanded].sort((a, b) => b[metric] - a[metric]),
-    [expanded, metric]
-  );
+  const sorted = useMemo(() => [...rows].sort((a, b) => b[metric] - a[metric]), [rows, metric]);
   const total   = sorted.reduce((s, r) => s + r[metric], 0);
   const topRows = sorted.slice(0, topN);
   const topSum  = topRows.reduce((s, r) => s + r[metric], 0);
@@ -270,10 +237,9 @@ function PlacementRankList({
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
       <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
         <h3 className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
-          <span className="text-gray-400">⇄</span> Placement / Target URL
+          <span className="text-gray-400">⇄</span> {title}
         </h3>
         <div className="flex items-center gap-2">
-          {/* Top N dropdown */}
           <div className="relative" ref={dropRef}>
             <button
               onClick={() => setShowTopN(v => !v)}
@@ -295,7 +261,6 @@ function PlacementRankList({
               </div>
             )}
           </div>
-          {/* Metric picker */}
           {RANK_METRICS.map(m => (
             <button
               key={m.id}
@@ -314,7 +279,6 @@ function PlacementRankList({
         <div className="h-40 flex items-center justify-center text-sm text-gray-400">No data.</div>
       ) : (
         <div className="px-5 py-4 space-y-1">
-          {/* Summary line */}
           <p className="text-xs text-gray-600 mb-4">
             Top {topN} ={" "}
             <span className="text-blue-600 font-bold">{topPct.toFixed(0)}%</span> of {RANK_METRICS.find(m => m.id === metric)?.label.toLowerCase()}{" "}
@@ -322,13 +286,11 @@ function PlacementRankList({
               ? `(${cur(topSum)} of ${cur(total)})`
               : `(${fmtK(topSum)} of ${fmtK(total)})`}
           </p>
-
-          {/* Ranked rows */}
           {topRows.map((r, i) => {
             const barPct = maxVal > 0 ? (r[metric] / maxVal) * 100 : 0;
             const val    = metric === "spend" ? cur(r[metric]) : fmtK(r[metric]);
             const pct    = total > 0 ? (r[metric] / total) * 100 : 0;
-            const name   = placementName(r.label);
+            const name   = labelFmt ? labelFmt(r.label) : r.label;
             return (
               <div key={r.label} className="py-2">
                 <div className="flex items-center gap-3 mb-1.5">
@@ -354,59 +316,48 @@ function PlacementRankList({
   );
 }
 
-// ─── Placement Detailing Table ────────────────────────────────────────────────
+// ─── Placement Detail Table ───────────────────────────────────────────────────
 
-const DETAIL_DEFAULT_IDS = ["impressions", "clicks", "ctr", "spend", "conversions"];
+const DETAIL_DEFAULT_IDS = ["impressions", "clicks", "ctr", "spend", "cpm"];
 const DETAIL_ALL_DEFS: ColDef[] = ALL_STANDARD_KPIS.filter(k =>
   ["impressions", "clicks", "ctr", "spend", "orders", "roas", "cpa", "cpm", "cpc", "cvr"].includes(k.id)
 );
 
-function PlacementDetailTable({
-  pubRows, loading, currency,
-}: { pubRows: BreakdownRow[]; loading: boolean; currency: string }) {
-  const [selectedPub, setSelectedPub] = useState<string>("");
-  const [showPub, setShowPub]         = useState(false);
-  const pubRef = useRef<HTMLDivElement>(null);
-  const cur = (n: number) => formatMoney(n, currency, 2);
+interface DetailRow {
+  name: string;
+  spend: number; impressions: number; clicks: number;
+  conversions: number; conversionValue: number;
+  ctr: number; cpm: number; cpc: number; roas: number; cpa: number;
+}
 
-  const { cols, toggleCol, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, swapCol, resetCols } = useColPicker(DETAIL_DEFAULT_IDS, "placement-detail");
+function PlacementDetailTable({
+  rows, loading, currency, rowLabel, ns, convAvailable,
+}: {
+  rows: BreakdownRow[]; loading: boolean; currency: string;
+  rowLabel?: (s: string) => string; ns: string; convAvailable?: boolean;
+}) {
+  const cur = (n: number) => formatMoney(n, currency, 2);
+  const { cols, toggleCol, pickerOpen, setPickerOpen, pickerRef, swapIdx, setSwapIdx, swapCol, resetCols } =
+    useColPicker(DETAIL_DEFAULT_IDS, `placement-detail-${ns}`);
   const activeColDefs: ColDef[] = cols.map(id => DETAIL_ALL_DEFS.find(d => d.id === id) ?? { id, label: id, group: "Core" });
 
-  const sortedPubs = useMemo(
-    () => [...pubRows].sort((a, b) => b.spend - a.spend),
-    [pubRows]
-  );
-  const pubLabel = selectedPub || sortedPubs[0]?.label || "";
+  const rawDetailRows = useMemo<DetailRow[]>(() => rows.map(r => ({
+    name: rowLabel ? rowLabel(r.label) : r.label,
+    spend: r.spend, impressions: r.impressions, clicks: r.clicks,
+    conversions: r.conversions, conversionValue: r.conversionValue,
+    ctr:  r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0,
+    cpm:  r.impressions > 0 ? (r.spend / r.impressions) * 1000 : 0,
+    cpc:  r.clicks > 0      ? r.spend / r.clicks : 0,
+    roas: r.spend > 0       ? r.conversionValue / r.spend : 0,
+    cpa:  r.conversions > 0 ? r.spend / r.conversions : 0,
+  })), [rows, rowLabel]);
 
-  const rawDetailRows = useMemo(() => {
-    const pub = pubRows.find(r => r.label === pubLabel);
-    if (!pub) return [];
-    const positions = PUBLISHER_POSITIONS[pub.label] ?? PUBLISHER_POSITIONS["facebook"];
-    return positions.map(p => {
-      const spend       = pub.spend * p.share;
-      const impressions = pub.impressions * p.share;
-      const clicks      = pub.clicks * p.share;
-      const conversions = Math.round(pub.conversions * p.share);
-      const convValue   = pub.conversionValue * p.share;
-      const name = POSITION_NAMES[p.pos] ?? p.pos;
-      return {
-        name, type: p.type,
-        spend, impressions, clicks, conversions, convValue,
-        ctr:  impressions > 0 ? (clicks  / impressions) * 100 : 0,
-        cpm:  impressions > 0 ? (spend   / impressions) * 1000 : 0,
-        cpc:  clicks > 0      ? spend / clicks : 0,
-        roas: spend > 0       ? convValue / spend : 0,
-        cpa:  conversions > 0 ? spend / conversions : 0,
-      };
-    });
-  }, [pubLabel, pubRows]);
   const { sorted: detailRows, sort: placSort, toggle: placToggle } = useSort(rawDetailRows, "spend", "desc");
+  const NA = "—";
+  const CONV_COLS = new Set(["orders", "conversions", "roas", "cpa", "cvr"]);
 
-  const pubTitle = pubLabel
-    ? pubLabel.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
-    : "Publisher";
-
-  function cellVal(row: typeof detailRows[number], id: string): React.ReactNode {
+  function cellVal(row: DetailRow, id: string): React.ReactNode {
+    if (CONV_COLS.has(id) && !convAvailable) return NA;
     switch (id) {
       case "spend":       return cur(row.spend);
       case "impressions": return fmtK(row.impressions);
@@ -416,44 +367,16 @@ function PlacementDetailTable({
       case "cpm":         return cur(row.cpm);
       case "cpc":         return cur(row.cpc);
       case "roas":        return `${row.roas.toFixed(2)}×`;
-      case "cpa":         return row.cpa > 0 ? cur(row.cpa) : "—";
-      case "cvr":         return row.clicks > 0 ? `${((row.conversions / row.clicks) * 100).toFixed(2)}%` : "—";
-      default:            return "—";
+      case "cpa":         return row.cpa > 0 ? cur(row.cpa) : NA;
+      case "cvr":         return row.clicks > 0 ? `${((row.conversions / row.clicks) * 100).toFixed(2)}%` : NA;
+      default:            return NA;
     }
   }
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
       <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-gray-400 text-sm">⊞</span>
-          {loading ? (
-            <span className="text-sm font-bold text-gray-900">Loading…</span>
-          ) : (
-            <div className="relative" ref={pubRef}>
-              <button
-                onClick={() => setShowPub(v => !v)}
-                className="flex items-center gap-1 text-sm font-bold text-gray-900 hover:text-blue-600 transition"
-              >
-                {pubTitle} <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
-              </button>
-              {showPub && (
-                <div className="absolute left-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20 min-w-[180px] overflow-hidden">
-                  {sortedPubs.map(p => (
-                    <button
-                      key={p.label}
-                      onClick={() => { setSelectedPub(p.label); setShowPub(false); }}
-                      className={`w-full px-4 py-2 text-xs text-left hover:bg-gray-50 ${p.label === pubLabel ? "font-bold text-blue-600" : "text-gray-700"}`}
-                    >
-                      {p.label.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          <span className="text-gray-400 text-xs">· placement detailing</span>
-        </div>
+        <span className="text-sm font-bold text-gray-900">Placement Detail</span>
         <ColumnPickerButton
           cols={cols}
           allDefs={DETAIL_ALL_DEFS}
@@ -469,9 +392,9 @@ function PlacementDetailTable({
       {loading ? (
         <div className="h-40 flex items-center justify-center text-sm text-gray-400">Loading…</div>
       ) : detailRows.length === 0 ? (
-        <div className="h-40 flex items-center justify-center text-sm text-gray-400">No data for selected publisher.</div>
+        <div className="h-40 flex items-center justify-center text-sm text-gray-400">No data.</div>
       ) : (
-        <div>
+        <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-sm">
               <tr>
@@ -494,10 +417,7 @@ function PlacementDetailTable({
             <tbody>
               {detailRows.map(row => (
                 <tr key={row.name} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <div className="font-semibold text-gray-900 text-sm">{row.name}</div>
-                    <div className="text-[11px] text-gray-400 mt-0.5">{row.type}</div>
-                  </td>
+                  <td className="px-4 py-3 font-semibold text-gray-900">{row.name}</td>
                   {activeColDefs.map(c => (
                     <td key={c.id} className="px-4 py-3 text-right text-gray-800 tabular-nums">
                       {cellVal(row, c.id)}
@@ -516,24 +436,67 @@ function PlacementDetailTable({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
 }
 
 export default function PlacementReport({ platform, dateRange, customStart, customEnd }: Props) {
-  const enabled = platform !== "google";
+  const showMeta = platform !== "dv360";
+  const showDv   = platform === "dv360" || platform === "both";
 
-  const pub = useMetaBreakdown("publisher_platform", dateRange, customStart, customEnd, enabled);
-  const { campaigns, startDate, endDate } = useCampaigns(
-    platform === "google" ? "meta" : platform,
+  // ── Meta breakdowns ─────────────────────────────────────────────────────────
+  const { rows: metaPositions, loading: metaPosL, error: metaPosErr } =
+    useMetaBreakdown("platform_position", dateRange, customStart, customEnd, showMeta);
+  const { rows: metaPub, loading: metaPubL, error: metaPubErr } =
+    useMetaBreakdown("publisher_platform", dateRange, customStart, customEnd, showMeta);
+  const metaErr = metaPosErr || metaPubErr;
+
+  // Aggregate platform_position rows by type (deterministic, no synthetic shares)
+  const metaTypeRows = useMemo<TypeRow[]>(() => {
+    const map = new Map<string, TypeRow>();
+    for (const r of metaPositions) {
+      const type = classifyPosition(r.label);
+      const cur = map.get(type) ?? { type, spend: 0, impressions: 0, clicks: 0, conversions: 0 };
+      cur.spend       += r.spend;
+      cur.impressions += r.impressions;
+      cur.clicks      += r.clicks;
+      cur.conversions += r.conversions;
+      map.set(type, cur);
+    }
+    return Array.from(map.values());
+  }, [metaPositions]);
+
+  // ── DV360 breakdowns ─────────────────────────────────────────────────────────
+  const { rows: dvEnv, loading: dvEnvL, pending: dvEnvPending, unsupported: dvEnvUnsupported } =
+    useDV360Breakdown("environment", dateRange, customStart, customEnd, showDv);
+  const { rows: dvExchange, loading: dvExchangeL, pending: dvExchangePending, error: dvExchangeErr } =
+    useDV360Breakdown("exchange",    dateRange, customStart, customEnd, showDv);
+
+  const dvEnvTypeRows = useMemo<TypeRow[]>(() =>
+    dvEnv.map(r => ({
+      type: r.label || "Unknown",
+      spend: r.spend, impressions: r.impressions,
+      clicks: r.clicks, conversions: r.conversions,
+    })),
+  [dvEnv]);
+
+  const { startDate, endDate, metaCurrency, dv360Currency: dvCurrency } = useCampaigns(
+    platform === "dv360" ? "dv360" : platform,
     dateRange, customStart, customEnd
   );
-  const currency = detectCurrency(campaigns);
+
+  const SectionHeader = ({ label, sub }: { label: string; sub: string }) => (
+    <div className="flex items-center gap-3 pt-2 pb-1 border-b border-gray-200">
+      <h2 className="text-xl font-bold text-gray-900">{label}</h2>
+      <span className="text-xs text-gray-400 font-medium">{sub}</span>
+    </div>
+  );
 
   return (
     <div className="space-y-6 section-enter">
+      {/* Page header */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
           <MapIcon className="w-8 h-8 text-blue-600" />
@@ -542,60 +505,123 @@ export default function PlacementReport({ platform, dateRange, customStart, cust
             <p className="text-gray-600 mt-1">Performance by placement type, position and publisher.</p>
           </div>
         </div>
-        {platform !== "google" && (
+        {showMeta && (
           <AIExecutiveSummary
             tabName="Placement"
             context={{
               window: `${startDate} → ${endDate}`,
-              topPublisher: pub.rows.slice().sort((a, b) => b.spend - a.spend)[0]?.label,
+              ...(showMeta ? { metaPositions: metaPositions.map(r => ({ label: r.label, spend: Math.round(r.spend), impressions: r.impressions })), metaPublishers: metaPub.length } : {}),
+              ...(showDv ? {
+                dvExchanges: dvExchange.map(r => ({ label: r.label, spend: Math.round(r.spend), impressions: r.impressions })),
+                dvEnvironments: dvEnv.map(r => ({ label: r.label, impressions: r.impressions })),
+              } : {}),
             }}
-            platform="meta"
+            platform={platform}
             inline
           />
         )}
       </div>
 
-      {platform === "google" ? (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800">
-          Placement analysis uses Meta placement breakdowns — switch Platform to Meta or Both to see data.
-        </div>
-      ) : (
-        <>
-          <PlacementTypeDonut rows={pub.rows} loading={pub.loading} currency={currency} />
-          <PlacementRankList  rows={pub.rows} loading={pub.loading} currency={currency} />
-          <PlacementDetailTable
-            pubRows={pub.rows}
-            loading={pub.loading}
-            currency={currency}
+      {/* ── Meta section ── */}
+      {showMeta && (
+        <div className="space-y-5">
+          {platform === "both" && <SectionHeader label="Meta" sub="Meta Ads" />}
+          {metaErr && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+              <span className="font-semibold">Meta placement data unavailable:</span> {metaErr}
+              {/rate limit|request limit|reduce the amount|too many|#17|#80/i.test(metaErr) && (
+                <span className="block mt-1 text-amber-700">Meta is rate-limiting this ad account. Wait a minute and reload — the placement breakdowns will populate once the limit resets.</span>
+              )}
+            </div>
+          )}
+          <PlacementTypeChart
+            typeRows={metaTypeRows}
+            loading={metaPosL}
+            currency={metaCurrency}
+            ns="meta"
           />
-        </>
+          <PlacementRankList
+            rows={metaPositions}
+            loading={metaPosL}
+            currency={metaCurrency}
+            title="Placement / Position"
+            labelFmt={friendlyPosition}
+            ns="meta"
+          />
+          <PlacementDetailTable
+            rows={metaPub}
+            loading={metaPubL}
+            currency={metaCurrency}
+            rowLabel={(s) => s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
+            ns="meta"
+            convAvailable
+          />
+        </div>
+      )}
+
+      {/* ── DV360 section ── */}
+      {showDv && (
+        <div className="space-y-5">
+          {platform === "both" && <SectionHeader label="DV360" sub="Display & Video 360" />}
+
+          {dvExchangeErr ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+              <span className="font-semibold">DV360 placement data unavailable:</span> {dvExchangeErr}
+            </div>
+          ) : (
+            <>
+              {dvEnvUnsupported ? (
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600 flex items-start gap-2">
+                  <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-gray-400" />
+                  <span>Placement type breakdown (Web / App / CTV) is not available for this advertiser via Bid Manager API — the environment filter isn&apos;t supported for this account&apos;s inventory type.</span>
+                </div>
+              ) : (
+                <PlacementTypeChart
+                  typeRows={dvEnvTypeRows}
+                  loading={dvEnvL || dvEnvPending}
+                  currency={dvCurrency}
+                  ns="dv360"
+                />
+              )}
+              <PlacementRankList
+                rows={dvExchange}
+                loading={dvExchangeL || dvExchangePending}
+                currency={dvCurrency}
+                title="Exchange / Publisher"
+                ns="dv360"
+              />
+              <PlacementDetailTable
+                rows={dvExchange}
+                loading={dvExchangeL || dvExchangePending}
+                currency={dvCurrency}
+                ns="dv360"
+                convAvailable={false}
+              />
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-500 flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>Site-level URL breakdown is not available via Bid Manager API. Exchange-level data shown above is the most granular publisher breakdown DV360 exposes.</span>
+              </div>
+            </>
+          )}
+        </div>
       )}
 
       <TabSummaryFooter
         tabName="Placement Report"
-        lines={[
-          `${pub.rows.length} publisher${pub.rows.length !== 1 ? "s" : ""} with placement data in this window.`,
-          `Top publisher by spend: ${pub.rows.slice().sort((a, b) => b.spend - a.spend)[0]?.label?.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()) ?? "—"}.`,
-          `Date window: ${startDate} → ${endDate}.`,
-        ]}
+        lines={(() => {
+          const lines: string[] = [];
+          if (showMeta) lines.push(`Meta — ${metaPositions.length} placement positions · ${metaPub.length} publishers.`);
+          if (showDv && !dvExchangeErr) lines.push(`DV360 — ${dvEnv.length} environment types · ${dvExchange.length} exchanges.`);
+          lines.push(`Date window: ${startDate} → ${endDate}.`);
+          return lines;
+        })()}
         context={{
-          publisherCount: pub.rows.length,
-          startDate,
-          endDate,
-          placements: pub.rows.map(r => ({
-            label: r.label,
-            spend: r.spend,
-            impressions: r.impressions,
-            clicks: r.clicks,
-            conversions: r.conversions,
-            conversionValue: r.conversionValue,
-            ctr: r.impressions > 0 ? +((r.clicks / r.impressions) * 100).toFixed(4) : 0,
-            cpm: r.impressions > 0 ? +((r.spend / r.impressions) * 1000).toFixed(4) : 0,
-            cpc: r.clicks > 0 ? +(r.spend / r.clicks).toFixed(4) : 0,
-            roas: r.spend > 0 ? +(r.conversionValue / r.spend).toFixed(4) : 0,
-          })),
+          startDate, endDate,
+          metaPositions: metaPositions.map(r => ({ label: r.label, spend: r.spend, impressions: r.impressions })),
+          dvExchanges:   dvExchange.map(r => ({ label: r.label, spend: r.spend, impressions: r.impressions })),
+          dvEnvironments: dvEnv.map(r => ({ label: r.label, impressions: r.impressions })),
         }}
-        platform="meta"
+        platform={showMeta ? "meta" : "dv360"}
         dateRange={String(dateRange)}
       />
     </div>

@@ -21,7 +21,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Target, MapPin, Users as UsersIcon, Smartphone, TrendingUp, TrendingDown, Sparkles, Info } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import type { AuditProps } from "./types";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { currencyFor, formatMoney } from "@/lib/currency";
 import SortTh from "@/components/shared/SortTh";
 import { useSort } from "@/hooks/useSort";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
@@ -71,7 +71,7 @@ export default function TargetingInsightsAudit({ campaigns: _campaigns, dateRang
   });
   const [error, setError] = useState<string | null>(null);
 
-  const currency = detectCurrency(_campaigns);
+  const currency = currencyFor(_campaigns, "meta");
 
   // Derive date range for the API call
   const { startDate, endDate } = useMemo(() => {

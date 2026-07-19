@@ -7,12 +7,13 @@ import type { DateRange } from "@/components/shared/DateRangePicker";
 import SourceBadge from "@/components/shared/SourceBadge";
 import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
 import { CheckCircle2, AlertCircle, Activity, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import LoadingState from "@/components/shared/LoadingState";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import SortTh from "@/components/shared/SortTh";
 import { useSort } from "@/hooks/useSort";
 
 interface OverviewTabProps {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -33,15 +34,10 @@ const priorityColor = (p: string) =>
   "bg-blue-100 text-blue-700 border-blue-300";
 
 export default function OverviewTab({ platform, dateRange, customStart, customEnd, setActiveTab }: OverviewTabProps) {
-  const { meta, google, loading, source, refresh } = useAudit(platform, dateRange, customStart, customEnd);
+  const { meta, loading, source, refresh } = useAudit(platform, dateRange, customStart, customEnd);
 
   if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center py-24">
-        <RefreshCw className="w-10 h-10 text-blue-600 animate-spin mb-3" />
-        <p className="text-gray-600">Auditing your tracking setup...</p>
-      </div>
-    );
+    return <LoadingState message="Loading audit data…" />;
   }
 
   // Aggregate stats
@@ -55,16 +51,7 @@ export default function OverviewTab({ platform, dateRange, customStart, customEn
     : 0;
   const metaHealth = getHealthScore(avgEmq, avgDedup);
 
-  const googleAudit = google?.audit;
-  const googleHealth = googleAudit
-    ? Math.round(
-        (googleAudit.ads.enhancedConversions.overallMatchRate / 100) * 50 +
-          (googleAudit.ga4.ecommerceConfigured ? 25 : 0) +
-          (googleAudit.ads.enhancedConversions.enabled ? 25 : 0)
-      )
-    : 0;
-
-  const allRecs = [...(meta?.recommendations || []), ...(google?.recommendations || [])];
+  const allRecs = [...(meta?.recommendations || [])];
   const rawTopRecs = allRecs.slice(0, 5);
   const { sorted: topRecs, sort: recSort, toggle: recToggle } = useSort(rawTopRecs, "impact", "desc");
   const criticalCount = allRecs.filter((r) => r.priority === "Critical").length;
@@ -105,9 +92,6 @@ export default function OverviewTab({ platform, dateRange, customStart, customEn
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {meta && (
           <HealthScoreCard title="Meta Health" score={metaHealth} trend={0} lastUpdated={new Date()} />
-        )}
-        {google && (
-          <HealthScoreCard title="Google Health" score={googleHealth} trend={0} lastUpdated={new Date()} />
         )}
         <HealthScoreCard title="Total Recommendations" score={Math.min(100, allRecs.length * 10)} trend={0} lastUpdated={new Date()} />
         <HealthScoreCard title="Potential Lift" score={Math.min(100, parseFloat(totalLift) * 2)} trend={0} lastUpdated={new Date()} />
@@ -150,7 +134,6 @@ export default function OverviewTab({ platform, dateRange, customStart, customEn
       {/* Risk Analysis */}
       <RiskAnalysisPanel
         metaPixels={metaPixels}
-        google={googleAudit || null}
         recommendations={allRecs}
       />
 
@@ -184,7 +167,7 @@ export default function OverviewTab({ platform, dateRange, customStart, customEn
                             metric={r.issue}
                             value={r.impact}
                             status={r.priority === "Critical" ? "critical" : r.priority === "High" ? "critical" : "warn"}
-                            platform={r.platform?.toLowerCase() as "meta" | "google"}
+                            platform={r.platform?.toLowerCase() as "meta" | "dv360"}
                             auditContext={{ module: "Overview", siblingMetrics: { priority: r.priority, confidence: r.confidence, impact: r.impact } }}
                             compact
                           />
@@ -242,9 +225,9 @@ export default function OverviewTab({ platform, dateRange, customStart, customEn
           <div className="text-sm text-gray-600 mb-1">Events Tracked</div>
           <div className="text-xl font-bold text-gray-900 flex items-center gap-2">
             <Activity className="w-5 h-5 text-blue-600" />
-            {(totalMetaEvents + (googleAudit?.ga4.totalEvents || 0)).toLocaleString()}
+            {totalMetaEvents.toLocaleString()}
           </div>
-          <p className="text-xs text-gray-500 mt-2">In current date range — real pixel/GA4 count</p>
+          <p className="text-xs text-gray-500 mt-2">In current date range — real pixel event count</p>
         </div>
       </div>
 
@@ -252,10 +235,10 @@ export default function OverviewTab({ platform, dateRange, customStart, customEn
         tabName="Overview"
         lines={[
           `${allRecs.length} recommendation${allRecs.length !== 1 ? "s" : ""} found — ${criticalCount} critical issue${criticalCount !== 1 ? "s" : ""} requiring immediate attention.`,
-          `Meta tracking health score: ${metaHealth}${googleHealth > 0 ? ` · Google: ${googleHealth}` : ""}.`,
+          `Meta tracking health score: ${metaHealth}/100.`,
           `Potential lift from addressing all recommendations: ${totalLift}%.`,
         ]}
-        context={{ metaHealth, googleHealth, criticalCount, totalRecs: allRecs.length, totalLift }}
+        context={{ metaHealth, criticalCount, totalRecs: allRecs.length, totalLift }}
         platform={platform === "both" ? "meta" : platform}
         dateRange={String(dateRange)}
       />

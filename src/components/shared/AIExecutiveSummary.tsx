@@ -17,7 +17,7 @@ interface Props {
   tabName: string;
   /** Serialisable snapshot of the tab's current data — passed verbatim to Claude. */
   context: Record<string, unknown>;
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   dateRange?: string;
   /** Render as a compact inline button next to the tab title. Panel drops below on click. */
   inline?: boolean;
@@ -33,12 +33,12 @@ export default function AIExecutiveSummary({ tabName, context, platform, dateRan
   const [error, setError] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const { metaAccessToken, googleAccessToken, addAiCredits } = useAuthStore();
+  const { metaAccessToken, dv360RefreshToken, addAiCredits } = useAuthStore();
   const isDemo = useMemo(
     () =>
       (!metaAccessToken || isDemoCredential(metaAccessToken)) &&
-      (!googleAccessToken || isDemoCredential(googleAccessToken)),
-    [metaAccessToken, googleAccessToken]
+      (!dv360RefreshToken || isDemoCredential(dv360RefreshToken)),
+    [metaAccessToken, dv360RefreshToken]
   );
 
   const cacheKey = useMemo(

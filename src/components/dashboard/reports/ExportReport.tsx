@@ -11,18 +11,21 @@
  * print-optimised (A4 layout, clean tables, page-break rules).
  */
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import AnimatedNumber from "@/components/shared/AnimatedNumber";
-import { FileText, Download, Printer, CheckCircle2, BarChart2, Users, Map as MapIcon2, GitBranch } from "lucide-react";
+import { FileText, Download, Printer, CheckCircle2, BarChart2, Users, Map as MapIcon2, GitBranch, Sparkles, Eye, ShoppingCart, Copy, Check } from "lucide-react";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useMetaBreakdown } from "@/hooks/useMetaBreakdown";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { currencyFor, formatMoney } from "@/lib/currency";
 import { toCSV, downloadCSV } from "@/lib/csv-export";
+import { useAuthStore } from "@/store/auth";
+import { toDisplayCredits } from "@/lib/ai-cost";
 import type { DateRange } from "@/components/shared/DateRangePicker";
+import type { ReportRequest } from "@/pages/api/ai/generate-report";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -46,34 +49,106 @@ function buildPdfHtml(opts: {
   genderRows: any[];
   windowRows: { window: string; campaigns: number; spend: number; conversions: number; roas: string }[];
   sections: Set<string>;
+  pdfType?: "full" | "awareness" | "sales" | "executive";
 }) {
-  const { startDate, endDate, currency, campaigns, pubRows, ageRows, genderRows, windowRows, sections } = opts;
+  const { startDate, endDate, currency, campaigns, pubRows, ageRows, genderRows, windowRows, sections, pdfType = "full" } = opts;
   const cur = (n: number) => formatMoney(n, currency, 0);
   const cur2 = (n: number) => formatMoney(n, currency, 2);
 
   const totalSpend   = campaigns.reduce((s, c) => s + (c.spend || 0), 0);
   const totalImpr    = campaigns.reduce((s, c) => s + (c.impressions || 0), 0);
   const totalClicks  = campaigns.reduce((s, c) => s + (c.clicks || 0), 0);
+  const totalReach   = campaigns.reduce((s, c) => s + (c.reach || 0), 0);
+  const totalViews   = campaigns.reduce((s, c) => s + (c.videoViews || 0), 0);
   const totalConv    = campaigns.reduce((s, c) => s + (c.conversions || 0), 0);
   const totalRevenue = campaigns.reduce((s, c) => s + (c.conversionValue || 0), 0);
   const totalRoas    = totalSpend > 0 ? (totalRevenue / totalSpend).toFixed(2) : "—";
   const totalCpa     = totalConv  > 0 ? cur(totalSpend / totalConv) : "—";
   const totalCtr     = totalImpr  > 0 ? ((totalClicks / totalImpr) * 100).toFixed(2) + "%" : "—";
   const totalCpm     = totalImpr  > 0 ? cur2(totalSpend / totalImpr * 1000) : "—";
+  const totalFreq    = totalReach > 0 ? (totalImpr / totalReach).toFixed(2) : "—";
+  const totalVtr     = totalImpr  > 0 ? ((totalViews / totalImpr) * 100).toFixed(2) + "%" : "—";
 
-  const kpiCards = [
-    { label: "Total Spend",       value: cur(totalSpend) },
-    { label: "Impressions",       value: totalImpr >= 1e6 ? `${(totalImpr/1e6).toFixed(2)}M` : totalImpr.toLocaleString() },
-    { label: "Clicks",            value: totalClicks.toLocaleString() },
-    { label: "CTR",               value: totalCtr },
-    { label: "Conversions",       value: Math.round(totalConv).toLocaleString() },
-    { label: "Conv. Value",       value: cur(totalRevenue) },
-    { label: "ROAS",              value: totalRoas !== "—" ? `${totalRoas}×` : "—" },
-    { label: "CPA",               value: totalCpa },
-    { label: "CPM",               value: totalCpm },
+  const PDF_TYPE_LABELS: Record<string, string> = {
+    full: "Full Report",
+    awareness: "Brand Awareness Report",
+    sales: "Sales & Performance Report",
+    executive: "Executive Summary",
+  };
+
+  // KPI cards vary by report type
+  const kpiCards = pdfType === "awareness" ? [
+    { label: "Total Spend",   value: cur(totalSpend) },
+    { label: "Reach",         value: totalReach >= 1e6 ? `${(totalReach/1e6).toFixed(2)}M` : totalReach.toLocaleString() },
+    { label: "Impressions",   value: totalImpr >= 1e6 ? `${(totalImpr/1e6).toFixed(2)}M` : totalImpr.toLocaleString() },
+    { label: "Frequency",     value: totalFreq },
+    { label: "CPM",           value: totalCpm },
+    { label: "Clicks",        value: totalClicks.toLocaleString() },
+    { label: "CTR",           value: totalCtr },
+    { label: "Video Views",   value: totalViews >= 1e6 ? `${(totalViews/1e6).toFixed(2)}M` : totalViews.toLocaleString() },
+    { label: "VTR",           value: totalVtr },
+  ] : pdfType === "sales" ? [
+    { label: "Total Spend",   value: cur(totalSpend) },
+    { label: "Revenue",       value: cur(totalRevenue) },
+    { label: "ROAS",          value: totalRoas !== "—" ? `${totalRoas}×` : "—" },
+    { label: "Conversions",   value: Math.round(totalConv).toLocaleString() },
+    { label: "CPA",           value: totalCpa },
+    { label: "Clicks",        value: totalClicks.toLocaleString() },
+    { label: "CTR",           value: totalCtr },
+    { label: "Impressions",   value: totalImpr >= 1e6 ? `${(totalImpr/1e6).toFixed(2)}M` : totalImpr.toLocaleString() },
+    { label: "CPM",           value: totalCpm },
+  ] : [
+    // full + executive: all metrics
+    { label: "Total Spend",   value: cur(totalSpend) },
+    { label: "Impressions",   value: totalImpr >= 1e6 ? `${(totalImpr/1e6).toFixed(2)}M` : totalImpr.toLocaleString() },
+    { label: "Clicks",        value: totalClicks.toLocaleString() },
+    { label: "CTR",           value: totalCtr },
+    { label: "Conversions",   value: Math.round(totalConv).toLocaleString() },
+    { label: "Conv. Value",   value: cur(totalRevenue) },
+    { label: "ROAS",          value: totalRoas !== "—" ? `${totalRoas}×` : "—" },
+    { label: "CPA",           value: totalCpa },
+    { label: "CPM",           value: totalCpm },
   ];
 
-  const sortedCampaigns = [...campaigns].sort((a, b) => (b.spend || 0) - (a.spend || 0));
+  // Campaign table columns vary by type
+  type ColDef = { h: string; v: (c: any) => string };
+  const campaignCols: ColDef[] = pdfType === "awareness" ? [
+    { h: "Campaign",    v: c => c.name },
+    { h: "Spend",       v: c => cur(c.spend || 0) },
+    { h: "Reach",       v: c => (c.reach || 0) >= 1e6 ? `${((c.reach||0)/1e6).toFixed(2)}M` : Math.round(c.reach||0).toLocaleString() },
+    { h: "Frequency",   v: c => (c.reach||0) > 0 ? ((c.impressions||0)/(c.reach||1)).toFixed(2) : "—" },
+    { h: "Impressions", v: c => (c.impressions||0) >= 1e6 ? `${((c.impressions||0)/1e6).toFixed(2)}M` : Math.round(c.impressions||0).toLocaleString() },
+    { h: "CPM",         v: c => (c.impressions||0) > 0 ? cur2((c.spend||0)/(c.impressions||1)*1000) : "—" },
+    { h: "CTR",         v: c => (c.impressions||0) > 0 ? (((c.clicks||0)/(c.impressions||1))*100).toFixed(2)+"%" : "—" },
+    { h: "Views",       v: c => Math.round(c.videoViews||0).toLocaleString() },
+    { h: "VTR",         v: c => (c.impressions||0) > 0 ? (((c.videoViews||0)/(c.impressions||1))*100).toFixed(2)+"%" : "—" },
+  ] : pdfType === "sales" ? [
+    { h: "Campaign",    v: c => c.name },
+    { h: "Spend",       v: c => cur(c.spend || 0) },
+    { h: "Revenue",     v: c => cur(c.conversionValue || 0) },
+    { h: "ROAS",        v: c => (c.spend||0) > 0 && (c.conversionValue||0) > 0 ? ((c.conversionValue||0)/(c.spend||1)).toFixed(2)+"×" : "—" },
+    { h: "Conv.",       v: c => Math.round(c.conversions||0).toLocaleString() },
+    { h: "CPA",         v: c => (c.conversions||0) > 0 ? cur((c.spend||0)/(c.conversions||1)) : "—" },
+    { h: "Clicks",      v: c => Math.round(c.clicks||0).toLocaleString() },
+    { h: "CTR",         v: c => (c.impressions||0) > 0 ? (((c.clicks||0)/(c.impressions||1))*100).toFixed(2)+"%" : "—" },
+  ] : [
+    // full + executive
+    { h: "Campaign",    v: c => c.name },
+    { h: "Spend",       v: c => cur(c.spend || 0) },
+    { h: "Impressions", v: c => Math.round(c.impressions||0).toLocaleString() },
+    { h: "Clicks",      v: c => Math.round(c.clicks||0).toLocaleString() },
+    { h: "CTR",         v: c => (c.impressions||0) > 0 ? (((c.clicks||0)/(c.impressions||1))*100).toFixed(2)+"%" : "—" },
+    { h: "Conv.",       v: c => Math.round(c.conversions||0).toLocaleString() },
+    { h: "ROAS",        v: c => (c.spend||0) > 0 && (c.conversionValue||0) > 0 ? ((c.conversionValue||0)/(c.spend||1)).toFixed(2)+"×" : "—" },
+    { h: "CPA",         v: c => (c.conversions||0) > 0 ? cur((c.spend||0)/(c.conversions||1)) : "—" },
+    { h: "CPM",         v: c => (c.impressions||0) > 0 ? cur2((c.spend||0)/(c.impressions||1)*1000) : "—" },
+  ];
+
+  // Executive only shows top 10; full/awareness/sales show all
+  const maxCampaigns = pdfType === "executive" ? 10 : 50;
+  const sortedCampaigns = [...campaigns]
+    .sort((a, b) => pdfType === "sales" ? (b.conversionValue||0) - (a.conversionValue||0) : (b.spend||0) - (a.spend||0))
+    .slice(0, maxCampaigns);
 
   function tableRow(cells: string[], isHeader = false): string {
     const tag = isHeader ? "th" : "td";
@@ -88,24 +163,10 @@ function buildPdfHtml(opts: {
       </div>`;
   }
 
-  const campaignTable = sections.has("campaigns") ? section("Campaign Performance", `
+  const campaignTable = sections.has("campaigns") || pdfType === "executive" ? section("Campaign Performance", `
     <table>
-      ${tableRow(["Campaign", "Platform", "Spend", "Impressions", "Clicks", "CTR", "Conv.", "Conv. Value", "ROAS", "CPA"], true)}
-      ${sortedCampaigns.slice(0, 50).map(c => {
-        const sp = c.spend || 0, im = c.impressions || 0, cl = c.clicks || 0, cv = c.conversions || 0, rev = c.conversionValue || 0;
-        return tableRow([
-          `<span class="campaign-name">${c.name}</span>`,
-          c.platform === "meta" ? "Meta" : "Google",
-          cur(sp),
-          im.toLocaleString(),
-          cl.toLocaleString(),
-          pct(cl, im),
-          Math.round(cv).toString(),
-          cur(rev),
-          sp > 0 && rev > 0 ? `${(rev/sp).toFixed(2)}×` : "—",
-          cv > 0 ? cur(sp/cv) : "—",
-        ]);
-      }).join("")}
+      ${tableRow(campaignCols.map(col => col.h), true)}
+      ${sortedCampaigns.map(c => tableRow(campaignCols.map(col => col.v(c)))).join("")}
     </table>`) : "";
 
   const pubTable = sections.has("placement") && pubRows.length > 0 ? section("Publisher Placement Breakdown", `
@@ -153,7 +214,7 @@ function buildPdfHtml(opts: {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Ad Performance Report · ${startDate} – ${endDate}</title>
+  <title>${PDF_TYPE_LABELS[pdfType]} · ${startDate} – ${endDate}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #fff; font-size: 11pt; }
@@ -200,8 +261,8 @@ function buildPdfHtml(opts: {
   <!-- Cover / Header -->
   <div class="cover">
     <div>
-      <div class="cover-logo">📊 Auditor — Ad Performance Report</div>
-      <div class="cover-sub">Campaign Intelligence · ${opts.platform === "meta" ? "Meta Ads" : opts.platform === "google" ? "Google Ads" : "Meta + Google Ads"}</div>
+      <div class="cover-logo">📊 Auditor — ${PDF_TYPE_LABELS[pdfType]}</div>
+      <div class="cover-sub">Campaign Intelligence · ${opts.platform === "meta" ? "Meta Ads" : opts.platform === "dv360" ? "DV360" : "Meta + DV360"}</div>
     </div>
     <div class="cover-meta">
       <div><strong>Period:</strong> ${startDate} → ${endDate}</div>
@@ -221,10 +282,10 @@ function buildPdfHtml(opts: {
   </div>
 
   ${campaignTable}
-  ${pubTable}
-  ${ageTable}
-  ${genderTable}
-  ${attrTable}
+  ${pdfType !== "executive" ? pubTable : ""}
+  ${pdfType !== "executive" ? ageTable : ""}
+  ${pdfType !== "executive" ? genderTable : ""}
+  ${pdfType !== "executive" && pdfType !== "awareness" ? attrTable : ""}
 
   <div class="footer">
     <span>Auditor · Ad Performance Report</span>
@@ -246,7 +307,7 @@ function buildCampaignCsv(campaigns: any[], currency: string, startDate: string,
   ];
   const rows = campaigns.map(c => {
     const sp = c.spend||0, im = c.impressions||0, cl = c.clicks||0, cv = c.conversions||0, rev = c.conversionValue||0;
-    return [c.name, c.platform==="meta"?"Meta":"Google", c.status||"—", c.objective||"—",
+    return [c.name, c.platform==="meta"?"Meta":"DV360", c.status||"—", c.objective||"—",
       sp.toFixed(2), im, cl, im>0?((cl/im)*100).toFixed(2):"",
       cv, rev.toFixed(2), sp>0&&rev>0?(rev/sp).toFixed(2):"",
       im>0?(sp/im*1000).toFixed(2):"", cl>0?(sp/cl).toFixed(2):"", cv>0?(sp/cv).toFixed(2):"",
@@ -304,16 +365,28 @@ const SECTIONS = [
 
 export default function ExportReport({ platform, dateRange, customStart, customEnd }: Props) {
   const { campaigns, loading, startDate, endDate } = useCampaigns(platform, dateRange, customStart, customEnd);
-  const enabled = platform !== "google";
+  const enabled = platform !== "dv360";
   const pubBreakdown = useMetaBreakdown("publisher_platform", dateRange, customStart, customEnd, enabled);
   const ageBreakdown = useMetaBreakdown("age",  dateRange, customStart, customEnd, enabled);
   const genBreakdown = useMetaBreakdown("gender", dateRange, customStart, customEnd, enabled);
 
-  const currency = detectCurrency(campaigns);
+  const currency = currencyFor(campaigns, platform === "dv360" ? "dv360" : "meta");
   const cur = (n: number) => formatMoney(n, currency, 0);
 
   const [flash, setFlash]       = useState<string | null>(null);
   const [sections, setSections] = useState<Set<string>>(new Set(["campaigns", "placement", "demographics", "attribution"]));
+  const [pdfType, setPdfType]   = useState<"full" | "awareness" | "sales" | "executive">("full");
+
+  // AI Report state
+  const addAiCredits = useAuthStore(s => s.addAiCredits);
+  const demoMode     = useAuthStore(s => s.demoMode);
+  const [aiReportType,    setAiReportType]    = useState<"awareness" | "sales">("awareness");
+  const [aiBrandName,     setAiBrandName]     = useState("");
+  const [aiReport,        setAiReport]        = useState<string | null>(null);
+  const [aiReportLoading, setAiReportLoading] = useState(false);
+  const [aiReportError,   setAiReportError]   = useState<string | null>(null);
+  const [aiCopied,        setAiCopied]        = useState(false);
+  const aiReportRef = useRef<HTMLDivElement>(null);
 
   const toggleSection = (id: string, on: boolean) => {
     setSections(prev => {
@@ -376,13 +449,14 @@ export default function ExportReport({ platform, dateRange, customStart, customE
   const handlePdf = () => {
     const html = buildPdfHtml({
       startDate, endDate, currency,
-      platform: platform === "both" ? "meta" : platform,
+      platform,
       campaigns,
       pubRows:    sections.has("placement")    ? pubBreakdown.rows : [],
       ageRows:    sections.has("demographics") ? ageBreakdown.rows : [],
       genderRows: sections.has("demographics") ? genBreakdown.rows : [],
       windowRows: sections.has("attribution")  ? windowRows : [],
       sections,
+      pdfType,
     });
     const w = window.open("", "_blank");
     if (!w) { alert("Allow pop-ups for this site to open the PDF report."); return; }
@@ -392,6 +466,79 @@ export default function ExportReport({ platform, dateRange, customStart, customE
   };
 
   const dataReady = !loading && campaigns.length > 0;
+
+  const handleAiReport = async () => {
+    if (!campaigns.length) return;
+    setAiReportLoading(true);
+    setAiReportError(null);
+    setAiReport(null);
+    try {
+      const t = {
+        spend:           campaigns.reduce((s, c) => s + (c.spend || 0), 0),
+        impressions:     campaigns.reduce((s, c) => s + (c.impressions || 0), 0),
+        clicks:          campaigns.reduce((s, c) => s + (c.clicks || 0), 0),
+        reach:           campaigns.reduce((s, c) => s + (c.reach || 0), 0),
+        videoViews:      campaigns.reduce((s, c) => s + (c.videoViews || 0), 0),
+        conversions:     campaigns.reduce((s, c) => s + (c.conversions || 0), 0),
+        conversionValue: campaigns.reduce((s, c) => s + (c.conversionValue || 0), 0),
+      };
+      const body: ReportRequest = {
+        reportType: aiReportType,
+        platform,
+        brandName:  aiBrandName || undefined,
+        dateRange:  `${startDate} to ${endDate}`,
+        currency,
+        totals: t,
+        campaigns: campaigns.slice(0, 40).map(c => ({
+          name:            c.name,
+          platform:        c.platform,
+          spend:           c.spend || 0,
+          impressions:     c.impressions || 0,
+          clicks:          c.clicks || 0,
+          reach:           c.reach || 0,
+          videoViews:      c.videoViews || 0,
+          conversions:     c.conversions || 0,
+          conversionValue: c.conversionValue || 0,
+          ctr:             (c.impressions||0) > 0 ? ((c.clicks||0) / (c.impressions||1)) * 100 : 0,
+          cpm:             (c.impressions||0) > 0 ? ((c.spend||0) / (c.impressions||1)) * 1000 : 0,
+          frequency:       (c.reach||0) > 0 ? (c.impressions||0) / (c.reach||1) : 0,
+          vtr:             (c.impressions||0) > 0 ? ((c.videoViews || 0) / (c.impressions||1)) * 100 : 0,
+          roas:            (c.spend||0) > 0 ? (c.conversionValue || 0) / (c.spend||1) : 0,
+          cpa:             (c.conversions||0) > 0 ? (c.spend||0) / (c.conversions||1) : 0,
+        })),
+        publishers: pubBreakdown.rows.slice(0, 10).map(r => ({
+          name: (r as any).publisher_platform || (r as any).label || "Unknown",
+          impressions: r.impressions || 0,
+          clicks: r.clicks || 0,
+          spend: r.spend || 0,
+        })),
+        ageRows:    ageBreakdown.rows.slice(0, 10).map(r => ({ age: (r as any).age || (r as any).label || "Unknown", impressions: r.impressions || 0, clicks: r.clicks || 0, spend: r.spend || 0 })),
+        genderRows: genBreakdown.rows.slice(0, 5).map(r => ({ gender: (r as any).gender || (r as any).label || "Unknown", impressions: r.impressions || 0, clicks: r.clicks || 0 })),
+        isDemo: demoMode,
+      };
+      const res = await fetch("/api/ai/generate-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error((json as any).error || `HTTP ${res.status}`);
+      if (typeof json.creditsUsedUsd === "number") addAiCredits(json.creditsUsedUsd);
+      setAiReport(json.report);
+      setTimeout(() => aiReportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+    } catch (e) {
+      setAiReportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAiReportLoading(false);
+    }
+  };
+
+  const handleCopyReport = async () => {
+    if (!aiReport) return;
+    await navigator.clipboard.writeText(aiReport);
+    setAiCopied(true);
+    setTimeout(() => setAiCopied(false), 2000);
+  };
 
   return (
     <div className="space-y-6 section-enter">
@@ -411,8 +558,21 @@ export default function ExportReport({ platform, dateRange, customStart, customE
           </span>
           <AIExecutiveSummary
             tabName="Export Report"
-            context={{ campaignCount: campaigns.length, period: `${startDate} → ${endDate}`, platform }}
-            platform={platform === "both" ? "meta" : platform}
+            context={{
+              period: `${startDate} → ${endDate}`,
+              campaignCount: campaigns.length,
+              totalSpend: Math.round(campaigns.reduce((s, c) => s + (c.spend || 0), 0)),
+              totalImpressions: campaigns.reduce((s, c) => s + (c.impressions || 0), 0),
+              totalConversions: campaigns.reduce((s, c) => s + (c.conversions || 0), 0),
+              topCampaigns: [...campaigns]
+                .sort((a, b) => (b.spend || 0) - (a.spend || 0))
+                .slice(0, 20)
+                .map((c) => ({
+                  name: c.name, platform: c.platform, spend: Math.round(c.spend || 0),
+                  impressions: c.impressions || 0, conversions: c.conversions || 0,
+                })),
+            }}
+            platform={platform}
             dateRange={String(dateRange)}
             inline
           />
@@ -512,24 +672,160 @@ export default function ExportReport({ platform, dateRange, customStart, customE
         </div>
 
         {/* PDF */}
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col">
-          <div className="flex items-center gap-2 mb-2">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col gap-3 md:col-span-3">
+          <div className="flex items-center gap-2">
             <Printer className="w-5 h-5 text-purple-600" />
-            <h3 className="text-base font-bold text-gray-900">PDF — Full Report</h3>
-            <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-bold uppercase">Print</span>
+            <h3 className="text-base font-bold text-gray-900">PDF Report</h3>
+            <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-bold uppercase">Print / Save</span>
           </div>
-          <p className="text-xs text-gray-500 mb-1 flex-1">
-            Opens a formatted A4 report in a new tab — KPI summary, selected section tables, branded header. Press Cmd+P → Save as PDF.
-          </p>
-          <div className="text-[10px] text-gray-400 mb-3">{sections.size} sections · A4 landscape · no install needed</div>
+          <p className="text-xs text-gray-500">Choose the report type — each formats the KPI strip and campaign table for its objective. Opens in a new tab → Cmd+P → Save as PDF.</p>
+
+          {/* Type selector */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {([
+              { id: "full",      label: "Full Report",      desc: "All metrics · all sections", icon: "📊" },
+              { id: "awareness", label: "Awareness",        desc: "Reach · Freq · CPM · VTR",  icon: "👁️" },
+              { id: "sales",     label: "Sales & ROI",      desc: "ROAS · CPA · Conv · Rev",    icon: "💰" },
+              { id: "executive", label: "Exec Summary",     desc: "Top 10 campaigns · 1 page",  icon: "📋" },
+            ] as const).map(t => (
+              <button
+                key={t.id}
+                onClick={() => setPdfType(t.id)}
+                className={`flex flex-col items-start gap-1 p-3 rounded-xl border-2 text-left transition ${pdfType === t.id ? "border-purple-500 bg-purple-50" : "border-gray-200 hover:border-gray-300 bg-white"}`}
+              >
+                <span className="text-lg">{t.icon}</span>
+                <span className={`text-sm font-bold ${pdfType === t.id ? "text-purple-900" : "text-gray-800"}`}>{t.label}</span>
+                <span className="text-[11px] text-gray-500 leading-snug">{t.desc}</span>
+              </button>
+            ))}
+          </div>
+
           <button
             onClick={handlePdf}
             disabled={!dataReady}
             className="w-full py-2.5 rounded-lg bg-purple-600 text-white text-sm font-bold hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
           >
-            <Printer className="w-4 h-4" /> Generate PDF Report
+            <Printer className="w-4 h-4" />
+            Generate {pdfType === "full" ? "Full" : pdfType === "awareness" ? "Awareness" : pdfType === "sales" ? "Sales & ROI" : "Executive"} PDF
           </button>
         </div>
+      </div>
+
+      {/* ── AI Business Report ─────────────────────────────────────────────── */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center shrink-0">
+            <Sparkles className="w-4 h-4 text-white" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-gray-900">AI Business Report</h3>
+            <p className="text-xs text-gray-500 mt-0.5">Haiku writes a structured analysis tailored to your campaign objective</p>
+          </div>
+          <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 font-bold uppercase">~$0.01/report</span>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Report type toggle */}
+          <div>
+            <p className="text-xs font-semibold text-gray-700 mb-2">Campaign Objective</p>
+            <div className="grid grid-cols-2 gap-3 max-w-md">
+              <button
+                onClick={() => setAiReportType("awareness")}
+                className={`flex items-start gap-3 p-3 rounded-xl border-2 text-left transition ${aiReportType === "awareness" ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}
+              >
+                <Eye className={`w-4 h-4 mt-0.5 shrink-0 ${aiReportType === "awareness" ? "text-blue-600" : "text-gray-400"}`} />
+                <div>
+                  <div className={`text-sm font-bold ${aiReportType === "awareness" ? "text-blue-900" : "text-gray-700"}`}>Awareness</div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">Reach · Views · Frequency · CPM · VTR</div>
+                </div>
+              </button>
+              <button
+                onClick={() => setAiReportType("sales")}
+                className={`flex items-start gap-3 p-3 rounded-xl border-2 text-left transition ${aiReportType === "sales" ? "border-green-500 bg-green-50" : "border-gray-200 hover:border-gray-300"}`}
+              >
+                <ShoppingCart className={`w-4 h-4 mt-0.5 shrink-0 ${aiReportType === "sales" ? "text-green-600" : "text-gray-400"}`} />
+                <div>
+                  <div className={`text-sm font-bold ${aiReportType === "sales" ? "text-green-900" : "text-gray-700"}`}>Sales</div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">ROAS · ROI · Conversions · CPA · Revenue</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Brand name (optional) */}
+          <div>
+            <label className="text-xs font-semibold text-gray-700 block mb-1.5">Brand / Account Name <span className="font-normal text-gray-400">(optional)</span></label>
+            <input
+              type="text"
+              value={aiBrandName}
+              onChange={e => setAiBrandName(e.target.value)}
+              placeholder="e.g. Honer Homes, Plenaire India…"
+              className="w-full max-w-sm px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 placeholder-gray-400"
+            />
+          </div>
+
+          {/* What's included chips */}
+          <div className="flex flex-wrap gap-1.5">
+            {(aiReportType === "awareness"
+              ? ["Executive Summary", "Reach & Frequency", "Impressions & CPM", "Engagement (CTR/VTR)", "Top Campaigns", "Publisher Insights", "Audience Insights", "Recommendations"]
+              : ["Executive Summary", "Revenue & ROAS", "Conversion Analysis", "Spend Efficiency", "Top Campaigns", "Underperformers", "Audience Performance", "Recommendations"]
+            ).map(s => (
+              <span key={s} className={`text-[11px] px-2.5 py-1 rounded-full border font-medium ${aiReportType === "awareness" ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-green-50 border-green-200 text-green-700"}`}>{s}</span>
+            ))}
+          </div>
+
+          {/* Generate button */}
+          <button
+            onClick={handleAiReport}
+            disabled={!dataReady || aiReportLoading}
+            className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold text-white transition disabled:opacity-40 disabled:cursor-not-allowed ${aiReportType === "awareness" ? "bg-blue-600 hover:bg-blue-700" : "bg-green-600 hover:bg-green-700"}`}
+          >
+            <Sparkles className="w-4 h-4" />
+            {aiReportLoading ? "Generating report…" : `Generate ${aiReportType === "awareness" ? "Awareness" : "Sales"} Report`}
+            <span className="text-white/70 font-normal text-xs">~${toDisplayCredits(0.013).toFixed(2)} credits</span>
+          </button>
+
+          {aiReportError && (
+            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{aiReportError}</div>
+          )}
+        </div>
+
+        {/* Report output */}
+        {aiReport && (
+          <div ref={aiReportRef} className="border-t border-gray-100">
+            <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-100">
+              <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
+                {aiReportType === "awareness" ? "Awareness" : "Sales"} Report · {startDate} – {endDate}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCopyReport}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition"
+                >
+                  {aiCopied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  {aiCopied ? "Copied!" : "Copy Markdown"}
+                </button>
+                <button
+                  onClick={() => { const w = window.open("","_blank"); if(w){w.document.write(`<pre style="font-family:sans-serif;white-space:pre-wrap;padding:32px;max-width:900px;margin:auto">${aiReport.replace(/</g,"&lt;")}</pre>`);w.document.close();} }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition"
+                >
+                  <Printer className="w-3.5 h-3.5" /> Print
+                </button>
+              </div>
+            </div>
+            <div className="px-5 py-5 prose prose-sm max-w-none text-gray-800 leading-relaxed">
+              {aiReport.split("\n").map((line, i) => {
+                if (line.startsWith("## ")) return <h2 key={i} className="text-base font-bold text-gray-900 mt-5 mb-2 pb-1 border-b border-gray-100">{line.replace("## ","")}</h2>;
+                if (line.startsWith("### ")) return <h3 key={i} className="text-sm font-bold text-gray-800 mt-3 mb-1">{line.replace("### ","")}</h3>;
+                if (line.startsWith("- ") || line.startsWith("* ")) return <li key={i} className="ml-4 text-sm text-gray-700">{line.replace(/^[-*] /,"")}</li>;
+                if (/^\d+\./.test(line)) return <li key={i} className="ml-4 text-sm text-gray-700 list-decimal">{line.replace(/^\d+\.\s*/,"")}</li>;
+                if (line.startsWith("|")) return <div key={i} className="font-mono text-xs text-gray-700 leading-relaxed">{line}</div>;
+                if (line.trim() === "") return <div key={i} className="h-2" />;
+                return <p key={i} className="text-sm text-gray-700 leading-relaxed">{line.replace(/\*\*(.+?)\*\*/g, "$1")}</p>;
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* PDF preview hint */}

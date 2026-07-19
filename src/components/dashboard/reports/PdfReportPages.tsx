@@ -17,7 +17,7 @@ import React from "react";
 import {
   Calendar, MapPin, Share2, Wallet, Target, TrendingUp, Users, Image as ImageIcon,
   Layers, BarChart3, PieChart, Film, Activity, Award, AlertTriangle, Lightbulb,
-  Globe, Megaphone, Filter, DollarSign, Zap, CheckCircle2,
+  Globe, Megaphone, Filter, DollarSign, Zap, CheckCircle2, Eye, MousePointer,
 } from "lucide-react";
 import { formatMoney } from "@/lib/currency";
 import type { CampaignData } from "@/types/index";
@@ -460,6 +460,82 @@ export interface PdfReportPagesProps {
   startDate: string;
   endDate: string;
   platform: string;
+  // Customization (optional — defaults to a full "sales"-style standard deck).
+  objective?: ReportObjective;
+  length?: ReportLength;
+  narrative?: ReportNarrative | null;
+  tracking?: TrackingSnapshot | null;
+  /** Which sections to include (ids: ai, campaigns, audience, creative,
+   *  placement, budget, funnel, tracking). Undefined = all. */
+  sections?: string[];
+}
+
+export type ReportObjective = "awareness" | "sales" | "traffic" | "lead";
+export type ReportLength = "concise" | "standard" | "detailed";
+export interface ReportNarrative {
+  execSummary: string;
+  highlights: string[];
+  sectionInsights: Array<{ section: string; text: string }>;
+  recommendations: string[];
+}
+export interface TrackingSnapshot {
+  activePixels?: string;
+  capiSharePct?: number;
+  emqScore?: number;
+  totalEvents?: number;
+  avgFrequency?: number;
+  accountStructure?: { campaigns: number; adSets: number };
+  attribution?: Array<{ name: string; clickLookbackDays: number; viewLookbackDays: number }>;
+  funnel?: Array<{ stage: string; value: number }>;
+}
+
+const OBJECTIVE_TITLE: Record<ReportObjective, { title: string; sub: string }> = {
+  awareness: { title: "Brand Awareness Review", sub: "Reach, Frequency & Impression Efficiency" },
+  sales:     { title: "Sales & ROI Review", sub: "Revenue, ROAS & Conversion Performance" },
+  traffic:   { title: "Traffic & Engagement Review", sub: "Clicks, CTR & Cost-per-Click Efficiency" },
+  lead:      { title: "Lead Generation Review", sub: "Leads, Cost-per-Lead & Conversion Rate" },
+};
+
+/** Objective-aware KPI cards for the cover (all values from real data). */
+function objectiveKpis(
+  objective: ReportObjective,
+  d: { spend: number; impr: number; clicks: number; conv: number; rev: number; reach: number; views: number },
+  currency: string,
+): Array<{ label: string; value: string; trend: string; good: boolean; Icon: IconType }> {
+  const cur0 = (n: number) => formatMoney(n, currency, 0);
+  const roas = d.spend > 0 && d.rev > 0 ? d.rev / d.spend : 0;
+  const ctr = d.impr > 0 ? (d.clicks / d.impr) * 100 : 0;
+  const cpm = d.impr > 0 ? (d.spend / d.impr) * 1000 : 0;
+  const cpc = d.clicks > 0 ? d.spend / d.clicks : 0;
+  const cpa = d.conv > 0 ? d.spend / d.conv : 0;
+  const freq = d.reach > 0 ? d.impr / d.reach : 0;
+  const cvr = d.clicks > 0 ? (d.conv / d.clicks) * 100 : 0;
+
+  if (objective === "awareness") return [
+    { label: "Impressions", value: fmtBig(d.impr), trend: `${cur0(d.spend)} spend`, good: true, Icon: Eye as IconType },
+    { label: "Reach", value: d.reach > 0 ? fmtBig(d.reach) : "—", trend: d.reach > 0 ? "↑ Unique users" : "No reach data", good: d.reach > 0, Icon: Users as IconType },
+    { label: "Frequency", value: freq > 0 ? `${freq.toFixed(2)}×` : "—", trend: freq > 5 ? "↓ Too high" : freq >= 1.5 ? "→ Healthy" : "↑ Low", good: freq >= 1.5 && freq <= 5, Icon: Activity as IconType },
+    { label: "CPM", value: d.impr > 0 ? cur0(cpm) : "—", trend: "Cost / 1k impr", good: true, Icon: TrendingUp as IconType },
+  ];
+  if (objective === "traffic") return [
+    { label: "Clicks", value: fmtBig(d.clicks), trend: `${cur0(d.spend)} spend`, good: true, Icon: MousePointer as IconType },
+    { label: "CTR", value: d.impr > 0 ? `${ctr.toFixed(2)}%` : "—", trend: ctr >= 1 ? "↑ Strong" : "→ Monitor", good: ctr >= 1, Icon: Activity as IconType },
+    { label: "CPC", value: d.clicks > 0 ? formatMoney(cpc, currency, 2) : "—", trend: "Cost / click", good: true, Icon: Wallet as IconType },
+    { label: "Impressions", value: fmtBig(d.impr), trend: `${fmtBig(d.reach)} reach`, good: true, Icon: Eye as IconType },
+  ];
+  if (objective === "lead") return [
+    { label: "Leads", value: fmtInt(d.conv), trend: d.conv > 0 ? "↑ Generating" : "↓ None", good: d.conv > 0, Icon: Target as IconType },
+    { label: "Cost / Lead", value: d.conv > 0 ? cur0(cpa) : "—", trend: "CPL", good: d.conv > 0, Icon: Wallet as IconType },
+    { label: "Conv. Rate", value: d.clicks > 0 ? `${cvr.toFixed(2)}%` : "—", trend: cvr >= 2 ? "↑ Strong" : "→ Monitor", good: cvr >= 2, Icon: Activity as IconType },
+    { label: "Total Spend", value: cur0(d.spend), trend: `${fmtInt(d.clicks)} clicks`, good: true, Icon: TrendingUp as IconType },
+  ];
+  // sales (default)
+  return [
+    { label: "Total Spend", value: cur0(d.spend), trend: `${fmtInt(d.conv)} conversions`, good: true, Icon: Wallet as IconType },
+    { label: "Conversions", value: fmtInt(d.conv), trend: d.conv > 0 ? "↑ Converting" : "↓ None", good: d.conv > 0, Icon: Target as IconType },
+    { label: "Revenue", value: cur0(d.rev), trend: d.rev > 0 ? "↑ Tracked" : "↓ No value", good: d.rev > 0, Icon: TrendingUp as IconType },
+    { label: "ROAS", value: roas > 0 ? `${roas.toFixed(2)}×` : "—", trend: roas >= 2 ? "↑ Strong" : roas >= 1 ? "→ Monitor" : "↓ Needs lift", good: roas >= 1, Icon: Zap as IconType },
+  ];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -475,7 +551,12 @@ function CoverPage(p: PdfReportPagesProps) {
   const rev   = p.campaigns.reduce((s, c) => s + (c.conversionValue || 0), 0);
   const roas  = spend > 0 && rev > 0 ? rev / spend : 0;
 
-  const platformLabel = p.platform === "meta" ? "Meta (FB/IG)" : p.platform === "google" ? "Google Ads" : "Meta + Google";
+  const reach = p.campaigns.reduce((s, c) => s + (c.reach || 0), 0);
+  const views = p.campaigns.reduce((s, c) => s + (c.videoViews || 0), 0);
+  const objective: ReportObjective = p.objective ?? "sales";
+  const heading = OBJECTIVE_TITLE[objective];
+
+  const platformLabel = p.platform === "meta" ? "Meta (FB/IG)" : p.platform === "dv360" ? "DV360" : "Meta + DV360";
 
   const filters = [
     { Icon: Calendar as IconType, color: INDIGO, label: "Period", value: `${p.startDate} – ${p.endDate}` },
@@ -483,12 +564,8 @@ function CoverPage(p: PdfReportPagesProps) {
     { Icon: Share2 as IconType, color: ORANGE, label: "Campaigns", value: String(p.campaigns.length) },
   ];
 
-  const kpis = [
-    { label: "Total Spend", value: cur0(spend), trend: `${p.campaigns.length} campaigns`, good: true, Icon: Wallet as IconType },
-    { label: "Total Conversions", value: fmtInt(conv), trend: conv > 0 ? "↑ Converting" : "↓ No conversions", good: conv > 0, Icon: Target as IconType },
-    { label: "Revenue Generated", value: cur0(rev), trend: rev > 0 ? "↑ Tracked" : "↓ No value", good: rev > 0, Icon: TrendingUp as IconType },
-    { label: "ROAS", value: roas > 0 ? `${roas.toFixed(2)}×` : "—", trend: roas >= 2 ? "↑ Strong" : roas >= 1 ? "→ Monitor" : "↓ Needs lift", good: roas >= 1, Icon: Zap as IconType },
-  ];
+  const kpis = objectiveKpis(objective, { spend, impr, clicks, conv, rev, reach, views }, p.currency);
+  void roas;
 
   return (
     <div data-pdf-page="1" style={{ ...page, backgroundColor: NAVY, color: "#FFFFFF" }}>
@@ -509,8 +586,8 @@ function CoverPage(p: PdfReportPagesProps) {
 
         {/* title */}
         <div style={{ marginTop: 56 }}>
-          <div style={{ fontSize: 54, fontWeight: 900, letterSpacing: "-0.03em", lineHeight: 1.05 }}>Ad Performance Review</div>
-          <div style={{ fontSize: 19, color: "#9098C4", marginTop: 14, fontWeight: 400 }}>Paid Media Performance &amp; Growth Analysis</div>
+          <div style={{ fontSize: 54, fontWeight: 900, letterSpacing: "-0.03em", lineHeight: 1.05 }}>{heading.title}</div>
+          <div style={{ fontSize: 19, color: "#9098C4", marginTop: 14, fontWeight: 400 }}>{heading.sub}</div>
         </div>
 
         {/* filter cards */}
@@ -1127,12 +1204,18 @@ function ExecutivePage(p: PdfReportPagesProps & { pageNum: number; total: number
     </div>
   );
 
-  const actions = [
+  const fallbackActions = [
     { t: "Scale top performers", b: wins[0] ? `Increase budget 15–20% on "${wins[0].name.slice(0, 28)}".` : "Shift budget to highest-ROAS campaigns.", c: GREEN },
     { t: "Cut underperformers", b: "Pause ad sets with 7+ days of spend and ROAS below 1×.", c: RED },
     { t: "Validate attribution", b: roas > 0 ? `Blended ROAS is ${roas.toFixed(2)}×; check 7d/1d click ratio for inflation.` : "Review attribution windows across campaigns.", c: ORANGE },
     { t: "Strengthen tracking", b: "Verify Conversions API to reduce iOS signal loss.", c: INDIGO },
   ];
+  // AI recommendations (when a narrative was generated) replace the generic ones.
+  const aiRecs = p.narrative?.recommendations ?? [];
+  const accent = [GREEN, INDIGO, ORANGE, RED, PINK, GREEN];
+  const actions = aiRecs.length > 0
+    ? aiRecs.slice(0, 6).map((r, i) => ({ t: "", b: r, c: accent[i % accent.length] }))
+    : fallbackActions;
 
   return (
     <div data-pdf-page={p.pageNum} style={page}>
@@ -1160,8 +1243,8 @@ function ExecutivePage(p: PdfReportPagesProps & { pageNum: number; total: number
               <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", background: "#F8FAFC", border: `1px solid ${CARD_BORDER}`, borderRadius: 9, padding: "12px 14px", borderLeft: `3px solid ${a.c}` }}>
                 <div style={{ width: 24, height: 24, borderRadius: "50%", background: a.c, color: "#FFFFFF", fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
                 <div>
-                  <div style={{ fontSize: 12.5, fontWeight: 800, color: TEXT, marginBottom: 3 }}>{a.t}</div>
-                  <div style={{ fontSize: 10.5, color: MUTED, lineHeight: 1.45 }}>{a.b}</div>
+                  {a.t ? <div style={{ fontSize: 12.5, fontWeight: 800, color: TEXT, marginBottom: 3 }}>{a.t}</div> : null}
+                  <div style={{ fontSize: a.t ? 10.5 : 11.5, color: a.t ? MUTED : TEXT, lineHeight: 1.45 }}>{a.b}</div>
                 </div>
               </div>
             ))}
@@ -1174,25 +1257,146 @@ function ExecutivePage(p: PdfReportPagesProps & { pageNum: number; total: number
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PAGE — AI Analysis (only when a narrative was generated)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SECTION_LABEL: Record<string, string> = {
+  kpis: "Key Metrics", campaigns: "Campaigns", funnel: "Funnel", audience: "Audience",
+  creative: "Creative", placement: "Placement", tracking: "Tracking & Data Quality", attribution: "Attribution",
+};
+
+function AiAnalysisPage(p: PdfReportPagesProps & { pageNum: number; total: number }) {
+  const nar = p.narrative!;
+  const insights = (nar.sectionInsights ?? []).slice(0, 6);
+  const highlights = (nar.highlights ?? []).slice(0, 4);
+  return (
+    <div data-pdf-page={p.pageNum} style={page}>
+      <SlideHeader num={p.pageNum - 1} title="AI Analysis" badge={OBJECTIVE_TITLE[p.objective ?? "sales"].title} rightText={`${p.startDate} – ${p.endDate}`} Icon={Lightbulb as IconType} />
+      <div style={{ position: "absolute", top: 64, left: 0, right: 0, bottom: 26, padding: 24, display: "flex", flexDirection: "column", gap: 13, overflow: "hidden" }}>
+        {/* Executive summary */}
+        <div style={{ background: "#EEF0FF", border: `1px solid ${INDIGO}33`, borderLeft: `4px solid ${INDIGO}`, borderRadius: 10, padding: "14px 18px" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: INDIGO_D, letterSpacing: "0.05em", marginBottom: 6 }}>EXECUTIVE SUMMARY</div>
+          <div style={{ fontSize: 14, color: TEXT, lineHeight: 1.5 }}>{nar.execSummary}</div>
+        </div>
+        {/* Highlights */}
+        {highlights.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(highlights.length, 4)}, 1fr)`, gap: 12 }}>
+            {highlights.map((h, i) => (
+              <div key={i} style={{ background: "#F8FAFC", border: `1px solid ${CARD_BORDER}`, borderRadius: 9, padding: "11px 13px", borderTop: `3px solid ${SERIES[i % SERIES.length]}` }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: TEXT, lineHeight: 1.35 }}>{h}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Section insights */}
+        {insights.length > 0 && (
+          <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gridAutoRows: "min-content", gap: 12, overflow: "hidden" }}>
+            {insights.map((s, i) => (
+              <div key={i} style={{ background: CARD, border: `1px solid ${CARD_BORDER}`, borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: INDIGO_D, marginBottom: 5 }}>{SECTION_LABEL[s.section] ?? s.section}</div>
+                <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.45 }}>{s.text}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <PageFooter dateRange={`${p.startDate} – ${p.endDate}`} pageNum={p.pageNum} total={p.total} />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAGE — Tracking & Data Quality (only when a tracking snapshot is present)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function TrackingPage(p: PdfReportPagesProps & { pageNum: number; total: number }) {
+  const tk = p.tracking!;
+  const as = tk.accountStructure;
+  const tiles: { label: string; value: string; color: string; sub?: string }[] = [
+    { label: "Active Pixels", value: tk.activePixels ?? "—", color: INDIGO, sub: "Firing & healthy" },
+    { label: "Server (CAPI) Share", value: tk.capiSharePct != null ? `${tk.capiSharePct}%` : "—", color: tk.capiSharePct != null && tk.capiSharePct >= 40 ? GREEN : ORANGE, sub: "Events server-side" },
+    { label: "Event Match Quality", value: tk.emqScore != null ? String(tk.emqScore) : "—", color: tk.emqScore != null && tk.emqScore >= 60 ? GREEN : ORANGE, sub: "Signal match score" },
+    { label: "Total Events", value: tk.totalEvents != null ? fmtBig(tk.totalEvents) : "—", color: TEXT, sub: "In selected range" },
+    { label: "Avg Frequency", value: tk.avgFrequency != null ? `${tk.avgFrequency}×` : "—", color: tk.avgFrequency != null && tk.avgFrequency > 5 ? RED : TEXT, sub: "Impr / reach" },
+    { label: "Campaigns", value: as ? String(as.campaigns) : "—", color: TEXT, sub: as && as.adSets > 0 ? `${as.adSets} ad sets / IOs` : "Account structure" },
+  ];
+  const funnel = (tk.funnel ?? []).filter(f => f.value > 0);
+  const attr = tk.attribution ?? [];
+  return (
+    <div data-pdf-page={p.pageNum} style={page}>
+      <SlideHeader num={p.pageNum - 1} title="Tracking, Data Quality & Attribution" badge="Audit · Tracking" rightText={`${p.startDate} – ${p.endDate}`} Icon={Activity as IconType} />
+      <Body rows="auto 1fr">
+        <div style={{ gridColumn: "1 / 3", display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
+          {tiles.map((t, i) => <StatTile key={i} label={t.label} value={t.value} color={t.color} sub={t.sub} />)}
+        </div>
+        <Card Icon={Filter as IconType} color={INDIGO} title="Conversion Funnel">
+          {funnel.length > 0
+            ? <HBarChart data={funnel.map((f, i) => ({ label: f.stage, value: f.value, color: SERIES[i % SERIES.length] }))} valueRight={(v) => fmtBig(v)} />
+            : <div style={{ fontSize: 12, color: MUTED, padding: "8px 2px" }}>No funnel event data available for this window.</div>}
+          {p.narrative?.sectionInsights?.find(s => s.section === "tracking") && (
+            <Callout variant="insight" label="Insight" text={p.narrative.sectionInsights.find(s => s.section === "tracking")!.text} />
+          )}
+        </Card>
+        <Card Icon={Award as IconType} color={GREEN} title={attr.length ? "Floodlight Attribution Windows (DV360)" : "Attribution"}>
+          {attr.length > 0
+            ? <MiniTable headers={["Activity", "Click Lookback", "View Lookback"]} rows={attr.slice(0, 7).map(a => [a.name, `${a.clickLookbackDays}d`, `${a.viewLookbackDays}d`])} aligns={["l", "r", "r"]} />
+            : <div style={{ fontSize: 12, color: MUTED, padding: "8px 2px", lineHeight: 1.5 }}>Conversions use each platform&apos;s default attribution window. DV360 Floodlight lookback windows appear here when a Floodlight/CM360 link is available.</div>}
+          {p.narrative?.sectionInsights?.find(s => s.section === "attribution") && (
+            <Callout variant="optimization" label="Note" text={p.narrative.sectionInsights.find(s => s.section === "attribution")!.text} />
+          )}
+        </Card>
+      </Body>
+      <PageFooter dateRange={`${p.startDate} – ${p.endDate}`} pageNum={p.pageNum} total={p.total} />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Root
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function PdfReportPages(props: PdfReportPagesProps) {
+  const length: ReportLength = props.length ?? "standard";
+  const hasNarrative = !!props.narrative && !!props.narrative.execSummary;
+  const hasTracking = !!props.tracking && (
+    props.tracking.activePixels != null || props.tracking.capiSharePct != null ||
+    props.tracking.emqScore != null || (props.tracking.funnel?.length ?? 0) > 0 ||
+    (props.tracking.attribution?.length ?? 0) > 0 || props.tracking.accountStructure != null
+  );
+
   const hasDaily = props.dailyRows.length > 0;
   const hasAudience = props.ageRows.length > 0 || props.genderRows.length > 0 || props.countryRows.length > 0 || props.regionRows.length > 0;
   const hasCreative = props.adRows.length > 0;
   const hasPlatform = hasDaily || props.pubRows.length > 0;
 
+  // Section selection is authoritative for inclusion (undefined = all). Length
+  // still nudges the "heavy" pages: at "concise" the budget-trend and
+  // placement/weekly pages stay off unless the user explicitly kept them.
+  const sel = props.sections ?? ["ai", "campaigns", "audience", "creative", "placement", "budget", "funnel", "tracking"];
+  const has = (id: string) => sel.includes(id);
+  const inc = {
+    ai:       hasNarrative && has("ai"),
+    budget:   hasDaily && has("budget") && length !== "concise",
+    campaign: has("campaigns"),
+    funnel:   has("funnel"),
+    audience: hasAudience && has("audience"),
+    creative: hasCreative && has("creative"),
+    platform: hasPlatform && has("placement") && length !== "concise",
+    tracking: hasTracking && has("tracking"),
+  };
+
   // Dynamic page numbering
   let n = 2; // cover is 1
   const pages: React.ReactNode[] = [<CoverPage key="cover" {...props} />];
 
-  if (hasDaily) { pages.push(<BudgetPage key="budget" {...props} pageNum={n} total={0} />); n++; }
-  pages.push(<CampaignPage key="camp" {...props} pageNum={n} total={0} />); n++;
-  pages.push(<FunnelPage key="funnel" {...props} pageNum={n} total={0} />); n++;
-  if (hasAudience) { pages.push(<AudiencePage key="aud" {...props} pageNum={n} total={0} />); n++; }
-  if (hasCreative) { pages.push(<CreativePage key="creative" {...props} pageNum={n} total={0} />); n++; }
-  if (hasPlatform) { pages.push(<PlatformPage key="platform" {...props} pageNum={n} total={0} />); n++; }
+  if (inc.ai)       { pages.push(<AiAnalysisPage key="ai" {...props} pageNum={n} total={0} />); n++; }
+  if (inc.budget)   { pages.push(<BudgetPage key="budget" {...props} pageNum={n} total={0} />); n++; }
+  if (inc.campaign) { pages.push(<CampaignPage key="camp" {...props} pageNum={n} total={0} />); n++; }
+  if (inc.funnel)   { pages.push(<FunnelPage key="funnel" {...props} pageNum={n} total={0} />); n++; }
+  if (inc.audience) { pages.push(<AudiencePage key="aud" {...props} pageNum={n} total={0} />); n++; }
+  if (inc.creative) { pages.push(<CreativePage key="creative" {...props} pageNum={n} total={0} />); n++; }
+  if (inc.platform) { pages.push(<PlatformPage key="platform" {...props} pageNum={n} total={0} />); n++; }
+  if (inc.tracking) { pages.push(<TrackingPage key="tracking" {...props} pageNum={n} total={0} />); n++; }
   pages.push(<ExecutivePage key="exec" {...props} pageNum={n} total={0} />);
   const total = n;
 

@@ -3,12 +3,11 @@ import { Globe } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import AuditTabShell from "./audits/AuditTabShell";
 import MetaPlatformAudit from "./audits/MetaPlatformAudit";
-import GooglePlatformAudit from "./audits/GooglePlatformAudit";
 import ConnectCta from "@/components/shared/ConnectCta";
 import type { CampaignData } from "@/types";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: string;
   customStart?: string;
   customEnd?: string;
@@ -17,16 +16,16 @@ interface Props {
 }
 
 export default function PlatformAuditTab({ platform, dateRange, customStart, customEnd, selectedObjectives }: Props) {
-  const { isMetaConnected, isGoogleConnected } = useAuthStore();
+  const { isMetaConnected } = useAuthStore();
   const metaOn = isMetaConnected();
-  const googleOn = isGoogleConnected();
 
   // Build sub-tab list only from connected platforms.
+  // (A DV360-specific platform audit lands with the Floodlight work.)
   const subTabs: Array<{
     id: string;
     label: string;
     description: string;
-    render: (p: { campaigns: CampaignData[]; loading: boolean; platform: "meta" | "google" | "both" }) => ReactNode;
+    render: (p: { campaigns: CampaignData[]; loading: boolean; platform: "meta" | "dv360" | "both" }) => ReactNode;
   }> = [];
 
   if (metaOn) {
@@ -35,14 +34,6 @@ export default function PlatformAuditTab({ platform, dateRange, customStart, cus
       label: "Meta",
       description: "Pixel, CAPI, Advantage+, placements",
       render: (p) => <MetaPlatformAudit {...p} />,
-    });
-  }
-  if (googleOn) {
-    subTabs.push({
-      id: "google",
-      label: "Google",
-      description: "Search terms, PMax, RSA, impression share",
-      render: (p) => <GooglePlatformAudit {...p} />,
     });
   }
 
@@ -54,10 +45,10 @@ export default function PlatformAuditTab({ platform, dateRange, customStart, cus
           <Globe className="w-8 h-8 text-blue-600" />
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Platform Audit</h1>
-            <p className="text-gray-600 mt-1">Meta and Google platform-specific checks</p>
+            <p className="text-gray-600 mt-1">Platform-specific checks</p>
           </div>
         </div>
-        <ConnectCta platform="a platform" context="to see platform-specific audits (Meta or Google)" />
+        <ConnectCta platform="a platform" context="to see platform-specific audits (Meta or DV360)" />
       </div>
     );
   }
@@ -70,7 +61,7 @@ export default function PlatformAuditTab({ platform, dateRange, customStart, cus
       customEnd={customEnd}
       selectedObjectives={selectedObjectives}
       title="Platform Audit"
-      description="Meta and Google platform-specific checks"
+      description="Meta and DV360 platform-specific checks"
       Icon={Globe}
       defaultSubTab={subTabs[0].id}
       subTabs={subTabs}

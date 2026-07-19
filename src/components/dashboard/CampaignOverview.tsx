@@ -3,7 +3,7 @@ import SectionOverview from "./SectionOverview";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   setActiveTab: (id: string) => void;
 }
 
@@ -40,7 +40,7 @@ export default function CampaignOverview({ platform, setActiveTab }: Props) {
           {
             id: "platform-audit",
             label: "Platform Audit",
-            description: "Meta (Pixel, CAPI, Advantage+) and Google (Search, PMax, RSA)",
+            description: "Meta (Pixel, CAPI, Advantage+) and DV360 (Display, Video, YouTube)",
             Icon: Globe,
             tone: "neutral",
           },

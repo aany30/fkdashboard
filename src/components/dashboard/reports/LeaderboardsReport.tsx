@@ -13,13 +13,14 @@ import { useSort } from "@/hooks/useSort";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { usePersistentValue } from "@/hooks/useColumnPrefs";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import LoadingState from "@/components/shared/LoadingState";
+import { currencyFor, formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import type { CampaignData } from "@/types";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -47,7 +48,7 @@ const METRICS: MetricSpec[] = [
 
 export default function LeaderboardsReport({ platform, dateRange, customStart, customEnd, setActiveTab: _setActiveTab }: Props) {
   const { campaigns, loading, startDate, endDate } = useCampaigns(platform, dateRange, customStart, customEnd);
-  const currency = detectCurrency(campaigns);
+  const currency = currencyFor(campaigns, platform === "dv360" ? "dv360" : "meta");
   const [metricId, setMetricId] = usePersistentValue<MetricId>("leaderboards-metric", "spend");
   const [activeOnly, setActiveOnly] = useState(false);
 
@@ -94,7 +95,7 @@ export default function LeaderboardsReport({ platform, dateRange, customStart, c
               campaignCount: campaigns.length,
               topCampaigns: campaigns.slice(0, 5).map(c => ({ name: c.name, spend: c.spend ?? 0, roas: (c.spend ?? 0) > 0 ? +((c.conversionValue ?? 0) / (c.spend ?? 1)).toFixed(2) : 0 })),
             }}
-            platform={platform === "both" ? "meta" : platform}
+            platform={platform}
             dateRange={String(dateRange)}
             inline
           />
@@ -129,9 +130,7 @@ export default function LeaderboardsReport({ platform, dateRange, customStart, c
         <span className="text-[11px] text-gray-500 ml-auto">{totalEligible} eligible campaign{totalEligible === 1 ? "" : "s"}</span>
       </div>
 
-      {loading && (
-        <div className="text-sm text-gray-500">Loading campaign data…</div>
-      )}
+      {loading && <LoadingState message="Loading campaign data…" />}
 
       {!loading && campaigns.length === 0 && (
         <div className="bg-white border-2 border-dashed border-gray-300 rounded-xl p-12 text-center">
@@ -232,7 +231,7 @@ export default function LeaderboardsReport({ platform, dateRange, customStart, c
             cpc: (c.clicks ?? 0) > 0 ? +((c.spend ?? 0) / (c.clicks ?? 1)).toFixed(4) : 0,
           })),
         }}
-        platform={platform === "both" ? "meta" : platform}
+        platform={platform}
         dateRange={String(dateRange)}
       />
     </div>

@@ -1,17 +1,20 @@
 import { useAudit } from "@/hooks/useAudit";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useMetaBreakdown } from "@/hooks/useMetaBreakdown";
+import { useDV360Breakdown } from "@/hooks/useDV360Breakdown";
+import { useDV360Attribution, type DV360AttributionState } from "@/hooks/useDV360Attribution";
 import { useState, useMemo } from "react";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import type { Recommendation } from "@/lib/recommendations/engine";
 import { RefreshCw, Bot, Filter, TrendingUp, Users, Image as ImageIcon, BarChart2, Target } from "lucide-react";
+import LoadingState from "@/components/shared/LoadingState";
 import AnimatedNumber from "@/components/shared/AnimatedNumber";
 import { useSort } from "@/hooks/useSort";
 import SortTh from "@/components/shared/SortTh";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   dateRange?: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -248,44 +251,279 @@ function attributionRecs(campaigns: any[]): Recommendation[] {
   return recs;
 }
 
+// ─── DV360-specific breakdown recommendations ────────────────────────────────
+
+interface BreakdownRow { label: string; spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number }
+
+/** Geo-concentration + zero-conversion country checks for DV360. */
+function dv360GeoRecs(rows: BreakdownRow[]): Recommendation[] {
+  const recs: Recommendation[] = [];
+  if (!rows.length) return recs;
+
+  const totalSpend = rows.reduce((s, r) => s + (r.spend || 0), 0);
+  if (totalSpend === 0) return recs;
+
+  const sorted = [...rows].sort((a, b) => (b.spend || 0) - (a.spend || 0));
+  const top = sorted[0];
+  if (top && top.spend / totalSpend > 0.8 && sorted.length > 1) {
+    recs.push({
+      id: `dv360-geo-concentration-${top.label}`, priority: "Medium", platform: "DV360", category: "DV360",
+      issue: `Over 80% of DV360 spend in a single country (${top.label})`,
+      details: `"${top.label}" absorbs ${((top.spend / totalSpend) * 100).toFixed(0)}% of DV360 media spend across ${sorted.length} countries. Heavy single-geo concentration limits reach expansion and creates FX / policy exposure.`,
+      action: "Use DV360 geo-targeting on line items to test 2–3 secondary markets with 10-15% of budget. Compare CPA before scaling.",
+      impact: 4, effort: "Medium", confidence: 78,
+    });
+  }
+
+  const zeroConvGeos = rows.filter(r => (r.conversions || 0) === 0 && (r.spend || 0) > totalSpend * 0.05);
+  if (zeroConvGeos.length > 0) {
+    recs.push({
+      id: `dv360-geo-zero-conv`, priority: "High", platform: "DV360", category: "DV360",
+      issue: `${zeroConvGeos.length} geo${zeroConvGeos.length > 1 ? "s" : ""} spending with zero DV360 conversions`,
+      details: `Countries with material spend but no conversions: ${zeroConvGeos.slice(0, 3).map(r => `"${r.label}"`).join(", ")}${zeroConvGeos.length > 3 ? ` +${zeroConvGeos.length - 3} more` : ""}. Combined wasted spend: ₹${zeroConvGeos.reduce((s, r) => s + r.spend, 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}.`,
+      action: "Verify Floodlight tags fire in those markets. If tracking is fine, exclude these geos via line-item geo-targeting.",
+      impact: 5, effort: "Quick", confidence: 82,
+    });
+  }
+
+  return recs;
+}
+
+/** Device-mix + CTR-by-device checks for DV360. */
+function dv360DeviceRecs(rows: BreakdownRow[]): Recommendation[] {
+  const recs: Recommendation[] = [];
+  if (!rows.length) return recs;
+
+  const totalImp = rows.reduce((s, r) => s + (r.impressions || 0), 0);
+  if (totalImp === 0) return recs;
+
+  const ctrOf = (r: BreakdownRow) => (r.impressions > 0 ? r.clicks / r.impressions : 0);
+  const avgCtr = rows.reduce((s, r) => s + r.clicks, 0) / totalImp;
+
+  const weakDevices = rows.filter(r => r.impressions / totalImp > 0.15 && ctrOf(r) < avgCtr * 0.5);
+  if (weakDevices.length > 0) {
+    const worst = weakDevices.sort((a, b) => ctrOf(a) - ctrOf(b))[0];
+    recs.push({
+      id: `dv360-device-weak-${worst.label}`, priority: "Medium", platform: "DV360", category: "DV360",
+      issue: `${worst.label} device CTR less than half of DV360 account average`,
+      details: `${worst.label} delivers ${((worst.impressions / totalImp) * 100).toFixed(0)}% of impressions at ${(ctrOf(worst) * 100).toFixed(2)}% CTR — the account CTR is ${(avgCtr * 100).toFixed(2)}%. This drags the whole account CPM efficiency down.`,
+      action: "In DV360 line items, apply a device-type bid modifier (or exclude) for underperforming devices. Test creative variants sized for that device.",
+      impact: 3.5, effort: "Medium", confidence: 76,
+    });
+  }
+
+  const mobile = rows.find(r => /mobile|phone|handset/i.test(r.label));
+  if (mobile && mobile.impressions / totalImp > 0.9) {
+    recs.push({
+      id: `dv360-device-mobile-only`, priority: "Low", platform: "DV360", category: "DV360",
+      issue: "DV360 traffic is >90% mobile — desktop reach is nearly zero",
+      details: `${((mobile.impressions / totalImp) * 100).toFixed(0)}% of DV360 impressions come from mobile. If the campaign objective isn't mobile-first (app installs, mCommerce), you're missing desktop conversion volume.`,
+      action: "Enable Desktop and Connected TV device types on at least one exploratory line item if the media plan allows.",
+      impact: 2.5, effort: "Quick", confidence: 70,
+    });
+  }
+
+  return recs;
+}
+
+/** Campaign-level analysis for DV360 campaigns (mirrors campaignRecs but DV360-labelled). */
+function dv360CampaignRecs(campaigns: any[]): Recommendation[] {
+  const recs: Recommendation[] = [];
+  const dv = campaigns.filter(c => c.platform === "dv360");
+  if (!dv.length) return recs;
+
+  const totalSpend = dv.reduce((s, c) => s + (c.spend || 0), 0);
+  if (totalSpend === 0) return recs;
+
+  // Budget concentration
+  const top = [...dv].sort((a, b) => (b.spend || 0) - (a.spend || 0))[0];
+  if (top && top.spend / totalSpend > 0.6) {
+    recs.push({
+      id: "dv360-camp-concentration", priority: "High", platform: "DV360", category: "DV360",
+      issue: "Over 60% of DV360 budget concentrated in one campaign",
+      details: `"${top.name}" consumes ${((top.spend / totalSpend) * 100).toFixed(0)}% of DV360 spend. If this campaign fatigues or an IO exhausts its budget, the entire DV360 plan under-delivers.`,
+      action: "Distribute budget across at least 2–3 insertion orders. Use DV360 campaign pacing controls to prevent over-delivery on a single IO.",
+      impact: 4, effort: "Medium", confidence: 80,
+    });
+  }
+
+  // Zero-conversion campaigns with significant spend
+  const zeroCvCamps = dv.filter(c => (c.conversions || 0) === 0 && (c.spend || 0) > totalSpend * 0.05);
+  if (zeroCvCamps.length > 0) {
+    recs.push({
+      id: "dv360-camp-zero-conversions", priority: "High", platform: "DV360", category: "Floodlight",
+      issue: `${zeroCvCamps.length} DV360 campaign(s) spending with zero Floodlight conversions`,
+      details: `Campaigns recording no conversions: ${zeroCvCamps.slice(0, 3).map(c => `"${c.name}"`).join(", ")}${zeroCvCamps.length > 3 ? ` +${zeroCvCamps.length - 3} more` : ""}. These account for ${((zeroCvCamps.reduce((s, c) => s + (c.spend || 0), 0) / totalSpend) * 100).toFixed(0)}% of DV360 spend.`,
+      action: "Verify Floodlight tags fire on conversion pages in these campaigns. Check that line items have Floodlight activities assigned in DV360.",
+      impact: 5, effort: "Quick", confidence: 83,
+    });
+  }
+
+  // Low CTR across board (display/video benchmark)
+  const totalImp = dv.reduce((s, c) => s + (c.impressions || 0), 0);
+  const totalClicks = dv.reduce((s, c) => s + (c.clicks || 0), 0);
+  const blendedCtr = totalImp > 0 ? totalClicks / totalImp : 0;
+  if (blendedCtr > 0 && blendedCtr < 0.001) {
+    recs.push({
+      id: "dv360-camp-low-ctr", priority: "Medium", platform: "DV360", category: "DV360",
+      issue: "DV360 blended CTR is below 0.1% — creative or placement may be fatigued",
+      details: `Blended CTR across DV360 campaigns is ${(blendedCtr * 100).toFixed(3)}%. Display benchmarks typically run 0.05–0.3%; sub-0.1% across the board suggests creative fatigue, poor placements, or mismatched audiences.`,
+      action: "Rotate creatives in the lowest-CTR line items. Use DV360 brand safety + contextual targeting to reach more relevant inventory. Check viewability metrics — low viewable impressions suppress CTR.",
+      impact: 3.5, effort: "Medium", confidence: 74,
+    });
+  }
+
+  // Frequency too high (if reach data available)
+  const withReach = dv.filter(c => (c.reach || 0) > 0 && (c.impressions || 0) > 0);
+  if (withReach.length > 0) {
+    const totalReach = withReach.reduce((s, c) => s + (c.reach || 0), 0);
+    const totalImpWithReach = withReach.reduce((s, c) => s + (c.impressions || 0), 0);
+    const avgFreq = totalReach > 0 ? totalImpWithReach / totalReach : 0;
+    if (avgFreq > 8) {
+      recs.push({
+        id: "dv360-camp-high-frequency", priority: "Medium", platform: "DV360", category: "DV360",
+        issue: `DV360 average frequency ${avgFreq.toFixed(1)}× — audience may be over-exposed`,
+        details: `Average frequency of ${avgFreq.toFixed(1)} impressions per unique user exceeds typical upper limits for brand campaigns (3–5×). Over-exposure leads to banner blindness, negative sentiment, and wasted spend.`,
+        action: "Apply frequency caps at the line-item level in DV360 (e.g. 3–5 impressions/user/week). Enable reach-optimised bidding to prioritise unique users.",
+        impact: 3, effort: "Quick", confidence: 76,
+      });
+    }
+    if (avgFreq > 0 && avgFreq < 1.5) {
+      recs.push({
+        id: "dv360-camp-low-frequency", priority: "Low", platform: "DV360", category: "DV360",
+        issue: `DV360 average frequency ${avgFreq.toFixed(1)}× — brand message may not be registering`,
+        details: `Frequency of ${avgFreq.toFixed(1)} means most users are seeing the ad only once. For brand awareness, 3–5 exposures are typically needed for message recall.`,
+        action: "Increase campaign budgets or tighten targeting to raise frequency among core audiences. Consider sequential messaging across multiple line items.",
+        impact: 2.5, effort: "Medium", confidence: 68,
+      });
+    }
+  }
+
+  // High-ROAS campaigns underfunded
+  const avgRoas = (() => {
+    const withRoas = dv.filter(c => (c.spend || 0) > 0 && (c.conversionValue || 0) > 0);
+    if (!withRoas.length) return 0;
+    return withRoas.reduce((s, c) => s + (c.conversionValue / c.spend), 0) / withRoas.length;
+  })();
+  if (avgRoas > 0) {
+    const highRoas = dv.filter(c => (c.spend || 0) > 0 && (c.conversionValue || 0) > 0 && c.conversionValue / c.spend > avgRoas * 1.8 && c.spend / totalSpend < 0.1);
+    if (highRoas.length > 0) {
+      recs.push({
+        id: "dv360-camp-high-roas-underfunded", priority: "High", platform: "DV360", category: "DV360",
+        issue: `${highRoas.length} high-ROAS DV360 campaign(s) receiving less than 10% of budget`,
+        details: `${highRoas.slice(0, 2).map(c => `"${c.name}" (${(c.conversionValue / c.spend).toFixed(2)}× ROAS)`).join(", ")} each deliver well above the account average but are under-budgeted. Scaling these would improve overall DV360 efficiency.`,
+        action: "Increase IO budgets on these campaigns. Use DV360 performance pacing to automatically shift delivery toward the best-converting line items.",
+        impact: 5, effort: "Quick", confidence: 80,
+      });
+    }
+  }
+
+  return recs;
+}
+
+/** DV360 Floodlight / attribution-tracking health recommendations. */
+function dv360FloodlightRecs(attr: DV360AttributionState): Recommendation[] {
+  const recs: Recommendation[] = [];
+  if (attr.loading || attr.error) return recs;
+
+  const activities = attr.activities ?? [];
+
+  // No Floodlight activities detected → conversions can't be measured at all.
+  if (activities.length === 0 && attr.configType) {
+    recs.push({
+      id: "dv360-floodlight-none", priority: "High", platform: "DV360", category: "Floodlight",
+      issue: "No Floodlight activities detected for this DV360 advertiser",
+      details: "Without Floodlight activities, DV360 can't record conversions or build remarketing audiences — the platform is flying blind on outcomes.",
+      action: "In Campaign Manager 360 / DV360, create Floodlight activities for your key conversions (purchase, lead) and confirm the tags fire on-site.",
+      impact: 5, effort: "Medium", confidence: 80,
+    });
+  }
+
+  // Third-party ad server → no post-click/post-view split available.
+  if (attr.configType === "third_party" && !attr.postClickViewAvailable) {
+    recs.push({
+      id: "dv360-attr-thirdparty", priority: "Medium", platform: "DV360", category: "Attribution",
+      issue: "DV360 attribution limited to totals (third-party Floodlight config)",
+      details: "This advertiser uses a third-party ad server, so the Bid Manager API returns total conversions only — no post-click vs post-view breakdown, and no conversion revenue.",
+      action: "Link the advertiser to CM360 (hybrid config) to unlock post-click/post-view attribution and revenue reporting in DV360.",
+      impact: 3, effort: "Medium", confidence: 72,
+    });
+  }
+
+  // View-through disabled (0-day view lookback) on activities that have click windows.
+  const viewOff = activities.filter((a) => a.clickLookbackDays > 0 && (a.viewLookbackDays ?? 0) === 0);
+  if (viewOff.length > 0) {
+    recs.push({
+      id: "dv360-floodlight-view-off", priority: "Low", platform: "DV360", category: "Floodlight",
+      issue: `${viewOff.length} Floodlight activit${viewOff.length > 1 ? "ies have" : "y has"} view-through attribution off`,
+      details: `${viewOff.slice(0, 3).map((a) => `"${a.name}"`).join(", ")} record clicks but a 0-day view window — display/video view-through conversions won't be credited, understating upper-funnel impact.`,
+      action: "If brand/awareness line items are running, enable a 1-day (or longer) view-through window on these Floodlight activities to capture view-driven conversions.",
+      impact: 2.5, effort: "Quick", confidence: 68,
+    });
+  }
+
+  // Spend recorded but zero Floodlight conversions across the account.
+  if (attr.totals && attr.totals.totalConversions === 0 && activities.length > 0) {
+    recs.push({
+      id: "dv360-floodlight-zero-conv", priority: "High", platform: "DV360", category: "Floodlight",
+      issue: "Floodlight activities exist but recorded zero conversions in this window",
+      details: "DV360 has Floodlight activities configured, but none fired in the selected period. This usually means the tags aren't firing on the live site, or the lookback window excludes the traffic.",
+      action: "Verify the Floodlight tags are present and firing on the conversion pages (use the CM360 tag tester), and check the lookback windows cover your buying cycle.",
+      impact: 4.5, effort: "Medium", confidence: 74,
+    });
+  }
+
+  return recs;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const CATEGORY_GROUPS: { label: string; icon: any; cats: string[] }[] = [
-  { label: "Tracking & Pixel", icon: BarChart2, cats: ["Pixel Health", "EMQ", "CAPI", "Event Manager", "GTM", "Enhanced Conversions", "Consent"] },
-  { label: "Funnel & Attribution", icon: Target,   cats: ["Funnel", "Attribution", "GA4", "Ecommerce", "UTM", "Cross-Domain"] },
-  { label: "Audience & Placement", icon: Users,    cats: ["Anomaly", "Google Ads"] },
+  { label: "Tracking & Pixel", icon: BarChart2, cats: ["Pixel Health", "EMQ", "CAPI", "Event Manager", "Floodlight", "Enhanced Conversions", "Consent"] },
+  { label: "Funnel & Attribution", icon: Target,   cats: ["Funnel", "Attribution", "DV360", "Ecommerce", "UTM", "Cross-Domain"] },
+  { label: "Audience & Placement", icon: Users,    cats: ["Anomaly", "DV360"] },
   { label: "Budget & Creative",    icon: ImageIcon, cats: [] }, // catches everything else
 ];
 
 export default function RecommendationsTab({ platform = "both", dateRange = "30d", customStart, customEnd }: Props) {
-  const { meta, google, loading: auditLoading } = useAudit(platform, dateRange, customStart, customEnd);
-  const isMetaEnabled = platform !== "google";
+  const { meta, loading: auditLoading } = useAudit(platform, dateRange, customStart, customEnd);
+  const isMetaEnabled = platform !== "dv360";
+  const isDvEnabled = platform === "dv360" || platform === "both";
   const { campaigns, loading: campsLoading } = useCampaigns(platform, dateRange, customStart, customEnd);
   const { rows: pubRows,    loading: pubLoading }    = useMetaBreakdown("publisher_platform", dateRange, customStart, customEnd, isMetaEnabled);
   const { rows: ageRows,    loading: ageLoading }    = useMetaBreakdown("age",    dateRange, customStart, customEnd, isMetaEnabled);
   const { rows: genderRows, loading: genderLoading } = useMetaBreakdown("gender", dateRange, customStart, customEnd, isMetaEnabled);
+  // DV360-native breakdowns (geo + device) → source of DV360-specific recs.
+  const { rows: dvCountryRows, loading: dvCountryLoading } = useDV360Breakdown("country", dateRange, customStart, customEnd, isDvEnabled);
+  const { rows: dvDeviceRows,  loading: dvDeviceLoading }  = useDV360Breakdown("device",  dateRange, customStart, customEnd, isDvEnabled);
+  // DV360 Floodlight / attribution-tracking health → source of DV360 tracking recs.
+  const dvAttr = useDV360Attribution(isDvEnabled);
 
   const [priorityFilter, setPriorityFilter] = useState<string>("All");
   const [groupFilter, setGroupFilter]       = useState<string>("All");
 
   // Only block on the audit — extra data-driven recs append when their hooks resolve
   const loading = auditLoading;
-  const dataLoading = campsLoading || pubLoading || ageLoading || genderLoading;
+  const dataLoading = campsLoading || pubLoading || ageLoading || genderLoading || dvCountryLoading || dvDeviceLoading;
 
   const allRecs = useMemo<Recommendation[]>(() => {
-    const base = [...(meta?.recommendations || []), ...(google?.recommendations || [])];
+    const base = [...(meta?.recommendations || [])];
     const extra = [
       ...pubRecs(pubRows),
       ...ageRecs(ageRows),
       ...genderRecs(genderRows),
       ...campaignRecs(campaigns),
       ...attributionRecs(campaigns),
+      ...dv360GeoRecs(dvCountryRows),
+      ...dv360DeviceRecs(dvDeviceRows),
+      ...(isDvEnabled ? dv360CampaignRecs(campaigns) : []),
+      ...(isDvEnabled ? dv360FloodlightRecs(dvAttr) : []),
     ];
     // dedupe by id
     const seen = new Set(base.map(r => r.id));
     const unique = extra.filter(r => !seen.has(r.id));
     return [...base, ...unique];
-  }, [meta, google, pubRows, ageRows, genderRows, campaigns]);
+  }, [meta, pubRows, ageRows, genderRows, campaigns, dvCountryRows, dvDeviceRows, dvAttr, isDvEnabled]);
 
   const groupOf = (cat: string): string => {
     for (const g of CATEGORY_GROUPS) {
@@ -302,12 +540,7 @@ export default function RecommendationsTab({ platform = "both", dateRange = "30d
   const { sorted: sortedRecs, sort: recSort, toggle: recToggle } = useSort(filtered, "priority", "asc");
 
   if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center py-24">
-        <RefreshCw className="w-10 h-10 text-blue-600 animate-spin mb-3" />
-        <p className="text-gray-600">Generating recommendations…</p>
-      </div>
-    );
+    return <LoadingState message="Loading recommendations…" />;
   }
 
   const priorityColor = (p: string) =>
@@ -497,7 +730,7 @@ export default function RecommendationsTab({ platform = "both", dateRange = "30d
           `${filtered.length} recommendation${filtered.length !== 1 ? "s" : ""} match current filters.`,
         ]}
         context={{ totalRecs: allRecs.length, filtered: filtered.length, totalLift, avgConfidence }}
-        platform={platform === "both" ? "meta" : platform}
+        platform={platform}
         dateRange={String(dateRange)}
       />
     </div>

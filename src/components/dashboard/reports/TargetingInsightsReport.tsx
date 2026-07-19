@@ -11,7 +11,7 @@ import type { DateRange } from "@/components/shared/DateRangePicker";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -34,7 +34,19 @@ export default function TargetingInsightsReport({ platform, dateRange, customSta
         </div>
         <AIExecutiveSummary
           tabName="Targeting Insights"
-          context={{ campaignCount: campaigns.length, platform, dateRange: String(dateRange) }}
+          context={{
+            campaignCount: campaigns.length,
+            totalSpend: Math.round(campaigns.reduce((s, c) => s + (c.spend || 0), 0)),
+            totalConversions: campaigns.reduce((s, c) => s + (c.conversions || 0), 0),
+            topCampaigns: [...campaigns]
+              .sort((a, b) => (b.spend || 0) - (a.spend || 0))
+              .slice(0, 20)
+              .map((c) => ({
+                name: c.name, platform: c.platform, objective: c.objective,
+                spend: Math.round(c.spend || 0), conversions: c.conversions || 0,
+                roas: (c.spend || 0) > 0 ? +(((c.conversionValue || 0) / (c.spend || 1))).toFixed(2) : 0,
+              })),
+          }}
           platform={platform === "both" ? "meta" : platform}
           dateRange={String(dateRange)}
           inline

@@ -10,16 +10,6 @@ export interface MetaPixelData {
   lastUpdated: Date;
 }
 
-export interface GoogleConversionData {
-  conversionId: string;
-  conversionCount: number;
-  conversionValue: number;
-  duplicateConversions: number;
-  attributionModel: string;
-  status: "active" | "inactive";
-  lastUpdated: Date;
-}
-
 export interface EMQMetrics {
   emailHashQuality: number;
   phoneHashQuality: number;
@@ -53,8 +43,6 @@ export interface HealthScore {
   funnelHealth?: number;
   attributionScore?: number;
   conversionHealth?: number;
-  gaHealth?: number;
-  gtmHealth?: number;
   status: "healthy" | "moderate" | "critical";
   lastUpdated: Date;
   trend?: number; // percentage change
@@ -86,13 +74,6 @@ export interface MetaCredentials {
   accessToken: string;
   businessId: string;
   pixelIds: string[];
-}
-
-export interface GoogleCredentials {
-  accessToken: string;
-  customerId: string;
-  propertyId: string;
-  containerId: string;
 }
 
 // Date Range
@@ -135,12 +116,25 @@ export interface CampaignData {
   name: string;
   objective?: string;
   status: string;
-  platform: "meta" | "google";
+  platform: "meta" | "dv360";
   createdTime?: string;
   /** ISO timestamp of the last significant edit (Meta `updated_time`). Used to estimate learning-phase triggers. */
   updatedTime?: string;
   /** Campaign end / stop time (ISO). Null/undefined means ongoing. */
   endTime?: string;
+  /** DV360 planned flight window (ISO yyyy-mm-dd) from campaignFlight.plannedDates.
+   *  Used to explain "no delivery": an active campaign whose flight ended before
+   *  (or starts after) the selected window legitimately shows zero spend. */
+  flightStart?: string;
+  flightEnd?: string;
+  /** DV360 all-time delivery (wide fixed lookback, ~15 months), INDEPENDENT of
+   *  the selected date range. Recommendations use these so advice is stable
+   *  whether the user picks 7d / 30d / 90d. Undefined while the report is still
+   *  generating or for Meta. */
+  allTimeSpend?: number;
+  allTimeImpressions?: number;
+  allTimeClicks?: number;
+  allTimeConversions?: number;
   /** Budget + spend fields (optional — populated when Insights data is available). */
   dailyBudget?: number;
   lifetimeBudget?: number;
@@ -152,12 +146,18 @@ export interface CampaignData {
   impressions?: number;
   clicks?: number;
   reach?: number;
+  /** Average impression frequency (impressions ÷ unique reach). DV360 populates
+   * this from a separate Bid Manager REACH report; Meta from reach+impressions. */
+  frequency?: number;
+  /** DV360 only: true while the async REACH report(s) are still generating, so
+   * the UI can show a loading state for reach/frequency instead of a stale 0. */
+  reachPending?: boolean;
   conversions?: number;
   conversionValue?: number;
   /** Total video plays (Meta `video_play_actions`). Powers Views + VTR in the
-   * Planning report. Undefined for non-video campaigns / Google. */
+   * Planning report. Undefined for non-video campaigns / DV360. */
   videoViews?: number;
-  /** 0-100, Google Ads only (search_impression_share). */
+  /** 0-100, DV360 only. */
   impressionShare?: number;
   /** ISO currency code: "USD", "INR", etc. */
   currency?: string;
@@ -172,10 +172,46 @@ export interface CampaignData {
    * Example: "1d_click + 1d_view" or "7d_click + 1d_view". */
   effectiveAttribution?: string;
   /** Per-window conversion breakdown from Meta's action_attribution_windows API.
-   * Populated for Meta campaigns only; undefined for Google. */
+   * Populated for Meta campaigns only; undefined for DV360. */
   conv1dClick?: number;
   conv7dClick?: number;
   conv1dView?: number;
+}
+
+export interface AdGroupAdData {
+  id: string;
+  name: string;
+  status: string;
+}
+
+export interface AdGroupData {
+  id: string;
+  name: string;
+  status: string;
+  format?: string;
+  ads?: AdGroupAdData[];
+}
+
+/** DV360 creative that delivered on a line item (from Bid Manager, with real
+ *  per-creative delivery metrics). */
+export interface CreativeData {
+  id: string;
+  name: string;
+  type?: string;
+  impressions?: number;
+  clicks?: number;
+  spend?: number;
+}
+
+/** DV360 bid strategy on a Line Item. Exactly one of the three fields will be set. */
+export interface DV360BidStrategy {
+  type: "fixed" | "maximize_spend" | "performance_goal";
+  /** Human-readable label, e.g. "Target CPA" or "Maximize Spend" */
+  label: string;
+  /** Target value in account currency (e.g. CPA target ₹500, or CPM cap) */
+  targetAmount?: number;
+  /** Raw performanceGoalType string from the API */
+  goalType?: string;
 }
 
 export interface AdData {
@@ -186,6 +222,22 @@ export interface AdData {
   impressions?: number;
   clicks?: number;
   reach?: number;
+  conversions?: number;
+  /** DV360 only — this row is a Line Item; its type (display/video/audio/
+   * YouTube). Present when the parent "ad set" slot holds an Insertion Order. */
+  lineItemType?: string;
+  /** DV360 only — Ad Groups nested under this Line Item (YouTube/video). */
+  adGroups?: AdGroupData[];
+  /** DV360 only — creatives that delivered on this Line Item (display + video). */
+  creatives?: CreativeData[];
+  /** DV360 only — bid strategy on this Line Item. Undefined for Meta ads. */
+  dv360BidStrategy?: DV360BidStrategy;
+  /** DV360 only — ISO date of last update (proxy for "days since edit"). */
+  updateTime?: string;
+  /** DV360 only — line item flight start (ISO yyyy-mm-dd). */
+  liFlightStart?: string;
+  /** DV360 only — line item flight end (ISO yyyy-mm-dd). */
+  liFlightEnd?: string;
 }
 
 export interface AdSetData {
@@ -229,19 +281,6 @@ export interface AdData {
   creativeType?: string;
 }
 
-export interface GoogleCampaignData {
-  id: string;
-  name: string;
-  status: string;
-  createdTime: string;
-}
-
-export interface GoogleAdGroupData {
-  id: string;
-  name: string;
-  status: string;
-}
-
 export interface NamingComponent {
   position: number;
   label: string;
@@ -254,7 +293,7 @@ export interface NamingComponent {
 export interface NamingComplianceResult {
   campaignId: string;
   campaignName: string;
-  platform: "meta" | "google";
+  platform: "meta" | "dv360";
   status: "compliant" | "non-compliant";
   /** % of REQUIRED components missing (0-100). >65 → non-compliant. */
   missingPct: number;

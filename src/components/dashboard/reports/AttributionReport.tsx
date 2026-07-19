@@ -11,7 +11,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { GitBranch, Info, TrendingUp, ArrowRight } from "lucide-react";
+import { GitBranch, Info, TrendingUp, ArrowRight, ChevronDown, ChevronUp } from "lucide-react";
 import { ColumnPickerButton, ALL_STANDARD_KPIS } from "@/components/shared/ColumnPicker";
 import { formatStandardKpi } from "@/lib/standard-kpis";
 import { usePersistentColumns } from "@/hooks/useColumnPrefs";
@@ -20,13 +20,15 @@ import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import SharedSortTh from "@/components/shared/SortTh";
 import { useSort } from "@/hooks/useSort";
 import { useCampaigns } from "@/hooks/useCampaigns";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { useDV360Attribution } from "@/hooks/useDV360Attribution";
+import { currencyFor, formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import type { CampaignData } from "@/types";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import { Term } from "@/components/shared/Term";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -573,11 +575,200 @@ function ConversionWindowComparison({ campaigns, currency }: { campaigns: Campai
   );
 }
 
+// ─── DV360 attribution section ──────────────────────────────────────────────
+
+function SectionHeader({ label, sub }: { label: string; sub: string }) {
+  return (
+    <div className="flex items-center gap-3 pt-2 pb-1 border-b border-gray-200">
+      <h2 className="text-xl font-bold text-gray-900">{label}</h2>
+      <span className="text-xs text-gray-400 font-medium">{sub}</span>
+    </div>
+  );
+}
+
+function Cm360HowToPanel() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 text-xs overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-3 py-2.5 text-left gap-2 hover:bg-amber-100/60 transition"
+      >
+        <span className="text-amber-800 font-medium">
+          Activity names &amp; post-click/post-view split require CM360 access — not yet connected.
+        </span>
+        {open ? <ChevronUp className="w-3.5 h-3.5 text-amber-600 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-amber-600 shrink-0" />}
+      </button>
+      {open && (
+        <div className="px-4 pb-4 pt-1 border-t border-amber-200 text-amber-900 space-y-3">
+          <p className="leading-relaxed">
+            <strong>Campaign Manager 360 (CM360)</strong> is Google&apos;s ad server that sits above DV360. When linked,
+            it provides real Floodlight activity names (e.g. &ldquo;Purchase&rdquo;, &ldquo;Lead Submit&rdquo;) and splits every
+            conversion into <em>post-click</em> vs <em>post-view</em>. Without it, only total conversion counts are available.
+          </p>
+          <p className="font-semibold text-amber-800">How to connect:</p>
+          <ol className="list-decimal list-inside space-y-1.5 leading-relaxed">
+            <li>
+              <strong>Ask a CM360 Admin</strong> at your agency or client to open{" "}
+              <span className="font-mono bg-amber-100 px-1 rounded">Campaign Manager 360 → Admin → Users</span>.
+            </li>
+            <li>
+              Add your Google account (the same one used to connect DV360 here) as a <strong>CM360 user</strong> with
+              at least <em>Standard User</em> role on the relevant CM360 account.
+            </li>
+            <li>
+              When reconnecting to this tool via <strong>Connect with Google</strong>, make sure the OAuth consent
+              screen shows the <strong>DoubleClick for Advertisers</strong> scope (dfatrafficking) — this is requested
+              automatically; just approve it.
+            </li>
+            <li>
+              Once your account has a CM360 user profile, reload this page — activity names and post-click/post-view
+              breakdown will appear automatically.
+            </li>
+          </ol>
+          <p className="text-[11px] text-amber-700 pt-1">
+            Total conversions shown above are real (fetched from Bid Manager API) — only the enriched breakdown requires CM360.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dv360AttributionSection({ enabled }: { enabled: boolean }) {
+  const attr = useDV360Attribution(enabled);
+
+  if (!enabled) return null;
+  if (attr.loading) {
+    return <div className="h-40 flex items-center justify-center text-sm text-gray-400">Loading DV360 attribution…</div>;
+  }
+  if (attr.error) {
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+        <span className="font-semibold">DV360 attribution unavailable:</span> {attr.error}
+      </div>
+    );
+  }
+
+  const totals = attr.totals;
+  const split = attr.conversionSplit ?? [];
+  const pcvAvailable = !!attr.postClickViewAvailable;
+
+  return (
+    <div className="space-y-4">
+      {/* Config summary */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex items-start gap-2 text-xs text-blue-800">
+        <Info className="w-4 h-4 shrink-0 mt-0.5" />
+        <span>
+          DV360 conversions are attributed via <strong><Term name="Floodlight">Floodlight</Term></strong>
+          {attr.configType === "cm360_hybrid" ? " (CM360-linked)" : attr.configType === "third_party" ? " (third-party ad server)" : ""}.
+          {attr.floodlightGroupId ? ` Floodlight config ${attr.floodlightGroupId}.` : ""}
+          {" "}Lookback windows below are the real per-activity settings from the API.
+        </span>
+      </div>
+
+      {/* Floodlight activities + lookback windows */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-100">
+          <h3 className="font-bold text-gray-900 text-sm">Floodlight Activities · Lookback Windows</h3>
+        </div>
+        {attr.activities && attr.activities.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-[11px] uppercase text-gray-500 border-b border-gray-100">
+                  <th className="text-left px-5 py-2 font-semibold">Activity</th>
+                  <th className="text-right px-5 py-2 font-semibold"><Term name="Click Lookback">Click lookback</Term></th>
+                  <th className="text-right px-5 py-2 font-semibold"><Term name="View Lookback">View lookback</Term></th>
+                  <th className="text-right px-5 py-2 font-semibold">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {attr.activities.map((a) => (
+                  <tr key={a.id} className="border-b border-gray-50">
+                    <td className="px-5 py-2.5 text-gray-900">{a.name}</td>
+                    <td className="px-5 py-2.5 text-right tabular-nums text-gray-700">{a.clickLookbackDays}d</td>
+                    <td className="px-5 py-2.5 text-right tabular-nums text-gray-700">{a.viewLookbackDays}d</td>
+                    <td className="px-5 py-2.5 text-right text-xs text-gray-500">{a.servingStatus?.replace(/_/g, " ") || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="px-5 py-6 text-sm text-gray-400">No Floodlight activities returned for this advertiser.</div>
+        )}
+      </div>
+
+      {/* Post-click vs post-view conversion split */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-100">
+          <h3 className="font-bold text-gray-900 text-sm">Conversions by Campaign · Post-Click vs Post-View</h3>
+        </div>
+        {!pcvAvailable && (
+          <div className="mx-5 mt-3 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600 flex items-start gap-2">
+            <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-gray-400" />
+            <span>Post-click / post-view split isn&apos;t available for this advertiser via the Bid Manager API (requires a CM360-hybrid Floodlight link). Total conversions shown are real; the click/view breakdown can&apos;t be fetched.</span>
+          </div>
+        )}
+        {split.length > 0 ? (
+          <div className="overflow-x-auto mt-2">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-[11px] uppercase text-gray-500 border-b border-gray-100">
+                  <th className="text-left px-5 py-2 font-semibold">Campaign</th>
+                  <th className="text-right px-5 py-2 font-semibold">Conversions</th>
+                  {pcvAvailable && <th className="text-right px-5 py-2 font-semibold">Post-click</th>}
+                  {pcvAvailable && <th className="text-right px-5 py-2 font-semibold">Post-view</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {split.map((r, i) => (
+                  <tr key={r.campaignId ?? `${r.campaign}-${i}`} className="border-b border-gray-50">
+                    <td className="px-5 py-2.5 text-gray-900 truncate max-w-[360px]" title={r.campaign}>{r.campaign}</td>
+                    <td className="px-5 py-2.5 text-right tabular-nums text-gray-900">{Math.round(r.totalConversions).toLocaleString("en-IN")}</td>
+                    {pcvAvailable && <td className="px-5 py-2.5 text-right tabular-nums text-gray-700">{Math.round(r.postClick).toLocaleString("en-IN")}</td>}
+                    {pcvAvailable && <td className="px-5 py-2.5 text-right tabular-nums text-gray-700">{Math.round(r.postView).toLocaleString("en-IN")}</td>}
+                  </tr>
+                ))}
+              </tbody>
+              {totals && (
+                <tfoot>
+                  <tr className="bg-gray-50 border-t border-gray-200 font-semibold text-gray-900">
+                    <td className="px-5 py-2.5">Total</td>
+                    <td className="px-5 py-2.5 text-right tabular-nums">{Math.round(totals.totalConversions).toLocaleString("en-IN")}</td>
+                    {pcvAvailable && <td className="px-5 py-2.5 text-right tabular-nums">{Math.round(totals.postClick).toLocaleString("en-IN")}</td>}
+                    {pcvAvailable && <td className="px-5 py-2.5 text-right tabular-nums">{Math.round(totals.postView).toLocaleString("en-IN")}</td>}
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        ) : (
+          <div className="px-5 py-6 text-sm text-gray-400">No conversion data returned for this window.</div>
+        )}
+      </div>
+
+      {attr.notes && attr.notes.length > 0 && (
+        <div className="space-y-2">
+          {attr.notes.map((n, i) =>
+            n.includes("Grant CM360 access") ? (
+              <Cm360HowToPanel key={i} />
+            ) : (
+              <div key={i} className="text-[11px] text-gray-400">· {n}</div>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function AttributionReport({ platform, dateRange, customStart, customEnd }: Props) {
   const { campaigns, loading, startDate, endDate } = useCampaigns(platform, dateRange, customStart, customEnd);
-  const currency = detectCurrency(campaigns);
+  const currency = currencyFor(campaigns, platform === "dv360" ? "dv360" : "meta");
 
   const metaCampaigns = useMemo(
     () => campaigns.filter(c => c.platform === "meta"),
@@ -586,6 +777,9 @@ export default function AttributionReport({ platform, dateRange, customStart, cu
 
   const totalConversions = metaCampaigns.reduce((s, c) => s + (c.conversions || 0), 0);
   const totalSpend       = metaCampaigns.reduce((s, c) => s + (c.spend || 0), 0);
+
+  const showMeta = platform !== "dv360";
+  const showDv   = platform === "dv360" || platform === "both";
 
   return (
     <div className="space-y-6 section-enter">
@@ -596,41 +790,52 @@ export default function AttributionReport({ platform, dateRange, customStart, cu
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Attribution</h1>
             <p className="text-gray-600 mt-1">
-              {metaCampaigns.length} campaign{metaCampaigns.length !== 1 ? "s" : ""} ·{" "}
-              {Math.round(totalConversions).toLocaleString()} conversions · all values from Meta Insights API
+              {showMeta
+                ? `${metaCampaigns.length} Meta campaign${metaCampaigns.length !== 1 ? "s" : ""} · ${Math.round(totalConversions).toLocaleString()} conversions`
+                : "DV360 Floodlight attribution"}
+              {platform === "both" ? " · plus DV360 Floodlight" : ""}
             </p>
           </div>
         </div>
-        {platform !== "google" && (
+        {showMeta && (
           <AIExecutiveSummary
             tabName="Attribution"
-            context={{ window: `${startDate} → ${endDate}`, campaignCount: metaCampaigns.length, totalConversions, totalSpend }}
+            context={{
+              window: `${startDate} → ${endDate}`,
+              campaignCount: metaCampaigns.length,
+              totalConversions,
+              totalSpend: Math.round(totalSpend),
+              blendedRoas: totalSpend > 0 ? Number((metaCampaigns.reduce((s, c) => s + (c.conversionValue || 0), 0) / totalSpend).toFixed(2)) : null,
+              zeroConversionSpenders: metaCampaigns.filter((c) => (c.conversions || 0) === 0 && (c.spend || 0) > 0).length,
+              currency,
+              campaigns: [...metaCampaigns]
+                .sort((a, b) => (b.conversionValue || 0) - (a.conversionValue || 0))
+                .slice(0, 30)
+                .map((c) => ({
+                  name: c.name, objective: c.objective, spend: Math.round(c.spend || 0),
+                  conversions: c.conversions || 0, conversionValue: Math.round(c.conversionValue || 0),
+                })),
+            }}
             platform="meta"
             inline
           />
         )}
       </div>
 
-      {platform === "google" && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800">
-          Attribution data shown here uses Meta campaign data. Switch platform to Meta or Both.
-        </div>
-      )}
+      {/* ── Meta section ── */}
+      {showMeta && (
+        <div className="space-y-6">
+          {platform === "both" && <SectionHeader label="Meta" sub="Meta Ads" />}
+          {/* Data source notice */}
+          <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex items-start gap-2 text-xs text-blue-800">
+            <Info className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              All Meta numbers are <strong>fetched directly from Meta&apos;s Insights API</strong>.
+              Conversions use Meta&apos;s default last-click attribution window for each campaign.
+              Multi-touch models (First Click, Linear, Position-Based) require cross-session journey data that Meta does not expose via API and have been removed.
+            </span>
+          </div>
 
-      {/* Data source notice */}
-      {platform !== "google" && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex items-start gap-2 text-xs text-blue-800">
-          <Info className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>
-            All numbers on this page are <strong>fetched directly from Meta&apos;s Insights API</strong>.
-            Conversions use Meta&apos;s default last-click attribution window for each campaign.
-            Multi-touch models (First Click, Linear, Position-Based) require cross-session journey data that Meta does not expose via API and have been removed.
-          </span>
-        </div>
-      )}
-
-      {platform !== "google" && (
-        <>
           {loading ? (
             <div className="h-48 flex items-center justify-center text-sm text-gray-400">Loading…</div>
           ) : metaCampaigns.length === 0 ? (
@@ -649,10 +854,18 @@ export default function AttributionReport({ platform, dateRange, customStart, cu
               <ConversionWindowComparison campaigns={metaCampaigns} currency={currency} />
             </>
           )}
-        </>
+        </div>
       )}
 
-      {metaCampaigns.length > 0 && platform !== "google" && (() => {
+      {/* ── DV360 section ── */}
+      {showDv && (
+        <div className="space-y-4">
+          {platform === "both" && <SectionHeader label="DV360" sub="Display & Video 360" />}
+          <Dv360AttributionSection enabled={showDv} />
+        </div>
+      )}
+
+      {metaCampaigns.length > 0 && showMeta && (() => {
         const cur = (n: number) => formatMoney(n, currency, 0);
         const overallRoas = totalSpend > 0 ? metaCampaigns.reduce((s, c) => s + (c.conversionValue || 0), 0) / totalSpend : 0;
         const topConv = [...metaCampaigns].sort((a, b) => (b.conversionValue || 0) - (a.conversionValue || 0))[0];

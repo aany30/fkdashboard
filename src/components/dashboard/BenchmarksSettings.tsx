@@ -10,7 +10,7 @@ interface BenchmarkField {
   max: number;
   step: number;
   unit: string;
-  category: "meta" | "google" | "funnel" | "general";
+  category: "meta" | "dv360" | "funnel" | "general";
 }
 
 const BENCHMARK_FIELDS: BenchmarkField[] = [
@@ -64,48 +64,6 @@ const BENCHMARK_FIELDS: BenchmarkField[] = [
     step: 100,
     unit: "ms",
     category: "meta",
-  },
-
-  // Google Benchmarks
-  {
-    key: "googleEnhancedConversionsMatchRate",
-    label: "Enhanced Conversions Match Rate",
-    description: "Expected match rate for enhanced conversion tracking",
-    min: 0,
-    max: 1,
-    step: 0.01,
-    unit: "",
-    category: "google",
-  },
-  {
-    key: "googleEventCompleteness",
-    label: "Event Completeness Target",
-    description: "Expected completeness of Google event data",
-    min: 0,
-    max: 1,
-    step: 0.01,
-    unit: "",
-    category: "google",
-  },
-  {
-    key: "googleEventLatencyMs",
-    label: "Event Latency Threshold",
-    description: "Maximum acceptable Google event latency",
-    min: 0,
-    max: 10000,
-    step: 100,
-    unit: "ms",
-    category: "google",
-  },
-  {
-    key: "googleGAEventQuality",
-    label: "GA4 Event Quality Target",
-    description: "Expected Google Analytics 4 event quality",
-    min: 0,
-    max: 1,
-    step: 0.01,
-    unit: "",
-    category: "google",
   },
 
   // Funnel Benchmarks
@@ -163,10 +121,9 @@ export default function BenchmarksSettings({ onClose }: Props) {
     }
   };
 
-  const categories = ["meta", "google", "funnel", "general"] as const;
+  const categories = ["meta", "funnel", "general"] as const;
   const categoryLabels = {
     meta: "Meta Benchmarks",
-    google: "Google Benchmarks",
     funnel: "Funnel Benchmarks",
     general: "General Settings",
   };

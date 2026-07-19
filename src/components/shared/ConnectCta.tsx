@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Plug, ArrowRight } from "lucide-react";
 
 interface Props {
-  /** "Meta", "Google", or any platform display name. */
+  /** "Meta", "DV360", or any platform display name. */
   platform: string;
   /** Optional contextual description (e.g. "to see funnel drop-off"). */
   context?: string;

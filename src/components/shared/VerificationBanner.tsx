@@ -14,7 +14,7 @@ import { useEffect, useState } from "react";
 import { CheckCircle2, AlertTriangle, AlertCircle, Loader2, ChevronDown, ChevronUp } from "lucide-react";
 import type { CampaignData } from "@/types";
 import { useAuthStore } from "@/store/auth";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { currencyFor, formatMoney } from "@/lib/currency";
 
 interface CampaignDiff {
   campaignId: string;
@@ -126,7 +126,7 @@ export default function VerificationBanner({ campaigns, startDate, endDate }: Pr
   const metaCampaigns = campaigns.filter((c) => c.platform === "meta");
   if (metaCampaigns.length === 0) return null;
 
-  const currency = detectCurrency(campaigns);
+  const currency = currencyFor(campaigns, "meta");
   const verifiedAgo = data ? secondsAgo(data.verifiedAt) : 0;
 
   return (

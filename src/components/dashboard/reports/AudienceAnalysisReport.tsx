@@ -11,7 +11,7 @@
 
 import { useState, useMemo, useRef, useEffect } from "react";
 import {
-  MapPin, Download, ChevronDown, ChevronRight, LayersIcon, Check,
+  MapPin, Download, ChevronDown, ChevronRight, LayersIcon, Check, Info,
 } from "lucide-react";
 import { ColumnPickerButton, ALL_STANDARD_KPIS } from "@/components/shared/ColumnPicker";
 import { formatStandardKpi, FETCHABLE_KPIS } from "@/lib/standard-kpis";
@@ -21,6 +21,8 @@ import { useSort } from "@/hooks/useSort";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import { useMetaBreakdown, type BreakdownRow } from "@/hooks/useMetaBreakdown";
+import { useDV360Breakdown } from "@/hooks/useDV360Breakdown";
+import { useYouTubeAnalyticsBreakdown } from "@/hooks/useYouTubeAnalyticsBreakdown";
 import { useAdSetInsights } from "@/hooks/useAdSetInsights";
 import { classifyAdSet, AUDIENCE_COLORS, type AudienceClass } from "@/lib/audience-classifier";
 import { formatMoney } from "@/lib/currency";
@@ -28,7 +30,7 @@ import { rangeToDates } from "@/lib/date-range";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -184,8 +186,8 @@ const btnCls = "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs 
 
 // ─── Geo Explorer ─────────────────────────────────────────────────────────────
 
-type GeoLevel = "country" | "region";
-const GEO_LEVEL_LABELS: Record<GeoLevel, string> = { country: "Country", region: "Region" };
+type GeoLevel = "country" | "region" | "zip";
+const GEO_LEVEL_LABELS: Record<GeoLevel, string> = { country: "Country", region: "Region", zip: "Postal Code" };
 
 interface GeoColDef { id: string; label: string; group: string; fmt: "money" | "int" | "pct" | "x" | "decimal"; defaultOn: boolean; }
 const GEO_ALL_COLS: GeoColDef[] = [
@@ -228,23 +230,31 @@ function GeoColPicker({ cols, setCols }: { cols: string[]; setCols: (c: string[]
 }
 
 function GeoExplorer({
-  countryRows, regionRows, cityRows, loadingCountry, loadingRegion, loadingCity, currency,
+  countryRows, regionRows, cityRows, zipRows, loadingCountry, loadingRegion, loadingCity, loadingZip, currency,
+  providerLabel = "Meta",
 }: {
   countryRows: BreakdownRow[];
   regionRows: BreakdownRow[];
   cityRows: BreakdownRow[];
+  zipRows?: BreakdownRow[];
   loadingCountry: boolean;
   loadingRegion: boolean;
   loadingCity: boolean;
+  loadingZip?: boolean;
   currency: string;
+  providerLabel?: string;
 }) {
   const [level, setLevel] = useState<GeoLevel>("country");
   const [levelOpen, setLevelOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [cols, setCols] = usePersistentColumns("geo", GEO_DEFAULT_COLS);
 
-  const rows = level === "country" ? countryRows : regionRows;
-  const loading = level === "country" ? loadingCountry : loadingRegion;
+  // Postal Code is only offered when the caller supplies zip rows (DV360).
+  const hasZip = zipRows !== undefined;
+  const levels: GeoLevel[] = hasZip ? ["country", "region", "zip"] : ["country", "region"];
+
+  const rows = level === "country" ? countryRows : level === "zip" ? (zipRows ?? []) : regionRows;
+  const loading = level === "country" ? loadingCountry : level === "zip" ? !!loadingZip : loadingRegion;
 
   const enriched = useMemo(() => rows.map(r => ({
     ...r,
@@ -290,7 +300,7 @@ function GeoExplorer({
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setLevelOpen(false)} />
                 <div className="absolute right-0 top-full mt-1 z-50 w-36 bg-white text-gray-800 rounded-lg shadow-xl border border-gray-200 overflow-hidden py-1">
-                  {(["country", "region"] as GeoLevel[]).map(l => (
+                  {levels.map(l => (
                     <button key={l} onClick={() => { setLevel(l); setLevelOpen(false); }}
                       className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 flex items-center gap-2 ${level === l ? "text-blue-600 font-semibold" : "text-gray-700"}`}>
                       {level === l && <Check className="w-3 h-3" />}{GEO_LEVEL_LABELS[l]}
@@ -317,7 +327,7 @@ function GeoExplorer({
             {/* Left: bar chart */}
             <div className="w-60 shrink-0">
               <p className="text-[10px] uppercase tracking-widest text-gray-400 font-semibold mb-3">
-                Top {level === "country" ? "countries" : "regions"} by spend
+                Top {level === "country" ? "countries" : level === "zip" ? "postal codes" : "regions"} by spend
               </p>
               <div className="space-y-1.5">
                 {top10.map(r => {
@@ -351,13 +361,16 @@ function GeoExplorer({
                 <tbody>
                   {sorted.map(r => {
                     const isOpen = expanded.has(r.label);
+                    const expandable = level !== "zip";
                     return (
                       <>
-                        <tr key={r.label} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
-                          onClick={() => setExpanded(prev => { const n = new Set(prev); n.has(r.label) ? n.delete(r.label) : n.add(r.label); return n; })}>
+                        <tr key={r.label} className={`border-b border-gray-50 hover:bg-gray-50 ${expandable ? "cursor-pointer" : ""}`}
+                          onClick={expandable ? () => setExpanded(prev => { const n = new Set(prev); n.has(r.label) ? n.delete(r.label) : n.add(r.label); return n; }) : undefined}>
                           <td className="py-2.5 text-gray-800 font-medium text-xs">
                             <div className="flex items-center gap-1">
-                              {isOpen ? <ChevronDown className="w-3 h-3 text-gray-400" /> : <ChevronRight className="w-3 h-3 text-gray-300" />}
+                              {expandable
+                                ? (isOpen ? <ChevronDown className="w-3 h-3 text-gray-400" /> : <ChevronRight className="w-3 h-3 text-gray-300" />)
+                                : <span className="w-3 h-3 inline-block" />}
                               {r.label}
                             </div>
                           </td>
@@ -413,7 +426,7 @@ function GeoExplorer({
                           if (childCities.length === 0) {
                             return (
                               <tr key={`${r.label}-empty`} className="border-b border-gray-50 bg-gray-50">
-                                <td colSpan={cols.length + 1} className="py-2 px-12 text-[11px] text-gray-400 italic">No city-level data reported by Meta for {r.label} in this window.</td>
+                                <td colSpan={cols.length + 1} className="py-2 px-12 text-[11px] text-gray-400 italic">No city-level data reported by {providerLabel} for {r.label} in this window.</td>
                               </tr>
                             );
                           }
@@ -534,7 +547,7 @@ function AgeProfile({ rows, loading, currency }: { rows: BreakdownRow[]; loading
   void currency;
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
       <div className="px-5 py-4">
         <div className="flex items-start justify-between gap-2 mb-1">
           <div>
@@ -548,7 +561,7 @@ function AgeProfile({ rows, loading, currency }: { rows: BreakdownRow[]; loading
             {metricOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setMetricOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 z-50 w-40 bg-white text-gray-800 rounded-lg shadow-xl border border-gray-200 overflow-hidden py-1">
+                <div className="absolute right-0 top-full mt-1 z-50 w-40 bg-white text-gray-800 rounded-lg shadow-xl border border-gray-200 overflow-y-auto max-h-64 py-1">
                   {(Object.keys(CHART_METRIC_LABELS) as ChartMetric[]).map(m => (
                     <button key={m} onClick={() => { setMetric(m); setMetricOpen(false); }}
                       className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 flex items-center gap-2 ${m === metric ? "text-blue-600 font-semibold" : "text-gray-700"}`}>
@@ -646,7 +659,7 @@ function GenderSplit({ rows, loading }: { rows: BreakdownRow[]; loading: boolean
   const pctOf = (r: BreakdownRow | undefined) => total > 0 ? (valueOf(r) / total) * 100 : 0;
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
       <div className="px-5 py-4">
         <div className="flex items-start justify-between gap-2 mb-1">
           <div>
@@ -662,7 +675,7 @@ function GenderSplit({ rows, loading }: { rows: BreakdownRow[]; loading: boolean
             {metricOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setMetricOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 z-50 w-40 bg-white text-gray-800 rounded-lg shadow-xl border border-gray-200 overflow-hidden py-1">
+                <div className="absolute right-0 top-full mt-1 z-50 w-40 bg-white text-gray-800 rounded-lg shadow-xl border border-gray-200 overflow-y-auto max-h-64 py-1">
                   {(Object.keys(CHART_METRIC_LABELS) as ChartMetric[]).map(m => (
                     <button key={m} onClick={() => { setMetric(m); setMetricOpen(false); }}
                       className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 flex items-center gap-2 ${m === metric ? "text-blue-600 font-semibold" : "text-gray-700"}`}>
@@ -701,6 +714,79 @@ function GenderSplit({ rows, loading }: { rows: BreakdownRow[]; loading: boolean
                 <div className="text-[11px] text-gray-400">{compact(valueOf(unk))}</div>
               </div>
             )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Device Breakdown ────────────────────────────────────────────────────────
+
+function DeviceBreakdown({ rows, loading }: { rows: BreakdownRow[]; loading?: boolean }) {
+  const [metric, setMetric] = usePersistentValue<ChartMetric>("audience-device-metric", "impressions");
+  const [metricOpen, setMetricOpen] = useState(false);
+
+  const valueOf = (r: BreakdownRow): number => chartMetricValue(r, metric);
+  const sorted = [...rows].sort((a, b) => valueOf(b) - valueOf(a));
+  const total = sorted.reduce((s, r) => s + valueOf(r), 0);
+  const topRow = sorted[0];
+
+  const DEVICE_COLORS: Record<string, string> = {
+    desktop: "bg-blue-500", mobile: "bg-indigo-500", tablet: "bg-violet-500",
+    "connected tv": "bg-emerald-500", smarttv: "bg-teal-500", "smart tv": "bg-teal-500",
+  };
+  const colorFor = (label: string) => DEVICE_COLORS[label.toLowerCase()] ?? "bg-gray-400";
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+      <div className="px-5 py-4">
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-gray-400 font-semibold">Device Breakdown</p>
+            <h3 className="text-gray-900 font-bold text-base mt-0.5">
+              {loading ? "Loading…" : total === 0 ? "No device data." : topRow ? `${topRow.label} leads with ${pct(total > 0 ? valueOf(topRow) / total * 100 : 0)} of ${CHART_METRIC_LABELS[metric].toLowerCase()}.` : ""}
+            </h3>
+          </div>
+          <div className="relative shrink-0">
+            <button onClick={() => setMetricOpen(v => !v)} className={btnCls}>
+              <LayersIcon className="w-3.5 h-3.5 text-blue-500" /> {CHART_METRIC_LABELS[metric]}
+            </button>
+            {metricOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setMetricOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 z-50 w-40 bg-white text-gray-800 rounded-lg shadow-xl border border-gray-200 overflow-y-auto max-h-64 py-1">
+                  {(Object.keys(CHART_METRIC_LABELS) as ChartMetric[]).map(m => (
+                    <button key={m} onClick={() => { setMetric(m); setMetricOpen(false); }}
+                      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 flex items-center gap-2 ${m === metric ? "text-blue-600 font-semibold" : "text-gray-700"}`}>
+                      {m === metric && <Check className="w-3 h-3" />}{CHART_METRIC_LABELS[m]}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="h-24 flex items-center justify-center text-xs text-gray-400">Loading…</div>
+        ) : total === 0 ? (
+          <div className="h-24 flex items-center justify-center text-xs text-gray-400">No device breakdown data.</div>
+        ) : (
+          <div className="space-y-2.5 pt-1">
+            {sorted.map((r) => {
+              const share = total > 0 ? valueOf(r) / total : 0;
+              return (
+                <div key={r.label} className="flex items-center gap-3">
+                  <div className="w-28 shrink-0 text-xs font-medium text-gray-700 truncate">{r.label}</div>
+                  <div className="flex-1 bg-gray-100 rounded-full h-2 overflow-hidden">
+                    <div className={`h-full rounded-full ${colorFor(r.label)}`} style={{ width: `${share * 100}%` }} />
+                  </div>
+                  <div className="w-12 text-right text-xs text-gray-500 tabular-nums shrink-0">{pct(share * 100)}</div>
+                  <div className="w-20 text-right text-xs text-gray-400 tabular-nums shrink-0">{compact(valueOf(r))}</div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -930,7 +1016,7 @@ const COHORT_COLS: { id: CohortCol; label: string }[] = [
 const COHORT_DEFAULT_COLS: CohortCol[] = ["impressions", "ctr", "convRate", "spend"];
 
 function CohortDetail({ rows, currency }: { rows: CohortRow[]; currency: string }) {
-  const [columns, setColumns] = useState<CohortCol[]>(COHORT_DEFAULT_COLS);
+  const [columns, setColumns] = usePersistentColumns<CohortCol>("audience-cohort-cols", COHORT_DEFAULT_COLS);
   const [colMenuOpen, setColMenuOpen] = useState(false);
   const [swapIdx, setSwapIdx] = useState<number | null>(null);
   const swapRef = useRef<HTMLDivElement>(null);
@@ -1056,43 +1142,99 @@ function CohortDetail({ rows, currency }: { rows: CohortRow[]; currency: string 
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function AudienceAnalysisReport({ platform, dateRange, customStart, customEnd }: Props) {
-  const effective = platform === "google" ? "meta" as const : platform;
   const { startDate, endDate } = rangeToDates(dateRange, customStart, customEnd);
 
-  const { rows: ageRows,     loading: ageLoading    } = useMetaBreakdown("age",               dateRange, customStart, customEnd);
-  const { rows: genderRows,  loading: genLoading    } = useMetaBreakdown("gender",            dateRange, customStart, customEnd);
-  const { rows: countryRows, loading: countryLoading } = useMetaBreakdown("country",          dateRange, customStart, customEnd);
-  const { rows: regionRows,  loading: regionLoading  } = useMetaBreakdown("region",           dateRange, customStart, customEnd);
-  const { rows: cityRows,    loading: cityLoading    } = useMetaBreakdown("region,city",      dateRange, customStart, customEnd);
-  const { rows: deviceRows                           } = useMetaBreakdown("impression_device", dateRange, customStart, customEnd);
+  const showMeta = platform !== "dv360";
+  const showDv   = platform === "dv360" || platform === "both";
 
-  const { adsets, audienceMap, currency } = useAdSetInsights(effective, dateRange, customStart, customEnd);
+  // ── Meta breakdowns ──────────────────────────────────────────────────────
+  const { rows: metaAge,     loading: metaAgeL     } = useMetaBreakdown("age",               dateRange, customStart, customEnd, showMeta);
+  const { rows: metaGender,  loading: metaGenL     } = useMetaBreakdown("gender",            dateRange, customStart, customEnd, showMeta);
+  const { rows: metaCountry, loading: metaCountryL } = useMetaBreakdown("country",           dateRange, customStart, customEnd, showMeta);
+  const { rows: regionRows,  loading: regionLoading } = useMetaBreakdown("region",           dateRange, customStart, customEnd, showMeta);
+  const { rows: cityRows,    loading: cityLoading   } = useMetaBreakdown("region,city",      dateRange, customStart, customEnd, showMeta);
+  const { rows: metaDevice                          } = useMetaBreakdown("impression_device", dateRange, customStart, customEnd, showMeta);
+
+  // ── DV360 breakdowns ─────────────────────────────────────────────────────
+  // Age & gender come from YouTube Analytics API (BM v2 removed YOUTUBE_AUDIENCE
+  // report type). Country/device come from BM v2 STANDARD reports as before.
+  // Age/gender — PRIMARY source is DV360 Bid Manager's native FILTER_AGE/
+  // FILTER_GENDER (real ad-campaign demographics). If BM reports these as
+  // unsupported for this advertiser, fall back to the YouTube Analytics API
+  // (only meaningful when the account owns a YouTube channel).
+  const { rows: dvAgeBm,    loading: dvAgeBmL,    unsupported: dvAgeBmUnsup,    pending: dvAgeBmPending    } = useDV360Breakdown("age",    dateRange, customStart, customEnd, showDv);
+  const { rows: dvGenderBm, loading: dvGenderBmL, unsupported: dvGenderBmUnsup, pending: dvGenderBmPending } = useDV360Breakdown("gender", dateRange, customStart, customEnd, showDv);
+  // BM demographics are "unsupported" only when BOTH age and gender say so.
+  const bmDemoUnsupported = dvAgeBmUnsup && dvGenderBmUnsup;
+  const bmDemoHasData = dvAgeBm.length > 0 || dvGenderBm.length > 0;
+
+  // YouTube Analytics fallback — only fetch when BM demographics are unsupported.
+  const ytFallbackEnabled = showDv && bmDemoUnsupported && !bmDemoHasData;
+  const { rows: dvAgeYt,    loading: dvAgeYtL,    missingScope: dvAgeMissingScope,    apiDisabled: dvAgeApiDisabled,    noChannel: dvAgeNoChannel    } = useYouTubeAnalyticsBreakdown("age",    dateRange, customStart, customEnd, ytFallbackEnabled);
+  const { rows: dvGenderYt, loading: dvGenderYtL, missingScope: dvGenderMissingScope, apiDisabled: dvGenderApiDisabled, noChannel: dvGenderNoChannel } = useYouTubeAnalyticsBreakdown("gender", dateRange, customStart, customEnd, ytFallbackEnabled);
+
+  // Prefer BM rows; fall back to YouTube Analytics rows when BM is unsupported.
+  const dvAge    = bmDemoHasData ? dvAgeBm    : dvAgeYt;
+  const dvGender = bmDemoHasData ? dvGenderBm : dvGenderYt;
+  const dvAgeL    = dvAgeBmL    || dvAgeBmPending    || (ytFallbackEnabled && dvAgeYtL);
+  const dvGenderL = dvGenderBmL || dvGenderBmPending || (ytFallbackEnabled && dvGenderYtL);
+
+  const { rows: dvCountry, error: dvCountryErr, loading: dvCountryL, pending: dvCountryPending } = useDV360Breakdown("country", dateRange, customStart, customEnd, showDv);
+  // Geo drill-down for DV360 via Bid Manager STANDARD geo dimensions:
+  // FILTER_REGION (region), FILTER_REGION×FILTER_CITY (city), FILTER_ZIP_POSTAL_CODE (postal).
+  const { rows: dvRegion, loading: dvRegionL, pending: dvRegionPending } = useDV360Breakdown("region",      dateRange, customStart, customEnd, showDv);
+  const { rows: dvCity,   loading: dvCityL,   pending: dvCityPending   } = useDV360Breakdown("region,city", dateRange, customStart, customEnd, showDv);
+  const { rows: dvZip,    loading: dvZipL,    pending: dvZipPending    } = useDV360Breakdown("zip",         dateRange, customStart, customEnd, showDv);
+  const { rows: dvDevice, loading: dvDeviceL, pending: dvDevicePending } = useDV360Breakdown("device",  dateRange, customStart, customEnd, showDv);
+  // Country is a plain (non-demographic) BM breakdown — if IT fails, something
+  // is wrong with auth/config and we surface a hard error.
+  const dv360Error = showDv ? dvCountryErr : null;
+  // apiDisabled means the YouTube Data/Analytics API isn't enabled in the Cloud
+  // project — a one-time console fix, NOT a reconnect. Checked first.
+  const dvDemoApiDisabled = !bmDemoHasData && (dvAgeApiDisabled || dvGenderApiDisabled);
+  // missingScope means the refresh token lacks the YouTube scopes — reconnect prompt.
+  const dvDemoMissingScope = !bmDemoHasData && !dvDemoApiDisabled && (dvAgeMissingScope || dvGenderMissingScope);
+  // noChannel: connected account has no owned YouTube channel — can't auto-detect.
+  const dvDemoNoChannel = !bmDemoHasData && !dvDemoApiDisabled && !dvDemoMissingScope && (dvAgeNoChannel || dvGenderNoChannel);
+  // "no data": BM has no demographics AND the YouTube fallback also came up empty.
+  const dvDemoUnsupported = !bmDemoHasData && !dvDemoApiDisabled && !dvDemoMissingScope && !dvDemoNoChannel && !dvAgeL && !dvGenderL && dvAge.length === 0 && dvGender.length === 0;
+
+  // ── Meta-only cohort detailing ───────────────────────────────────────────
+  const { adsets, audienceMap, currency } = useAdSetInsights(
+    showMeta ? (platform === "both" ? "both" : "meta") : "meta",
+    dateRange, customStart, customEnd
+  );
 
   const cohortRows = useMemo((): CohortRow[] => {
+    if (!showMeta) return [];
     const byType = new Map<AudienceType, { impr: number; clk: number; conv: number; spend: number }>();
     for (const a of adsets) {
       const t = classifyAdSet(a.targeting, audienceMap, a.campaignObjective, a.name).cls;
       const cur = byType.get(t) ?? { impr: 0, clk: 0, conv: 0, spend: 0 };
-      cur.impr  += a.impressions;
-      cur.clk   += a.clicks;
-      cur.conv  += a.conversions;
-      cur.spend += a.spend;
+      cur.impr  += a.impressions; cur.clk += a.clicks;
+      cur.conv  += a.conversions; cur.spend += a.spend;
       byType.set(t, cur);
     }
     return Array.from(byType.entries()).map(([segment, d]) => ({
       segment,
-      impressions: d.impr,
-      clicks: d.clk,
-      spend: d.spend,
-      conversions: d.conv,
-      ctr:     d.impr > 0 ? (d.clk / d.impr) * 100 : 0,
-      convRate: d.clk > 0 ? (d.conv / d.clk) * 100 : 0,
-      cpm:     d.impr > 0 ? (d.spend / d.impr) * 1000 : 0,
+      impressions: d.impr, clicks: d.clk, spend: d.spend, conversions: d.conv,
+      ctr:      d.impr > 0 ? (d.clk  / d.impr) * 100 : 0,
+      convRate: d.clk  > 0 ? (d.conv / d.clk)  * 100 : 0,
+      cpm:      d.impr > 0 ? (d.spend / d.impr) * 1000 : 0,
     }));
-  }, [adsets, audienceMap]);
+  }, [adsets, audienceMap, showMeta]);
+
+  // ── Platform section header ──────────────────────────────────────────────
+  const SectionHeader = ({ label, sub }: { label: string; sub: string }) => (
+    <div className="flex items-center gap-3 pt-2 pb-1 border-b border-gray-200">
+      <h2 className="text-xl font-bold text-gray-900">{label}</h2>
+      <span className="text-xs text-gray-400 font-medium">{sub}</span>
+    </div>
+  );
 
   return (
     <div className="space-y-5">
+      {/* ── Page header ── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Audience Analysis</h1>
@@ -1100,57 +1242,154 @@ export default function AudienceAnalysisReport({ platform, dateRange, customStar
         </div>
         <AIExecutiveSummary
           tabName="Audience Analysis"
-          context={{ window: `${startDate} → ${endDate}`, ageGroups: ageRows.length, countries: countryRows.length }}
-          platform="meta"
+          context={{
+            window: `${startDate} → ${endDate}`,
+            ageBreakdown: [...metaAge, ...dvAge].map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: Math.round(r.spend), conversions: r.conversions })),
+            genderBreakdown: [...metaGender, ...dvGender].map(r => ({ label: r.label, impressions: r.impressions, spend: Math.round(r.spend), conversions: r.conversions })),
+            countryBreakdown: [...metaCountry, ...dvCountry].sort((a, b) => b.spend - a.spend).slice(0, 15).map(r => ({ label: r.label, impressions: r.impressions, spend: Math.round(r.spend), conversions: r.conversions })),
+            cohorts: cohortRows.length,
+          }}
+          platform={platform}
           inline
         />
       </div>
 
-      <GeoExplorer
-        countryRows={countryRows}
-        regionRows={regionRows}
-        cityRows={cityRows}
-        loadingCountry={countryLoading}
-        loadingRegion={regionLoading}
-        loadingCity={cityLoading}
-        currency={currency}
-      />
-      <AgeProfile rows={ageRows} loading={ageLoading} currency={currency} />
-      <GenderSplit rows={genderRows} loading={genLoading} />
-      <CustomCohorts ageRows={ageRows} genderRows={genderRows} countryRows={countryRows} deviceRows={deviceRows} />
-      <CohortDetail rows={cohortRows} currency={currency} />
+      {/* ── Meta section ── */}
+      {showMeta && (
+        <div className="space-y-5">
+          {platform === "both" && <SectionHeader label="Meta" sub="Meta Ads" />}
+          <GeoExplorer
+            countryRows={metaCountry}
+            regionRows={regionRows}
+            cityRows={cityRows}
+            loadingCountry={metaCountryL}
+            loadingRegion={regionLoading}
+            loadingCity={cityLoading}
+            currency={currency}
+          />
+          <AgeProfile rows={metaAge} loading={metaAgeL} currency={currency} />
+          <GenderSplit rows={metaGender} loading={metaGenL} />
+          <DeviceBreakdown rows={metaDevice} />
+          <CustomCohorts ageRows={metaAge} genderRows={metaGender} countryRows={metaCountry} deviceRows={metaDevice} />
+          <CohortDetail rows={cohortRows} currency={currency} />
+        </div>
+      )}
 
-      {platform === "google" && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800">
-          Audience Analysis uses Meta insights — switch Platform to Meta or Both for data.
+      {/* ── DV360 section ── */}
+      {showDv && (
+        <div className="space-y-5">
+          {platform === "both" && <SectionHeader label="DV360" sub="Display & Video 360" />}
+
+          {dv360Error ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+              <span className="font-semibold">DV360 breakdowns unavailable:</span> {dv360Error}
+            </div>
+          ) : (
+            <>
+              <GeoExplorer
+                countryRows={dvCountry}
+                regionRows={dvRegion}
+                cityRows={dvCity}
+                zipRows={dvZip}
+                loadingCountry={dvCountryL || dvCountryPending}
+                loadingRegion={dvRegionL || dvRegionPending}
+                loadingCity={dvCityL || dvCityPending}
+                loadingZip={dvZipL || dvZipPending}
+                currency={currency}
+                providerLabel="DV360"
+              />
+              <DeviceBreakdown rows={dvDevice} loading={dvDeviceL || dvDevicePending} />
+              {dvDemoApiDisabled ? (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 flex items-start gap-3">
+                  <Info className="w-4 h-4 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-medium mb-1">Enable the YouTube APIs in your Google Cloud project</p>
+                    <p className="text-xs text-amber-700 mb-2">
+                      Age &amp; gender data comes from the YouTube Analytics API. Your OAuth permissions are correct, but the required APIs aren&apos;t turned on in the Cloud project yet. Enable both, then reload (changes take ~1–2 min to propagate):
+                    </p>
+                    <ul className="text-xs text-amber-700 space-y-0.5 list-disc list-inside mb-2">
+                      <li>
+                        <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noreferrer" className="underline font-medium">YouTube Data API v3</a> — to identify the YouTube channel
+                      </li>
+                      <li>
+                        <a href="https://console.cloud.google.com/apis/library/youtubeanalytics.googleapis.com" target="_blank" rel="noreferrer" className="underline font-medium">YouTube Analytics API</a> — to read demographic reports
+                      </li>
+                    </ul>
+                    <p className="text-xs text-amber-700">
+                      Open each link in the same Google Cloud project your OAuth client belongs to, click <strong>Enable</strong>, then reload this page.
+                    </p>
+                  </div>
+                </div>
+              ) : dvDemoMissingScope ? (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 flex items-start gap-3">
+                  <Info className="w-4 h-4 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-medium mb-1">Additional Google scopes required for YouTube demographics</p>
+                    <p className="text-xs text-amber-700 mb-2">
+                      Age &amp; gender data comes from the YouTube Analytics API. Your current DV360 token only has Bid Manager scopes — two more are needed:
+                    </p>
+                    <ul className="text-xs text-amber-700 space-y-0.5 list-disc list-inside mb-2">
+                      <li><code className="bg-amber-100 px-1 rounded">youtube.readonly</code> — to identify your YouTube channel</li>
+                      <li><code className="bg-amber-100 px-1 rounded">yt-analytics.readonly</code> — to read demographic reports</li>
+                    </ul>
+                    <p className="text-xs text-amber-700">
+                      Disconnect and reconnect your DV360 account — on the Google OAuth consent screen, grant both YouTube permissions in addition to the DV360 scopes.
+                    </p>
+                  </div>
+                </div>
+              ) : dvDemoNoChannel ? (
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-700 flex items-start gap-3">
+                  <Info className="w-4 h-4 mt-0.5 shrink-0 text-gray-400" />
+                  <div>
+                    <p className="font-medium mb-1">Age &amp; gender can&apos;t be fetched for DV360</p>
+                    <p className="text-xs text-gray-500">
+                      DV360&apos;s Bid Manager API doesn&apos;t expose age/gender demographics for this advertiser&apos;s inventory, and the connected Google account doesn&apos;t own a YouTube channel to pull organic-viewer demographics from (YouTube&apos;s API only exposes analytics for channels the authenticated account owns).
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      To see age/gender, connect using the YouTube channel owner&apos;s Google account, or check demographics in the DV360 UI directly.
+                    </p>
+                  </div>
+                </div>
+              ) : dvDemoUnsupported ? (
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600 flex items-start gap-2">
+                  <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-gray-400" />
+                  <span>Age &amp; gender demographics are not available for this account. Bid Manager v2 does not support demographic reports for Connected TV inventory, and the connected Google account has no YouTube channel to pull organic viewer data from.</span>
+                </div>
+              ) : (
+                <>
+                  <div className="text-xs text-gray-400 font-medium -mb-2">YouTube channel — organic-viewer demographics (not DV360 ad audience)</div>
+                  <AgeProfile rows={dvAge} loading={dvAgeL} currency={currency} />
+                  <GenderSplit rows={dvGender} loading={dvGenderL} />
+                  <CustomCohorts ageRows={dvAge} genderRows={dvGender} countryRows={dvCountry} deviceRows={dvDevice} />
+                </>
+              )}
+              <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-800 flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                Geo drill-down (region → city → postal code) comes from Bid Manager geo reports. Custom-audience cohort detailing remains a Meta-only feature.
+              </div>
+            </>
+          )}
         </div>
       )}
 
       <TabSummaryFooter
         tabName="Audience Analysis"
-        lines={[
-          `${ageRows.length} age group${ageRows.length !== 1 ? "s" : ""} · ${countryRows.length} countr${countryRows.length !== 1 ? "ies" : "y"} · ${genderRows.length} gender segment${genderRows.length !== 1 ? "s" : ""} in this window.`,
-          `${cohortRows.length} audience cohort${cohortRows.length !== 1 ? "s" : ""} identified from ad-set targeting.`,
-          `Date window: ${startDate} → ${endDate}.`,
-        ]}
+        lines={(() => {
+          const lines = [];
+          if (showMeta) lines.push(`Meta — ${metaAge.length} age groups · ${metaCountry.length} countries · ${metaGender.length} gender segments.`);
+          if (showDv && !dv360Error) lines.push(`DV360 — ${dvAge.length} age groups · ${dvCountry.length} countries · ${dvGender.length} gender segments.`);
+          lines.push(`Date window: ${startDate} → ${endDate}.`);
+          return lines;
+        })()}
         context={{
-          ageGroups: ageRows.length,
-          countries: countryRows.length,
-          cohorts: cohortRows.length,
           window: `${startDate} → ${endDate}`,
-          ageBreakdown: ageRows.map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions })),
-          genderBreakdown: genderRows.map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions })),
-          countryBreakdown: countryRows.map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions })),
-          cohortBreakdown: cohortRows.map(r => ({
-            segment: r.segment,
-            impressions: r.impressions,
-            clicks: r.clicks,
-            spend: r.spend,
-            conversions: r.conversions,
-            ctr: r.ctr,
-            convRate: r.convRate,
-            cpm: r.cpm,
-          })),
+          ageGroups: metaAge.length + dvAge.length,
+          countries: metaCountry.length + dvCountry.length,
+          cohorts: cohortRows.length,
+          ageBreakdown: [...metaAge, ...dvAge].map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions })),
+          genderBreakdown: [...metaGender, ...dvGender].map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions })),
+          countryBreakdown: [...metaCountry, ...dvCountry].map(r => ({ label: r.label, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions })),
+          cohortBreakdown: cohortRows.map(r => ({ segment: r.segment, impressions: r.impressions, clicks: r.clicks, spend: r.spend, conversions: r.conversions, ctr: r.ctr, convRate: r.convRate, cpm: r.cpm })),
         }}
         platform="meta"
         dateRange={String(dateRange)}

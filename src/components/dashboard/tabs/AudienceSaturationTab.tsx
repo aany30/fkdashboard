@@ -11,17 +11,20 @@ import { useMemo, useState, useRef } from "react";
 import { Zap, AlertCircle, Info, X } from "lucide-react";
 import AIRecommendationButton from "@/components/shared/AIRecommendationButton";
 import { useAdSetInsights } from "@/hooks/useAdSetInsights";
+import { useDV360Saturation } from "@/hooks/useDV360Saturation";
+import type { DV360SaturationRow } from "@/pages/api/audience/dv360-saturation";
 import { formatMoney } from "@/lib/currency";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
+import LoadingState from "@/components/shared/LoadingState";
 import SortTh from "@/components/shared/SortTh";
 import { useSort } from "@/hooks/useSort";
-import { ColumnPickerButton, ALL_STANDARD_KPIS } from "@/components/shared/ColumnPicker";
+import { ColumnPickerButton, ALL_STANDARD_KPIS, type ColDef } from "@/components/shared/ColumnPicker";
 import { formatStandardKpi, FETCHABLE_KPIS } from "@/lib/standard-kpis";
 import { usePersistentColumns } from "@/hooks/useColumnPrefs";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -117,7 +120,7 @@ function SaturationAnalysis({ adsets, loading, currency }: { adsets: ReturnType<
 
   const { sorted, sort: satSort, toggle: satToggle } = useSort(enriched, "frequency", "desc");
 
-  if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
+  if (loading) return <LoadingState message="Loading saturation data…" />;
   if (!adsets.length) return (
     <div className="bg-white border-2 border-dashed border-gray-300 rounded-xl p-10 text-center text-sm text-gray-500">
       No ad set data. Connect a Meta account or widen the date range.
@@ -266,7 +269,7 @@ function ExpansionOpportunity({ adsets, loading, currency }: { adsets: ReturnTyp
 
   const { sorted, sort: expSort, toggle: expToggle } = useSort(enriched, "spend", "desc");
 
-  if (loading) return <div className="text-sm text-gray-500">Loading…</div>;
+  if (loading) return <LoadingState message="Loading saturation data…" />;
   if (!adsets.length) return (
     <div className="bg-white border-2 border-dashed border-gray-300 rounded-xl p-10 text-center text-sm text-gray-500">
       No ad set data. Connect a Meta account or widen the date range.
@@ -358,11 +361,325 @@ function ExpansionOpportunity({ adsets, loading, currency }: { adsets: ReturnTyp
   );
 }
 
+// ─── DV360 real per-line-item views (Bid Manager) ────────────────────────────
+
+const fmtMoney0 = (n: number, currency: string) =>
+  new Intl.NumberFormat("en-IN", { style: "currency", currency: currency || "INR", maximumFractionDigits: 0 }).format(n);
+
+/** DV360 fatigue is keyed on FREQUENCY only — display/video CTR is inherently
+ *  ~0.1-0.2%, so Meta's CTR<0.5% threshold would false-alarm every line item. */
+function dvFatigueLabel(freq: number): { label: string; color: string } {
+  if (freq >= 5) return { label: "Critical", color: "bg-red-100 text-red-800" };
+  if (freq >= 3) return { label: "Fatigued", color: "bg-orange-100 text-orange-800" };
+  return { label: "Healthy", color: "bg-green-100 text-green-800" };
+}
+
+// DV360 column definitions — mirror the Meta table's picker/sort format.
+const DV_SAT_COLS: ColDef[] = [
+  { id: "frequency",   label: "Freq.",   group: "Reach",       defaultOn: true  },
+  { id: "reach",       label: "Reach",   group: "Reach",       defaultOn: true  },
+  { id: "reachPct",    label: "Reach %", group: "Reach",       defaultOn: true  },
+  { id: "impressions", label: "Impr.",   group: "Reach",       defaultOn: false },
+  { id: "ctr",         label: "CTR",     group: "Engagement",  defaultOn: true  },
+  { id: "cpm",         label: "CPM",     group: "Cost",        defaultOn: true  },
+  { id: "spend",       label: "Spend",   group: "Cost",        defaultOn: true  },
+  { id: "conversions", label: "Conv",    group: "Conversion",  defaultOn: true  },
+  { id: "cpa",         label: "CPA",     group: "Conversion",  defaultOn: true  },
+  { id: "roas",        label: "ROAS",    group: "Conversion",  defaultOn: false },
+];
+const DV_SAT_DEFAULT = DV_SAT_COLS.filter(c => c.defaultOn).map(c => c.id);
+
+const DV_EXP_COLS: ColDef[] = [
+  { id: "spend",       label: "Spend",   group: "Cost",        defaultOn: true  },
+  { id: "spendPct",    label: "Spend %", group: "Cost",        defaultOn: true  },
+  { id: "impressions", label: "Impr.",   group: "Reach",       defaultOn: false },
+  { id: "clicks",      label: "Clicks",  group: "Engagement",  defaultOn: false },
+  { id: "conversions", label: "Conv",    group: "Conversion",  defaultOn: true  },
+  { id: "cpa",         label: "CPA",     group: "Conversion",  defaultOn: true  },
+  { id: "roas",        label: "ROAS",    group: "Conversion",  defaultOn: true  },
+];
+const DV_EXP_DEFAULT = DV_EXP_COLS.filter(c => c.defaultOn).map(c => c.id);
+
+/** Column picker for DV360 tables — same control as the Meta tables. */
+function Dv360ColPicker({ cols, setCols, allCols }: { cols: string[]; setCols: (c: string[]) => void; allCols: ColDef[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const defaultIds = allCols.filter(c => c.defaultOn).map(c => c.id);
+  const toggleCol = (id: string) => {
+    if (cols.includes(id)) { if (cols.length > 1) setCols(cols.filter(c => c !== id)); }
+    else setCols([...cols, id]);
+  };
+  return (
+    <ColumnPickerButton
+      cols={cols} allDefs={allCols} defaultIds={defaultIds}
+      pickerOpen={open} setPickerOpen={setOpen} pickerRef={ref}
+      toggleCol={toggleCol} resetCols={(ids) => setCols([...ids])}
+    />
+  );
+}
+
+type DvEnriched = DV360SaturationRow & { name: string; reachPct: number; fatigueSev: number };
+
+function fmtDvCol(id: string, r: DvEnriched, currency: string): string {
+  switch (id) {
+    case "frequency":   return r.frequency > 0 ? r.frequency.toFixed(1) : "—";
+    case "reach":       return r.reach > 0 ? Math.round(r.reach).toLocaleString("en-IN") : "—";
+    case "reachPct":    return r.reachPct > 0 ? `${r.reachPct.toFixed(1)}%` : "—";
+    case "impressions": return Math.round(r.impressions).toLocaleString("en-IN");
+    case "clicks":      return Math.round(r.clicks).toLocaleString("en-IN");
+    case "ctr":         return `${r.ctr.toFixed(2)}%`;
+    case "cpm":         return fmtMoney0(r.cpm, currency);
+    case "spend":       return fmtMoney0(r.spend, currency);
+    case "spendPct":    return `${r.spendPct.toFixed(1)}%`;
+    case "conversions": return Math.round(r.conversions).toLocaleString("en-IN");
+    case "cpa":         return r.cpa > 0 ? fmtMoney0(r.cpa, currency) : "—";
+    case "roas":        return r.roas > 0 ? `${r.roas.toFixed(2)}×` : "—";
+    default:            return "—";
+  }
+}
+
+const dvThBase = "px-4 py-2.5 text-[11px] uppercase font-semibold text-gray-600";
+
+/** §7 DV360 Saturation — real frequency/reach (REACH report) + CTR/CPM/fatigue.
+ *  Column picker + sort + AI reccos mirror the Meta table. When reach isn't
+ *  available, frequency/reach columns and fatigue drop out (no proxy). */
+function Dv360SaturationView({ rows, reachAvailable, loading, pending, currency }: {
+  rows: DV360SaturationRow[]; reachAvailable: boolean; loading: boolean; pending: boolean; currency: string;
+}) {
+  const [cols, setCols] = usePersistentColumns("dv-sat", DV_SAT_DEFAULT);
+  const totalReach = useMemo(() => rows.reduce((s, r) => s + r.reach, 0), [rows]);
+  const enriched: DvEnriched[] = useMemo(() => rows.map((r) => ({
+    ...r, name: r.lineItem,
+    reachPct: totalReach > 0 ? (r.reach / totalReach) * 100 : 0,
+    fatigueSev: r.frequency >= 5 ? 2 : r.frequency >= 3 ? 1 : 0,
+  })), [rows, totalReach]);
+  const { sorted, sort, toggle } = useSort(enriched, "frequency", "desc");
+
+  // Reach-derived columns drop out when the advertiser has no REACH report.
+  const shownCols = reachAvailable ? cols : cols.filter((c) => !["frequency", "reach", "reachPct"].includes(c));
+  const pickerCols = reachAvailable ? DV_SAT_COLS : DV_SAT_COLS.filter((c) => !["frequency", "reach", "reachPct"].includes(c.id));
+  const critical = enriched.filter((r) => r.fatigueSev === 2).length;
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Zap className="w-4 h-4 text-amber-500" />
+          <h3 className="text-sm font-bold text-gray-900">DV360 — Line-Item Saturation</h3>
+        </div>
+        {!loading && rows.length > 0 && <Dv360ColPicker cols={shownCols} setCols={setCols} allCols={pickerCols} />}
+      </div>
+
+      {loading ? (
+        <div className="text-sm text-gray-500">{pending ? "DV360 reports can take up to a minute — still generating…" : "Loading DV360 saturation…"}</div>
+      ) : rows.length === 0 ? (
+        <div className="text-sm text-gray-500">No DV360 line-item data for this window.</div>
+      ) : (
+        <>
+          {!reachAvailable && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 flex items-start gap-2">
+              <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              Per-line-item <strong>frequency &amp; unique reach</strong> aren&apos;t available via the Bid Manager REACH report for this advertiser — showing real delivery efficiency (CTR, CPM, CPA) only. Fatigue needs frequency, so it&apos;s omitted here.
+            </div>
+          )}
+          {reachAvailable && critical > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-center gap-2 text-xs text-red-800">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <strong>{critical} line item{critical !== 1 ? "s" : ""} showing critical frequency</strong> (≥ 5) — consider widening targeting or capping frequency.
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
+                <tr>
+                  <SortTh col="name" sort={sort} onToggle={toggle} className={dvThBase}>Line Item</SortTh>
+                  {shownCols.map((id) => {
+                    const def = DV_SAT_COLS.find((c) => c.id === id);
+                    return <SortTh key={id} col={id} sort={sort} onToggle={toggle} className={dvThBase} align="right">{def?.label ?? id}</SortTh>;
+                  })}
+                  {reachAvailable && <SortTh col="fatigueSev" sort={sort} onToggle={toggle} className={dvThBase} align="center">Status</SortTh>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {sorted.map((r) => {
+                  const fat = dvFatigueLabel(r.frequency);
+                  return (
+                    <tr key={r.lineItemId || r.lineItem} className="hover:bg-gray-50">
+                      <td className="px-4 py-2.5 text-gray-900 font-medium max-w-[300px] truncate" title={r.name}>{r.name}</td>
+                      {shownCols.map((id) => (
+                        <td key={id} className={`px-4 py-2.5 text-right whitespace-nowrap ${id === "frequency" ? (r.frequency >= 5 ? "text-red-600 font-bold" : r.frequency >= 3 ? "text-orange-600 font-bold" : "text-gray-900 font-semibold") : "text-gray-700"}`}>
+                          {fmtDvCol(id, r, currency)}
+                        </td>
+                      ))}
+                      {reachAvailable && (
+                        <td className="px-4 py-2.5 text-center">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${fat.color}`}>{fat.label}</span>
+                          {fat.label !== "Healthy" && (
+                            <div className="mt-1">
+                              <AIRecommendationButton
+                                metric={`Line-item saturation — ${r.name}`}
+                                value={r.frequency}
+                                status={fat.label === "Critical" ? "critical" : "warn"}
+                                platform="dv360"
+                                auditContext={{ module: "DV360 Saturation", siblingMetrics: { frequency: r.frequency, reach: r.reach, ctr: +r.ctr.toFixed(2), cpm: +r.cpm.toFixed(2) } }}
+                              />
+                            </div>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-gray-400">
+            {reachAvailable
+              ? "Fatigue keys on frequency (≥ 5 Critical · ≥ 3 Fatigued) — display/video CTR is inherently low, so CTR isn't used. Reach % = line-item unique reach as a share of total. All values from Bid Manager."
+              : "All values from Bid Manager standard reports."}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** §8 DV360 Expansion Opportunity — spend share vs efficiency. Uses ROAS when
+ *  CM360 conversion-revenue is present, otherwise CPA (both 100% real).
+ *  Column picker + sort + AI reccos mirror the Meta table. */
+function Dv360ExpansionView({ rows, revenueAvailable, loading, pending, currency }: {
+  rows: DV360SaturationRow[]; revenueAvailable: boolean; loading: boolean; pending: boolean; currency: string;
+}) {
+  const [cols, setCols] = usePersistentColumns("dv-exp", DV_EXP_DEFAULT);
+  const enriched: DvEnriched[] = useMemo(() => rows.map((r) => ({
+    ...r, name: r.lineItem, reachPct: 0, fatigueSev: 0,
+  })), [rows]);
+  const { sorted, sort, toggle } = useSort(enriched, "spendPct", "desc");
+
+  const withConv = rows.filter((r) => r.conversions > 0);
+  const avgCpa = withConv.length > 0 ? withConv.reduce((s, r) => s + r.cpa, 0) / withConv.length : 0;
+  const roasRows = rows.filter((r) => r.roas > 0);
+  const avgRoas = roasRows.length > 0 ? roasRows.reduce((s, r) => s + r.roas, 0) / roasRows.length : 0;
+
+  // Recommendation keys on efficiency RELATIVE to the account average (±20%
+  // band), not absolute spend-share cutoffs — the latter break for small
+  // accounts with only a few line items (every one looks "big"). Reason is
+  // attached so the AI reco and tooltip explain the "why".
+  const recommend = (r: DV360SaturationRow): { label: string; color: string; reason: string } => {
+    const SCALE = { label: "Scale", color: "bg-green-100 text-green-800" };
+    const REDUCE = { label: "Reduce", color: "bg-red-100 text-red-800" };
+    const MAINTAIN = { label: "Maintain", color: "bg-blue-100 text-blue-800" };
+    const REVIEW = { label: "Review", color: "bg-gray-100 text-gray-600" };
+
+    if (revenueAvailable) {
+      if (r.roas === 0) return { ...REVIEW, reason: "No attributed revenue — verify conversion tracking before acting." };
+      if (avgRoas > 0 && r.roas >= avgRoas * 1.2) return { ...SCALE, reason: `ROAS ${r.roas.toFixed(2)}× is ${Math.round((r.roas / avgRoas - 1) * 100)}% above the account average (${avgRoas.toFixed(2)}×) — shift more budget here.` };
+      if (avgRoas > 0 && r.roas <= avgRoas * 0.8) return { ...REDUCE, reason: `ROAS ${r.roas.toFixed(2)}× is ${Math.round((1 - r.roas / avgRoas) * 100)}% below the account average (${avgRoas.toFixed(2)}×) — trim budget or fix targeting/creative.` };
+      return { ...MAINTAIN, reason: `ROAS ${r.roas.toFixed(2)}× is within ±20% of the account average — holding steady.` };
+    }
+    if (r.conversions === 0) return { ...REVIEW, reason: "No conversions in window — check Floodlight tag firing before scaling." };
+    if (avgCpa > 0 && r.cpa <= avgCpa * 0.8) return { ...SCALE, reason: `CPA ₹${r.cpa.toLocaleString("en-IN")} is ${Math.round((1 - r.cpa / avgCpa) * 100)}% below the account average (₹${Math.round(avgCpa).toLocaleString("en-IN")}) — efficient, room to scale spend.` };
+    if (avgCpa > 0 && r.cpa >= avgCpa * 1.2) return { ...REDUCE, reason: `CPA ₹${r.cpa.toLocaleString("en-IN")} is ${Math.round((r.cpa / avgCpa - 1) * 100)}% above the account average (₹${Math.round(avgCpa).toLocaleString("en-IN")})${r.spendPct >= 15 ? ` and it's eating ${r.spendPct.toFixed(0)}% of spend` : ""} — trim budget or tighten targeting.` };
+    return { ...MAINTAIN, reason: `CPA ₹${r.cpa.toLocaleString("en-IN")} is within ±20% of the account average — holding steady.` };
+  };
+
+  const shownCols = revenueAvailable ? cols : cols.filter((c) => c !== "roas");
+  const pickerCols = revenueAvailable ? DV_EXP_COLS : DV_EXP_COLS.filter((c) => c.id !== "roas");
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Zap className="w-4 h-4 text-amber-500" />
+          <h3 className="text-sm font-bold text-gray-900">DV360 — Expansion Opportunity</h3>
+        </div>
+        {!loading && rows.length > 0 && <Dv360ColPicker cols={shownCols} setCols={setCols} allCols={pickerCols} />}
+      </div>
+
+      {loading ? (
+        <div className="text-sm text-gray-500">{pending ? "DV360 reports can take up to a minute — still generating…" : "Loading DV360 expansion…"}</div>
+      ) : rows.length === 0 ? (
+        <div className="text-sm text-gray-500">No DV360 line-item data for this window.</div>
+      ) : (
+        <>
+          {!revenueAvailable && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 flex items-start gap-2">
+              <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              ROAS needs CM360 conversion-revenue, which isn&apos;t linked for this advertiser — ranking by <strong>spend share vs CPA</strong> (cost efficiency) instead. All values are real Bid Manager data.
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
+                <tr>
+                  <SortTh col="name" sort={sort} onToggle={toggle} className={dvThBase}>Line Item</SortTh>
+                  {shownCols.map((id) => {
+                    const def = DV_EXP_COLS.find((c) => c.id === id);
+                    return <SortTh key={id} col={id} sort={sort} onToggle={toggle} className={dvThBase} align="right">{def?.label ?? id}</SortTh>;
+                  })}
+                  <th className={`${dvThBase} text-center`}>Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {sorted.map((r) => {
+                  const rec = recommend(r);
+                  return (
+                    <tr key={r.lineItemId || r.lineItem} className="hover:bg-gray-50">
+                      <td className="px-4 py-2.5 text-gray-900 font-medium max-w-[300px] truncate" title={r.name}>{r.name}</td>
+                      {shownCols.map((id) => (
+                        <td key={id} className="px-4 py-2.5 text-right text-gray-700 whitespace-nowrap">{fmtDvCol(id, r, currency)}</td>
+                      ))}
+                      <td className="px-4 py-2.5 text-center">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${rec.color}`} title={rec.reason}>{rec.label}</span>
+                        {(rec.label === "Scale" || rec.label === "Reduce") && (
+                          <div className="mt-1">
+                            <AIRecommendationButton
+                              metric={`${rec.label} "${r.name}" — ${rec.reason}`}
+                              value={revenueAvailable ? r.roas : r.cpa}
+                              status={rec.label === "Reduce" ? "warn" : "moderate"}
+                              platform="dv360"
+                              auditContext={{ module: "DV360 Expansion Opportunity", siblingMetrics: { action: rec.label, spendSharePct: +r.spendPct.toFixed(1), cpa: r.cpa, roas: +r.roas.toFixed(2), conversions: r.conversions, spend: r.spend } }}
+                            />
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-gray-400">
+            {revenueAvailable
+              ? "Scale = ROAS ≥ 20% above account avg · Reduce = ROAS ≥ 20% below avg · Maintain = within ±20%. Hover an action for the reason; use AI Recommendation for the how."
+              : "Scale = CPA ≥ 20% below account avg (more efficient) · Reduce = CPA ≥ 20% above avg · Maintain = within ±20%. Lower CPA is better. Hover an action for the reason; use AI Recommendation for the how."}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PlatformDivider({ label, sub }: { label: string; sub: string }) {
+  return (
+    <div className="flex items-center gap-3 pt-2 pb-1 border-b border-gray-200">
+      <h2 className="text-xl font-bold text-gray-900">{label}</h2>
+      <span className="text-xs text-gray-400 font-medium">{sub}</span>
+    </div>
+  );
+}
+
 // ─── Main tab ───────────────────────────────────────────────────────────────
 
 export default function AudienceSaturationTab({ platform, dateRange, customStart, customEnd }: Props) {
   const [active, setActive] = useState("saturation");
   const { adsets, loading, error, currency } = useAdSetInsights(platform, dateRange, customStart, customEnd);
+  const showMeta = platform !== "dv360";
+  const showDv360 = platform === "dv360" || platform === "both";
+  const { rows: dvRows, loading: dvLoading, pending: dvPending, reachAvailable, revenueAvailable } =
+    useDV360Saturation(dateRange, customStart, customEnd, showDv360);
+
+  if (showMeta && loading && adsets.length === 0) return <LoadingState message="Loading saturation data…" />;
 
   return (
     <div className="space-y-6">
@@ -373,13 +690,6 @@ export default function AudienceSaturationTab({ platform, dateRange, customStart
           <p className="text-gray-600 mt-1">Frequency, reach%, and fatigue scoring per ad set — plus which audiences to scale vs reduce based on ROAS and spend share.</p>
         </div>
       </div>
-
-      {platform === "google" && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800 flex items-start gap-2">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-          Meta ad-set data shown. Frequency / reach are Meta-specific metrics not directly available in Google Ads.
-        </div>
-      )}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-800 flex items-center gap-2">
@@ -397,18 +707,63 @@ export default function AudienceSaturationTab({ platform, dateRange, customStart
         ))}
       </div>
 
-      {active === "saturation" && <SaturationAnalysis adsets={adsets} loading={loading} currency={currency} />}
-      {active === "expansion"  && <ExpansionOpportunity adsets={adsets} loading={loading} currency={currency} />}
+      {active === "saturation" && (
+        <>
+          {showMeta && (
+            <>
+              {platform === "both" && <PlatformDivider label="Meta" sub="Meta Ads" />}
+              <SaturationAnalysis adsets={adsets} loading={loading} currency={currency} />
+            </>
+          )}
+          {showDv360 && (
+            <>
+              {platform === "both" && <PlatformDivider label="DV360" sub="Display & Video 360" />}
+              <Dv360SaturationView rows={dvRows} reachAvailable={reachAvailable} loading={dvLoading} pending={dvPending} currency={currency} />
+            </>
+          )}
+        </>
+      )}
+      {active === "expansion" && (
+        <>
+          {showMeta && (
+            <>
+              {platform === "both" && <PlatformDivider label="Meta" sub="Meta Ads" />}
+              <ExpansionOpportunity adsets={adsets} loading={loading} currency={currency} />
+            </>
+          )}
+          {showDv360 && (
+            <>
+              {platform === "both" && <PlatformDivider label="DV360" sub="Display & Video 360" />}
+              <Dv360ExpansionView rows={dvRows} revenueAvailable={revenueAvailable} loading={dvLoading} pending={dvPending} currency={currency} />
+            </>
+          )}
+        </>
+      )}
 
       <TabSummaryFooter
         tabName="Saturation & Expansion"
         lines={[
-          `${adsets.length} ad set${adsets.length !== 1 ? "s" : ""} analysed for frequency, reach, and saturation signals.`,
-          `Total spend: ${adsets.reduce((s, a) => s + a.spend, 0).toLocaleString("en-US", { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 })} across all ad sets in window.`,
-          `${adsets.filter(a => a.spend > 0 && (a.conversionValue / a.spend) >= 3).length} ad set${adsets.filter(a => a.spend > 0 && (a.conversionValue / a.spend) >= 3).length !== 1 ? "s" : ""} with ROAS ≥ 3× (scale candidates).`,
+          ...(showMeta ? [
+            `${platform === "both" ? "Meta: " : ""}${adsets.length} ad set${adsets.length !== 1 ? "s" : ""} analysed for frequency, reach, and saturation signals.`,
+            `${platform === "both" ? "Meta " : ""}Total spend: ${adsets.reduce((s, a) => s + a.spend, 0).toLocaleString("en-US", { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 })} across all ad sets in window.`,
+            `${adsets.filter(a => a.spend > 0 && (a.conversionValue / a.spend) >= 3).length} ad set${adsets.filter(a => a.spend > 0 && (a.conversionValue / a.spend) >= 3).length !== 1 ? "s" : ""} with ROAS ≥ 3× (scale candidates).`,
+          ] : []),
+          ...(showDv360 && dvRows.length > 0 ? (() => {
+            const dvSpend = dvRows.reduce((s, r) => s + r.spend, 0);
+            const dvConv = dvRows.reduce((s, r) => s + r.conversions, 0);
+            const dvCritical = dvRows.filter(r => r.frequency >= 5).length;
+            const dvFatigued = dvRows.filter(r => r.frequency >= 3 && r.frequency < 5).length;
+            const fmt = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+            return [
+              `${platform === "both" ? "DV360: " : ""}${dvRows.length} line item${dvRows.length !== 1 ? "s" : ""} analysed — ${fmt(dvSpend)} spend, ${dvConv.toLocaleString("en-IN")} conversions in window.`,
+              reachAvailable
+                ? `DV360 saturation: ${dvCritical} critical (freq ≥ 5) · ${dvFatigued} fatigued (freq ≥ 3)${dvCritical > 0 ? " — widen targeting or cap frequency." : "."}`
+                : `DV360: frequency/reach not available via API for this advertiser — showing delivery efficiency (CTR, CPM, CPA) only.`,
+            ];
+          })() : []),
         ]}
-        context={{ adSetCount: adsets.length, totalSpend: adsets.reduce((s, a) => s + a.spend, 0) }}
-        platform={platform === "both" ? "meta" : platform}
+        context={{ adSetCount: adsets.length, totalSpend: adsets.reduce((s, a) => s + a.spend, 0), dv360LineItems: dvRows.length, dv360Spend: dvRows.reduce((s, r) => s + r.spend, 0) }}
+        platform={platform}
         dateRange={String(dateRange)}
       />
     </div>

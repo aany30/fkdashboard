@@ -10,7 +10,7 @@ const t = initTRPC.create();
 
 /**
  * Example tRPC Router
- * In production, split into separate routers for meta, google, etc.
+ * In production, split into separate routers for meta, dv360, etc.
  */
 const appRouter = t.router({
   hello: t.procedure
@@ -54,7 +54,7 @@ const appRouter = t.router({
       }),
   }),
 
-  google: t.router({
+  dv360: t.router({
     getHealthScore: t.procedure
       .input(z.object({ customerId: z.string() }))
       .query(async ({ input }) => {
@@ -84,7 +84,7 @@ const appRouter = t.router({
 
   recommendations: t.router({
     getList: t.procedure
-      .input(z.object({ platform: z.enum(["meta", "google"]) }))
+      .input(z.object({ platform: z.enum(["meta", "dv360"]) }))
       .query(async ({ input }) => {
         return [
           {

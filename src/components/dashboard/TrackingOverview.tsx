@@ -4,7 +4,7 @@ import { useAudit } from "@/hooks/useAudit";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -56,7 +56,7 @@ export default function TrackingOverview({ platform, dateRange, customStart, cus
         {
           id: "attribution",
           label: "Attribution",
-          description: "Attribution model readiness across Meta + Google",
+          description: "Attribution model readiness across Meta + DV360",
           Icon: Settings2,
           metric: { label: "Dedup rate", value: `${avgDedup}%` },
           tone: avgDedup >= 85 ? "good" : avgDedup >= 70 ? "warn" : "bad",

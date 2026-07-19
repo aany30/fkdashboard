@@ -4,16 +4,18 @@
  * Triggered by the "Send critical alerts now" button on the Budget Allocation
  * audit when one or more campaigns are flagged Overspending/Critical.
  *
- * Uses Resend (https://resend.com) — call their REST API with fetch, no SDK
- * dependency. Configure:
- *   RESEND_API_KEY=re_…           (required)
- *   ALERT_FROM_EMAIL=alerts@yourdomain.com  (required; must be a verified domain on Resend)
+ * Sending path (in priority order):
+ *   1. Gmail API — if the request carries `gmailAuth` (the user's DV360 Google
+ *      OAuth creds with the gmail.send scope). Sends FROM the signed-in Gmail.
+ *      No provider account needed — reuses the Google login.
+ *   2. Resend (https://resend.com) — if RESEND_API_KEY + ALERT_FROM_EMAIL are set.
  *
- * Without those env vars the endpoint returns a 503 with a clear setup hint
+ * If neither is available the endpoint returns 503 with a clear setup hint
  * (the UI surfaces it inline) — never silently no-ops.
  */
 
 import type { NextApiRequest, NextApiResponse } from "next";
+import nodemailer from "nodemailer";
 
 interface CriticalCampaign {
   name: string;
@@ -33,9 +35,32 @@ interface AlertRequest {
 
 interface AlertResponse {
   sent: boolean;
-  provider?: "resend";
+  provider?: "resend" | "webhook" | "smtp";
   id?: string;
   error?: string;
+}
+
+/**
+ * Self-contained send via SMTP (nodemailer). Uses a Gmail App Password — no
+ * third-party service, no OAuth verification. Configure:
+ *   SMTP_USER=you@gmail.com          (your Gmail address; also the From)
+ *   SMTP_PASS=xxxxxxxxxxxxxxxx        (16-char Gmail App Password, 2FA required)
+ *   SMTP_HOST=smtp.gmail.com          (optional; defaults to Gmail)
+ *   SMTP_PORT=465                     (optional; 465 SSL / 587 TLS)
+ */
+async function sendViaSmtp(to: string, subject: string, html: string, text: string): Promise<void> {
+  const user = process.env.SMTP_USER!;
+  const pass = process.env.SMTP_PASS!;
+  const host = process.env.SMTP_HOST || "smtp.gmail.com";
+  const port = Number(process.env.SMTP_PORT || 465);
+  const transporter = nodemailer.createTransport({
+    host, port, secure: port === 465,
+    auth: { user, pass },
+  });
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || user,
+    to, subject, html, text,
+  });
 }
 
 function fmt(amount: number, currency: string): string {
@@ -129,18 +154,68 @@ export default async function handler(
     return;
   }
 
+  const { subject, html, text } = buildHtml(body);
+
+  // 1. Self-contained: SMTP via nodemailer (Gmail App Password). No third-party
+  //    service, no OAuth verification — the app sends the email itself.
+  if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+    try {
+      await sendViaSmtp(body.recipient, subject, html, text);
+      res.status(200).json({ sent: true, provider: "smtp" });
+      return;
+    } catch (e) {
+      const smtpErr = e instanceof Error ? e.message : String(e);
+      // Fall through to webhook/Resend if configured; else report the SMTP error.
+      if (!process.env.ALERT_WEBHOOK_URL && !process.env.RESEND_API_KEY) {
+        res.status(502).json({ sent: false, error: `SMTP send failed: ${smtpErr}. Check SMTP_USER / SMTP_PASS (Gmail App Password).` });
+        return;
+      }
+    }
+  }
+
+  // 2. Optional: n8n (or any) webhook — POST the alert payload; the workflow
+  //    sends it via Gmail/SMTP/etc.
+  const webhookUrl = process.env.ALERT_WEBHOOK_URL;
+  if (webhookUrl) {
+    try {
+      const r = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: body.recipient,
+          subject, html, text,
+          periodLabel: body.periodLabel,
+          campaigns: body.campaigns,
+        }),
+      });
+      if (r.ok) {
+        res.status(200).json({ sent: true, provider: "webhook" });
+        return;
+      }
+      // Non-2xx from the webhook — fall through to Resend if configured.
+      if (!process.env.RESEND_API_KEY) {
+        res.status(502).json({ sent: false, error: `Alert webhook returned HTTP ${r.status}. Check the n8n workflow.` });
+        return;
+      }
+    } catch (e) {
+      if (!process.env.RESEND_API_KEY) {
+        res.status(502).json({ sent: false, error: `Alert webhook failed: ${e instanceof Error ? e.message : String(e)}` });
+        return;
+      }
+    }
+  }
+
+  // 2. Fallback: Resend (send from your own verified domain).
   const apiKey = process.env.RESEND_API_KEY;
   const fromEmail = process.env.ALERT_FROM_EMAIL;
   if (!apiKey || !fromEmail) {
     res.status(503).json({
       sent: false,
       error:
-        "Email alerts not configured. Set RESEND_API_KEY and ALERT_FROM_EMAIL in .env.local (Resend free tier at resend.com) and restart the dev server.",
+        "Email alerts not configured. Set SMTP_USER + SMTP_PASS (Gmail App Password) — or ALERT_WEBHOOK_URL, or RESEND_API_KEY + ALERT_FROM_EMAIL — in the environment and restart.",
     });
     return;
   }
-
-  const { subject, html, text } = buildHtml(body);
 
   try {
     const r = await fetch("https://api.resend.com/emails", {

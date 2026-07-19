@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useAuthStore } from "@/store/auth";
 import { useAudit } from "@/hooks/useAudit";
 import type { DateRange } from "@/components/shared/DateRangePicker";
-import { RefreshCw, Activity, CheckCircle2, AlertCircle, AlertTriangle, Settings2, ExternalLink, Sparkles, Loader2 } from "lucide-react";
+import { Activity, CheckCircle2, AlertCircle, AlertTriangle, Settings2, ExternalLink, Sparkles, Loader2, ArrowRight } from "lucide-react";
+import LoadingState from "@/components/shared/LoadingState";
 import { useSort } from "@/hooks/useSort";
 import SortTh from "@/components/shared/SortTh";
 import { TermText } from "@/components/shared/Term";
@@ -10,7 +11,7 @@ import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 
 interface Props {
-  platform?: "meta" | "google" | "both";
+  platform?: "meta" | "dv360" | "both";
   dateRange?: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -28,12 +29,7 @@ export default function PixelHealthTab({ platform = "both", dateRange = "30d", c
   );
 
   if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center py-24">
-        <RefreshCw className="w-10 h-10 text-blue-600 animate-spin mb-3" />
-        <p className="text-gray-600">Loading pixel data...</p>
-      </div>
-    );
+    return <LoadingState message="Loading pixel data…" />;
   }
 
   if (error) {
@@ -312,9 +308,11 @@ export default function PixelHealthTab({ platform = "both", dateRange = "30d", c
       <TabSummaryFooter
         tabName="Pixel Health"
         lines={[
-          `${pixels.length} pixel${pixels.length !== 1 ? "s" : ""} found, ${activePixels} active — ${totalEvents.toLocaleString()} total events in the selected window.`,
-          `CAPI (server-side) share: ${capiSharePct}% — ${capiSharePct >= 50 ? "good server-side coverage" : capiSharePct > 0 ? "browser events dominate; consider expanding CAPI" : "no server-side events detected — CAPI may not be configured"}.`,
-          `${activePixels < pixels.length ? `${pixels.length - activePixels} pixel(s) inactive — verify they are still needed or pause them.` : "All pixels are active and firing."}`,
+          ...(platform !== "dv360" ? [
+            `${pixels.length} pixel${pixels.length !== 1 ? "s" : ""} found, ${activePixels} active — ${totalEvents.toLocaleString()} total events in the selected window.`,
+            `CAPI (server-side) share: ${capiSharePct}% — ${capiSharePct >= 50 ? "good server-side coverage" : capiSharePct > 0 ? "browser events dominate; consider expanding CAPI" : "no server-side events detected — CAPI may not be configured"}.`,
+            `${activePixels < pixels.length ? `${pixels.length - activePixels} pixel(s) inactive — verify they are still needed or pause them.` : "All pixels are active and firing."}`,
+          ] : []),
         ]}
         context={{
           pixelCount: pixels.length,

@@ -1,13 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuthStore } from "@/store/auth";
 import { Sparkles, AlertCircle, CheckCircle2, AlertTriangle, Target } from "lucide-react";
 import { KpiCard, AuditCard, StatusBadge } from "./AuditCard";
 import { TermText } from "@/components/shared/Term";
 import FunnelStagePerformance from "./FunnelStagePerformance";
+import { currencyFor } from "@/lib/currency";
 import type { AuditProps } from "./types";
 import type { CampaignData } from "@/types";
 
-// Common industries — quick-pick options for the AI funnel-mix analysis.
 const INDUSTRY_SUGGESTIONS = [
   "E-commerce — Apparel",
   "E-commerce — Beauty & Skincare",
@@ -37,7 +37,6 @@ interface FunnelMixAI {
   focusActions: Array<{ priority: number; action: string }>;
 }
 
-// Heuristic: bucket campaigns into TOF / MOF / BOF based on objective keywords
 function bucket(objective?: string): "TOF" | "MOF" | "BOF" | "Unknown" {
   if (!objective) return "Unknown";
   const o = objective.toLowerCase();
@@ -47,42 +46,49 @@ function bucket(objective?: string): "TOF" | "MOF" | "BOF" | "Unknown" {
   return "Unknown";
 }
 
-// Friendly label + color for each Meta campaign status.
 const STATUS_META: Record<string, { label: string; color: string }> = {
-  ACTIVE:     { label: "Active",   color: "bg-green-100 text-green-700 border-green-300" },
-  ENABLED:    { label: "Enabled",  color: "bg-blue-100 text-blue-700 border-blue-300" },
-  PAUSED:     { label: "Paused",   color: "bg-yellow-100 text-yellow-700 border-yellow-300" },
-  ARCHIVED:   { label: "Archived", color: "bg-gray-100 text-gray-500 border-gray-300" },
-  DELETED:    { label: "Deleted",  color: "bg-red-100 text-red-600 border-red-300" },
-  IN_PROCESS: { label: "In Process", color: "bg-purple-100 text-purple-700 border-purple-300" },
-  WITH_ISSUES:{ label: "With Issues", color: "bg-orange-100 text-orange-700 border-orange-300" },
+  ACTIVE:                  { label: "Active",   color: "bg-green-100 text-green-700 border-green-300" },
+  ENABLED:                 { label: "Enabled",  color: "bg-blue-100 text-blue-700 border-blue-300" },
+  PAUSED:                  { label: "Paused",   color: "bg-yellow-100 text-yellow-700 border-yellow-300" },
+  ARCHIVED:                { label: "Archived", color: "bg-gray-100 text-gray-500 border-gray-300" },
+  DELETED:                 { label: "Deleted",  color: "bg-red-100 text-red-600 border-red-300" },
+  IN_PROCESS:              { label: "In Process", color: "bg-purple-100 text-purple-700 border-purple-300" },
+  WITH_ISSUES:             { label: "With Issues", color: "bg-orange-100 text-orange-700 border-orange-300" },
+  ENTITY_STATUS_ACTIVE:    { label: "Active",   color: "bg-green-100 text-green-700 border-green-300" },
+  ENTITY_STATUS_ENABLED:   { label: "Enabled",  color: "bg-blue-100 text-blue-700 border-blue-300" },
+  ENTITY_STATUS_PAUSED:    { label: "Paused",   color: "bg-yellow-100 text-yellow-700 border-yellow-300" },
+  ENTITY_STATUS_ARCHIVED:  { label: "Archived", color: "bg-gray-100 text-gray-500 border-gray-300" },
+  ENTITY_STATUS_DRAFT:     { label: "Draft",    color: "bg-gray-100 text-gray-500 border-gray-300" },
 };
 
-// The statuses we treat as "currently serving". Default scope across audits.
-const ACTIVE_STATUSES = new Set(["ACTIVE", "ENABLED"]);
+const ACTIVE_STATUSES = new Set(["ACTIVE", "ENABLED", "ENTITY_STATUS_ACTIVE", "ENTITY_STATUS_ENABLED"]);
 
-export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRange, customStart, customEnd }: AuditProps) {
-  // Detect distinct statuses present in this account's campaigns
+const PLATFORM_LABEL: Record<string, string> = {
+  meta: "Meta",
+  dv360: "DV360",
+};
+
+// --------------- per-platform funnel section ---------------
+
+function PlatformFunnelSection({
+  label,
+  campaigns,
+  allCampaigns,
+}: {
+  label: string;
+  campaigns: CampaignData[];
+  allCampaigns: CampaignData[];
+}) {
   const availableStatuses = [...new Set(campaigns.map((c) => c.status?.toUpperCase()).filter(Boolean))].sort() as string[];
 
-  // Default scope: ACTIVE + ENABLED only — matches the user's "what's running
-  // right now" mental model. Power users can still tick PAUSED/ARCHIVED in the
-  // filter UI to expand scope; that choice is sticky (no longer reset by
-  // date-range changes, see the useEffect below).
   const [selectedStatuses, setSelectedStatuses] = useState<Set<string>>(() => {
     const activeAvailable = availableStatuses.filter((s) => ACTIVE_STATUSES.has(s));
     return new Set(activeAvailable.length > 0 ? activeAvailable : availableStatuses);
   });
 
-  // When campaigns reload (e.g. date range changes), the set of AVAILABLE
-  // statuses may shift — but the user's CHOICE must be preserved. Only ADD
-  // brand-new active statuses we haven't seen; don't blow away existing picks.
   useEffect(() => {
     setSelectedStatuses((prev) => {
       const next = new Set(prev);
-      // If the user has filtered down to specific statuses, leave them alone.
-      // Only auto-add an active status if the entire current selection is the
-      // default-on-load active set (i.e. user hasn't customised yet).
       const isDefaultActive =
         prev.size === 0 || ([...prev].every((s) => ACTIVE_STATUSES.has(s)) && prev.size > 0);
       if (isDefaultActive) {
@@ -90,7 +96,6 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
           if (ACTIVE_STATUSES.has(s)) next.add(s);
         }
       }
-      // Drop statuses that no longer exist in the data so the filter stays valid.
       for (const s of prev) {
         if (!availableStatuses.includes(s)) next.delete(s);
       }
@@ -105,7 +110,6 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
       return next;
     });
 
-  // Filter campaigns by selected statuses before counting
   const visibleCampaigns = selectedStatuses.size === 0 || selectedStatuses.size === availableStatuses.length
     ? campaigns
     : campaigns.filter((c) => selectedStatuses.has(c.status?.toUpperCase() ?? ""));
@@ -113,23 +117,118 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
   const counts = { TOF: 0, MOF: 0, BOF: 0, Unknown: 0 };
   for (const c of visibleCampaigns) counts[bucket(c.objective)]++;
 
-  // Denominator is the overall ad-account campaign count, not the filtered
-  // subset — so each stage reads as "N of <all account campaigns>".
-  const total = accountTotal ?? visibleCampaigns.length;
+  const total = campaigns.length;
+  const present = Number(counts.TOF > 0) + Number(counts.MOF > 0) + Number(counts.BOF > 0);
+  const segScore = total === 0 ? 0 : Math.round((present / 3) * 100);
+
+  if (total === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <h3 className="text-base font-bold text-gray-900">{label}</h3>
+        <span className="text-xs text-gray-500">{total} campaign{total !== 1 ? "s" : ""}</span>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {(["TOF", "MOF", "BOF"] as const).map((stage) => {
+          const count = counts[stage];
+          const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+          const stageLabel = stage === "TOF" ? "Top of Funnel" : stage === "MOF" ? "Middle of Funnel" : "Bottom of Funnel";
+          return (
+            <div key={stage} className="border border-gray-200 rounded-lg p-4">
+              <div className="text-xs font-semibold text-gray-500 uppercase">{stage}</div>
+              <div className="text-[10px] text-gray-400 -mt-0.5">{stageLabel}</div>
+              <div className="text-2xl font-bold text-gray-900 mt-1">{count}</div>
+              <div className="text-xs text-gray-600 mt-0.5">
+                {count} of {total} <span className="text-gray-400">({pct}%)</span>
+              </div>
+              <div className="w-full h-1.5 bg-gray-100 rounded-full mt-2 overflow-hidden">
+                <div
+                  className={`h-full ${count > 0 ? "bg-blue-500" : "bg-gray-200"}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <div className="mt-2">
+                <StatusBadge status={count > 0 ? "pass" : "fail"} label={count > 0 ? "Present" : "Missing"} />
+              </div>
+            </div>
+          );
+        })}
+        {/* status filter */}
+        <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+          <div className="text-xs font-semibold text-gray-500 uppercase mb-2">Filter by Status</div>
+          <div className="text-[10px] text-gray-400 -mt-1 mb-3">Campaign delivery status</div>
+          <div className="space-y-1.5">
+            {availableStatuses.length === 0 ? (
+              <div className="text-[11px] text-gray-400 italic">No campaigns loaded</div>
+            ) : availableStatuses.map((s) => {
+              const meta = STATUS_META[s] || { label: s, color: "bg-gray-100 text-gray-600 border-gray-300" };
+              const checked = selectedStatuses.has(s);
+              const countForStatus = campaigns.filter(c => c.status?.toUpperCase() === s).length;
+              return (
+                <label key={s} className="flex items-center gap-2 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleStatus(s)}
+                    className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer"
+                  />
+                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${meta.color}`}>
+                    {meta.label}
+                  </span>
+                  <span className="text-[10px] text-gray-400 ml-auto">{countForStatus}</span>
+                </label>
+              );
+            })}
+          </div>
+          {selectedStatuses.size < availableStatuses.length && (
+            <button
+              onClick={() => setSelectedStatuses(new Set(availableStatuses))}
+              className="mt-2 text-[10px] text-blue-600 hover:text-blue-800 font-semibold"
+            >
+              Select all
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="pt-2 border-t border-gray-100 text-sm text-gray-700">
+        <span className="font-semibold">Breakdown:</span>{" "}
+        <span className="font-mono">{counts.TOF}</span> TOF
+        {" · "}
+        <span className="font-mono">{counts.MOF}</span> MOF
+        {" · "}
+        <span className="font-mono">{counts.BOF}</span> BOF
+        {" "}
+        <span className="text-gray-500">out of {total} campaigns</span>
+      </div>
+    </div>
+  );
+}
+
+// --------------- main component ---------------
+
+export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRange, customStart, customEnd }: AuditProps) {
+  const metaCampaigns = useMemo(() => campaigns.filter((c) => c.platform === "meta"), [campaigns]);
+  const dv360Campaigns = useMemo(() => campaigns.filter((c) => c.platform === "dv360"), [campaigns]);
+  const hasBoth = metaCampaigns.length > 0 && dv360Campaigns.length > 0;
+
+  // Overall counts for KPI cards
+  const counts = { TOF: 0, MOF: 0, BOF: 0, Unknown: 0 };
+  for (const c of campaigns) counts[bucket(c.objective)]++;
+  const total = accountTotal ?? campaigns.length;
   const present = Number(counts.TOF > 0) + Number(counts.MOF > 0) + Number(counts.BOF > 0);
   const segScore = total === 0 ? 0 : Math.round((present / 3) * 100);
 
   // ---------- AI funnel-mix analysis ----------
-  // Opt-in: the panel starts collapsed as a CTA so the dashboard isn't cluttered
-  // with an AI form for users who don't care about industry benchmarking.
-  const { addAiCredits } = useAuthStore(); const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const { addAiCredits } = useAuthStore();
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [industry, setIndustry] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState<FunnelMixAI | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
 
-  // Compute per-stage spend / impression shares from the loaded campaigns so
-  // the AI has more than just count distributions to reason about.
   const stageStats = (() => {
     const init = { campaigns: 0, spend: 0, impressions: 0 };
     const buckets: Record<"TOF" | "MOF" | "BOF" | "Unknown", typeof init> = {
@@ -204,8 +303,7 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
           subLabel="3 funnel stages represented"
           tone={segScore >= 66 ? "good" : segScore >= 33 ? "warn" : "bad"}
         />
-        <KpiCard label="TOF / MOF / BOF" value={`${counts.TOF} / ${counts.MOF} / ${counts.BOF}`} subLabel="Campaign counts" />
-        {/* Unclassified KPI removed — only TOF/MOF/BOF shown */}
+        <KpiCard label="TOF / MOF / BOF" value={`${counts.TOF} / ${counts.MOF} / ${counts.BOF}`} subLabel="Campaign counts (all platforms)" />
       </div>
 
       <AuditCard
@@ -213,7 +311,7 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
         description={`TOF/MOF/BOF segmentation across ${total} total campaign${total === 1 ? "" : "s"}`}
         badge={{ text: `Score ${segScore}`, color: segScore >= 66 ? "green" : segScore >= 33 ? "yellow" : "red" }}
       >
-        {/* How we classify campaigns into funnel stages */}
+        {/* How we classify */}
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-gray-700 leading-relaxed">
           <div className="font-semibold text-blue-900 mb-1">How campaigns are bucketed</div>
           <TermText>
@@ -236,85 +334,34 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
           </ul>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {(["TOF", "MOF", "BOF"] as const).map((stage) => {
-            const count = counts[stage];
-            const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-            const stageLabel = stage === "TOF" ? "Top of Funnel" : stage === "MOF" ? "Middle of Funnel" : "Bottom of Funnel";
-            return (
-              <div key={stage} className="border border-gray-200 rounded-lg p-4">
-                <div className="text-xs font-semibold text-gray-500 uppercase">{stage}</div>
-                <div className="text-[10px] text-gray-400 -mt-0.5">{stageLabel}</div>
-                <div className="text-2xl font-bold text-gray-900 mt-1">{count}</div>
-                <div className="text-xs text-gray-600 mt-0.5">
-                  {count} of {total} <span className="text-gray-400">({pct}%)</span>
-                </div>
-                {/* progress bar — visual share of the total */}
-                <div className="w-full h-1.5 bg-gray-100 rounded-full mt-2 overflow-hidden">
-                  <div
-                    className={`h-full ${count > 0 ? "bg-blue-500" : "bg-gray-200"}`}
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-                <div className="mt-2">
-                  <StatusBadge status={count > 0 ? "pass" : "fail"} label={count > 0 ? "Present" : "Missing"} />
-                </div>
-              </div>
-            );
-          })}
-          {/* 4th column — campaign status filter checklist */}
-          <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-            <div className="text-xs font-semibold text-gray-500 uppercase mb-2">Filter by Status</div>
-            <div className="text-[10px] text-gray-400 -mt-1 mb-3">Campaign delivery status</div>
-            <div className="space-y-1.5">
-              {availableStatuses.length === 0 ? (
-                <div className="text-[11px] text-gray-400 italic">No campaigns loaded</div>
-              ) : availableStatuses.map((s) => {
-                const meta = STATUS_META[s] || { label: s, color: "bg-gray-100 text-gray-600 border-gray-300" };
-                const checked = selectedStatuses.has(s);
-                const countForStatus = campaigns.filter(c => c.status?.toUpperCase() === s).length;
-                return (
-                  <label key={s} className="flex items-center gap-2 cursor-pointer group">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleStatus(s)}
-                      className="w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer"
-                    />
-                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${meta.color}`}>
-                      {meta.label}
-                    </span>
-                    <span className="text-[10px] text-gray-400 ml-auto">{countForStatus}</span>
-                  </label>
-                );
-              })}
+        {/* Per-platform sections */}
+        <div className={`space-y-6 ${hasBoth ? "divide-y divide-gray-200" : ""}`}>
+          {metaCampaigns.length > 0 && (
+            <PlatformFunnelSection label="Meta" campaigns={metaCampaigns} allCampaigns={campaigns} />
+          )}
+          {dv360Campaigns.length > 0 && (
+            <div className={hasBoth ? "pt-6" : ""}>
+              <PlatformFunnelSection label="DV360" campaigns={dv360Campaigns} allCampaigns={campaigns} />
             </div>
-            {selectedStatuses.size < availableStatuses.length && (
-              <button
-                onClick={() => setSelectedStatuses(new Set(availableStatuses))}
-                className="mt-2 text-[10px] text-blue-600 hover:text-blue-800 font-semibold"
-              >
-                Select all
-              </button>
-            )}
-          </div>
+          )}
         </div>
 
-        {/* Single-line summary at the bottom — total breakdown */}
-        <div className="mt-4 pt-3 border-t border-gray-100 text-sm text-gray-700">
-          <span className="font-semibold">Breakdown:</span>{" "}
-          <span className="font-mono">{counts.TOF}</span> TOF
-          {" · "}
-          <span className="font-mono">{counts.MOF}</span> MOF
-          {" · "}
-          <span className="font-mono">{counts.BOF}</span> BOF
-          {" "}
-          <span className="text-gray-500">out of {total} total campaigns</span>
-        </div>
+        {/* Combined breakdown when both platforms present */}
+        {hasBoth && (
+          <div className="mt-4 pt-3 border-t border-gray-200 text-sm text-gray-700">
+            <span className="font-semibold">Combined:</span>{" "}
+            <span className="font-mono">{counts.TOF}</span> TOF
+            {" · "}
+            <span className="font-mono">{counts.MOF}</span> MOF
+            {" · "}
+            <span className="font-mono">{counts.BOF}</span> BOF
+            {" "}
+            <span className="text-gray-500">across {total} total campaigns</span>
+          </div>
+        )}
       </AuditCard>
 
-      {/* AI funnel-mix analysis — OPTIONAL. Starts as a small CTA; expands
-          on click into the full industry input + analyze workflow. */}
+      {/* AI funnel-mix analysis */}
       {!aiPanelOpen ? (
         <button
           onClick={() => setAiPanelOpen(true)}
@@ -386,7 +433,6 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
           const tone = verdictTone(aiResult.verdict);
           return (
             <div className="space-y-3">
-              {/* Overall verdict */}
               <div className={`${tone.bg} ${tone.border} border rounded-lg p-3 flex items-start gap-2`}>
                 <tone.Icon className={`w-5 h-5 shrink-0 mt-0.5 ${tone.text}`} />
                 <div className="flex-1">
@@ -398,7 +444,6 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
                 </div>
               </div>
 
-              {/* Ideal vs actual mix */}
               <div className="bg-white border border-gray-200 rounded-lg p-3">
                 <div className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">Ideal mix for your industry vs your current</div>
                 <div className="grid grid-cols-3 gap-3">
@@ -421,7 +466,6 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
                 </div>
               </div>
 
-              {/* Per-stage diagnosis */}
               <div className="space-y-2">
                 {(["tof", "mof", "bof"] as const).map((s) => {
                   const stage = aiResult.stages[s];
@@ -442,7 +486,6 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
                 })}
               </div>
 
-              {/* Ranked focus actions */}
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                 <div className="flex items-center gap-2 mb-2">
                   <Target className="w-4 h-4 text-blue-700" />
@@ -472,8 +515,58 @@ export default function FunnelSeparationAudit({ campaigns, accountTotal, dateRan
       </AuditCard>
       )}
 
-      {/* TOF/MOF/BOF distribution + dual-axis performance chart */}
-      <FunnelStagePerformance campaigns={visibleCampaigns} accountTotal={total} dateRange={dateRange} customStart={customStart} customEnd={customEnd} />
+      {/* Combined funnel performance chart (both platforms together) — shown
+          FIRST when both are connected, then the per-platform charts below it. */}
+      {hasBoth && (() => {
+        const metaCur = currencyFor(campaigns, "meta");
+        const dvCur = currencyFor(campaigns, "dv360");
+        const mixedCurrency = metaCur !== dvCur;
+        return (
+          <>
+            <FunnelStagePerformance
+              campaigns={campaigns}
+              accountTotal={campaigns.length}
+              dateRange={dateRange}
+              customStart={customStart}
+              customEnd={customEnd}
+              platformLabel="Combined — Meta + DV360"
+            />
+            {mixedCurrency && (
+              <div className="-mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] text-amber-800 flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>
+                  Meta is billed in <strong>{metaCur}</strong> and DV360 in <strong>{dvCur}</strong>. In the combined
+                  chart above, monetary metrics (Spend / CPM / CPC) sum across two currencies and shouldn&apos;t be read
+                  as a single amount — use the per-platform charts below for money, or switch the combined chart to a
+                  currency-free metric (Impressions, Reach, CTR, Frequency).
+                </span>
+              </div>
+            )}
+          </>
+        );
+      })()}
+
+      {/* Per-platform funnel performance charts */}
+      {metaCampaigns.length > 0 && (
+        <FunnelStagePerformance
+          campaigns={metaCampaigns}
+          accountTotal={metaCampaigns.length}
+          dateRange={dateRange}
+          customStart={customStart}
+          customEnd={customEnd}
+          platformLabel={hasBoth ? "Meta" : undefined}
+        />
+      )}
+      {dv360Campaigns.length > 0 && (
+        <FunnelStagePerformance
+          campaigns={dv360Campaigns}
+          accountTotal={dv360Campaigns.length}
+          dateRange={dateRange}
+          customStart={customStart}
+          customEnd={customEnd}
+          platformLabel={hasBoth ? "DV360" : undefined}
+        />
+      )}
     </div>
   );
 }

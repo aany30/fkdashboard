@@ -40,18 +40,19 @@ html, body {
               border-color 0.22s ease;
 }
 /* Only lift elements that are "leaf" cards — not containers with children overflow */
+/* NOTE: hover uses shadow + border only — NO translateY. A vertical lift moves
+   the card out from under the cursor near its edges, which un-hovers → drops →
+   re-hovers in a loop (cursor "glitch"). Shadow/border don't change geometry. */
 .bg-white.rounded-xl.border:not(:has(table)):not(:has(.overflow-x-auto)):hover,
 .bg-white.rounded-lg.border:not(:has(table)):not(:has(.overflow-x-auto)):hover {
-  transform: translateY(-3px);
   box-shadow: 0 12px 32px rgba(59, 130, 246, 0.08), 0 3px 10px rgba(0, 0, 0, 0.05);
   border-color: rgba(59, 130, 246, 0.2);
 }
 
-/* Metric/KPI cards — slightly stronger lift */
+/* Metric/KPI cards — slightly stronger shadow (no lift, see note above) */
 .bg-white.rounded-xl.border.shadow-sm.p-5:hover,
 .bg-white.rounded-xl.border.shadow-sm.p-4:hover,
 .bg-white.rounded-xl.border.p-5:hover {
-  transform: translateY(-4px);
   box-shadow: 0 16px 40px rgba(59, 130, 246, 0.11), 0 4px 12px rgba(0, 0, 0, 0.06);
   border-color: rgba(59, 130, 246, 0.28);
 }
@@ -62,7 +63,6 @@ html, body {
               box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .card-hover:hover {
-  transform: translateY(-3px);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.09), 0 2px 8px rgba(0, 0, 0, 0.05);
 }
 
@@ -72,7 +72,6 @@ html, body {
               border-color 0.22s ease;
 }
 .metric-card:hover {
-  transform: translateY(-4px);
   box-shadow: 0 16px 40px rgba(59, 130, 246, 0.1), 0 4px 12px rgba(0, 0, 0, 0.06);
   border-color: rgba(59, 130, 246, 0.25);
 }

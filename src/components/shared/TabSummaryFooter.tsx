@@ -19,7 +19,7 @@ interface Props {
   lines: string[];
   tabName: string;
   context: Record<string, unknown>;
-  platform: "meta" | "google";
+  platform: "meta" | "dv360" | "both";
   dateRange?: string;
 }
 
@@ -29,12 +29,12 @@ export default function TabSummaryFooter({ lines, tabName, context, platform, da
   const [data, setData] = useState<SummaryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { metaAccessToken, googleAccessToken, addAiCredits } = useAuthStore();
+  const { metaAccessToken, dv360RefreshToken, addAiCredits } = useAuthStore();
   const isDemo = useMemo(
     () =>
       (!metaAccessToken || isDemoCredential(metaAccessToken)) &&
-      (!googleAccessToken || isDemoCredential(googleAccessToken)),
-    [metaAccessToken, googleAccessToken]
+      (!dv360RefreshToken || isDemoCredential(dv360RefreshToken)),
+    [metaAccessToken, dv360RefreshToken]
   );
 
   const cacheKey = summaryKey(tabName, platform, dateRange);
@@ -48,7 +48,10 @@ export default function TabSummaryFooter({ lines, tabName, context, platform, da
       const res = await fetch("/api/ai/executive-summary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tabName, context, platform, dateRange, isDemo }),
+        // `lines` are the tab's rule-based insight bullets already shown to the
+        // user — pass them so the LLM grounds its summary in these verified
+        // facts instead of only the (sometimes thin) context object.
+        body: JSON.stringify({ tabName, context, precomputedFacts: lines, platform, dateRange, isDemo }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

@@ -4,7 +4,7 @@ import { useAuthStore } from "@/store/auth";
 import { CheckCircle2, XCircle, AlertCircle, Loader2, Lightbulb, ArrowRight } from "lucide-react";
 
 interface CredentialInputProps {
-  platform: "meta" | "google";
+  platform: "meta" | "dv360";
   // Renamed in callers to `onComplete` — both names accepted for compatibility.
   onClose?: () => void;
   onComplete?: () => void;
@@ -20,7 +20,7 @@ interface TestResult {
 
 export default function CredentialInput({ platform, onClose, onComplete }: CredentialInputProps) {
   const router = useRouter();
-  const { setMetaCredentials, setGoogleCredentials } = useAuthStore();
+  const { setMetaCredentials, setDV360Credentials } = useAuthStore();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<TestResult[] | null>(null);
@@ -34,13 +34,12 @@ export default function CredentialInput({ platform, onClose, onComplete }: Crede
     pixelIds: "",
   });
 
-  const [googleForm, setGoogleForm] = useState({
-    accessToken: "",
-    customerId: "",
-    propertyId: "",
-    containerId: "",
-    developerToken: "",
-    loginCustomerId: "",
+  const [dv360Form, setDV360Form] = useState({
+    clientId: "",
+    clientSecret: "",
+    refreshToken: "",
+    advertiserId: "",
+    partnerId: "",
   });
 
 
@@ -72,7 +71,7 @@ export default function CredentialInput({ platform, onClose, onComplete }: Crede
     }
   };
 
-  const testGoogleConnection = async () => {
+  const testDV360Connection = async () => {
     setTesting(true);
     setTestResults(null);
     setError(null);
@@ -81,13 +80,12 @@ export default function CredentialInput({ platform, onClose, onComplete }: Crede
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          platform: "google",
-          accessToken: googleForm.accessToken,
-          customerId: googleForm.customerId,
-          propertyId: googleForm.propertyId,
-          containerId: googleForm.containerId,
-          developerToken: googleForm.developerToken,
-          loginCustomerId: googleForm.loginCustomerId,
+          platform: "dv360",
+          clientId: dv360Form.clientId,
+          clientSecret: dv360Form.clientSecret,
+          refreshToken: dv360Form.refreshToken,
+          advertiserId: dv360Form.advertiserId,
+          partnerId: dv360Form.partnerId || undefined,
         }),
       });
       const data = await res.json();
@@ -119,25 +117,24 @@ export default function CredentialInput({ platform, onClose, onComplete }: Crede
     }
   };
 
-  const handleGoogleSubmit = async (e: React.FormEvent) => {
+  const handleDV360Submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
     try {
-      // MINIMUM requirements (only 3 fields). GA4 + GTM optional.
-      if (!googleForm.accessToken.trim()) throw new Error("Refresh Token is required");
-      if (!googleForm.developerToken.trim()) throw new Error("Developer Token is required");
-      if (!googleForm.customerId.trim()) throw new Error("Customer ID is required");
+      if (!dv360Form.clientId.trim()) throw new Error("OAuth Client ID is required");
+      if (!dv360Form.clientSecret.trim()) throw new Error("OAuth Client Secret is required");
+      if (!dv360Form.refreshToken.trim()) throw new Error("Refresh Token is required");
+      if (!dv360Form.advertiserId.trim()) throw new Error("Advertiser ID is required");
 
-      setGoogleCredentials(
-        googleForm.accessToken.trim(),
-        googleForm.customerId.trim(),
-        googleForm.propertyId.trim() || "",     // optional — empty means skip GA4 audit
-        googleForm.containerId.trim() || "",    // optional — empty means skip GTM audit
-        googleForm.developerToken.trim(),
-        googleForm.loginCustomerId.trim() || undefined
-      );
-      setGoogleForm({ accessToken: "", customerId: "", propertyId: "", containerId: "", developerToken: "", loginCustomerId: "" });
+      setDV360Credentials({
+        clientId: dv360Form.clientId.trim(),
+        clientSecret: dv360Form.clientSecret.trim(),
+        refreshToken: dv360Form.refreshToken.trim(),
+        advertiserId: dv360Form.advertiserId.trim().replace(/[^0-9]/g, ""),
+        partnerId: dv360Form.partnerId.trim().replace(/[^0-9]/g, "") || undefined,
+      });
+      setDV360Form({ clientId: "", clientSecret: "", refreshToken: "", advertiserId: "", partnerId: "" });
       setSavedSuccess(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -188,7 +185,7 @@ export default function CredentialInput({ platform, onClose, onComplete }: Crede
         </div>
         <div>
           <h3 className="text-xl font-bold text-green-900">
-            {platform === "meta" ? "Meta" : "Google"} connected!
+            {platform === "meta" ? "Meta" : "DV360"} connected!
           </h3>
           <p className="text-green-700 text-sm mt-1">
             Your credentials are saved. Open the dashboard to see your live data.
@@ -303,108 +300,90 @@ export default function CredentialInput({ platform, onClose, onComplete }: Crede
           </div>
         </form>
       ) : (
-        <form onSubmit={handleGoogleSubmit} className="space-y-4">
-          {/* REQUIRED #1 — Refresh Token (formerly mislabeled as "OAuth Access Token") */}
+        <form onSubmit={handleDV360Submit} className="space-y-4">
+          {/* REQUIRED #1 — OAuth Client ID */}
+          <div>
+            <label className="block text-gray-700 text-sm font-semibold mb-2">
+              OAuth Client ID <span className="text-red-600">*</span>
+            </label>
+            <input
+              type="text"
+              value={dv360Form.clientId}
+              onChange={(e) => setDV360Form({ ...dv360Form, clientId: e.target.value })}
+              placeholder="e.g., 1234567890-abc123.apps.googleusercontent.com"
+              className={inputClass}
+            />
+            <p className="text-gray-500 text-xs mt-1">
+              From <code className="bg-gray-100 px-1 rounded">console.cloud.google.com → APIs &amp; Services → Credentials</code>. See the guide above for setup.
+            </p>
+          </div>
+
+          {/* REQUIRED #2 — OAuth Client Secret */}
+          <div>
+            <label className="block text-gray-700 text-sm font-semibold mb-2">
+              OAuth Client Secret <span className="text-red-600">*</span>
+            </label>
+            <input
+              type="password"
+              value={dv360Form.clientSecret}
+              onChange={(e) => setDV360Form({ ...dv360Form, clientSecret: e.target.value })}
+              placeholder="GOCSPX-..."
+              className={inputClass}
+            />
+          </div>
+
+          {/* REQUIRED #3 — Refresh Token */}
           <div>
             <label className="block text-gray-700 text-sm font-semibold mb-2">
               Refresh Token <span className="text-red-600">*</span>
             </label>
             <textarea
-              value={googleForm.accessToken}
-              onChange={(e) => setGoogleForm({ ...googleForm, accessToken: e.target.value })}
+              value={dv360Form.refreshToken}
+              onChange={(e) => setDV360Form({ ...dv360Form, refreshToken: e.target.value })}
               placeholder="1//0gExA-MEnW5lkCgYIARAAGBASNwF..."
               className={inputClass}
               rows={3}
             />
             <p className="text-gray-500 text-xs mt-1">
-              From OAuth Playground. Starts with <code className="bg-gray-100 px-1 rounded">1//</code>. Required scope: <code className="bg-gray-100 px-1 rounded">https://www.googleapis.com/auth/adwords</code>
+              From OAuth Playground with scopes <code className="bg-gray-100 px-1 rounded">display-video</code> + <code className="bg-gray-100 px-1 rounded">doubleclickbidmanager</code>. Starts with <code className="bg-gray-100 px-1 rounded">1//</code>.
             </p>
           </div>
 
-          {/* REQUIRED #2 — Developer Token (was hidden in "Advanced" section) */}
+          {/* REQUIRED #4 — Advertiser ID */}
           <div>
             <label className="block text-gray-700 text-sm font-semibold mb-2">
-              Developer Token <span className="text-red-600">*</span>
+              DV360 Advertiser ID <span className="text-red-600">*</span>
             </label>
             <input
               type="text"
-              value={googleForm.developerToken}
-              onChange={(e) => setGoogleForm({ ...googleForm, developerToken: e.target.value })}
-              placeholder="e.g., abc123XYZ_aBcDeFgH9iJkL"
+              value={dv360Form.advertiserId}
+              onChange={(e) => setDV360Form({ ...dv360Form, advertiserId: e.target.value })}
+              placeholder="e.g., 1234567"
               className={inputClass}
             />
             <p className="text-gray-500 text-xs mt-1">
-              From <code className="bg-gray-100 px-1 rounded">ads.google.com → Tools → API Center</code>. Approval takes 1-3 business days.
+              From the DV360 URL: <code className="bg-gray-100 px-1 rounded">displayvideo.google.com/#ng_nav/p/PARTNER/a/ADVERTISER/…</code>
             </p>
           </div>
 
-          {/* REQUIRED #3 — Customer ID */}
-          <div>
-            <label className="block text-gray-700 text-sm font-semibold mb-2">
-              Google Ads Customer ID <span className="text-red-600">*</span>
-            </label>
-            <input
-              type="text"
-              value={googleForm.customerId}
-              onChange={(e) => setGoogleForm({ ...googleForm, customerId: e.target.value })}
-              placeholder="e.g., 123-456-7890"
-              className={inputClass}
-            />
-            <p className="text-gray-500 text-xs mt-1">
-              Top-right of <code className="bg-gray-100 px-1 rounded">ads.google.com</code>. 10-digit number with dashes (dashes optional).
-            </p>
-          </div>
-
+          {/* Optional — Partner ID */}
           <details className="border border-gray-200 rounded-lg">
             <summary className="cursor-pointer px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 select-none">
-              Optional — GA4 + GTM fields (skip if you only want Google Ads data)
-            </summary>
-            <div className="p-4 space-y-4 border-t border-gray-200">
-              <div>
-                <label className="block text-gray-700 text-sm font-semibold mb-2">
-                  GA4 Property ID <span className="text-xs text-gray-400 font-normal">(optional — for GA4 audit only)</span>
-                </label>
-                <input
-                  type="text"
-                  value={googleForm.propertyId}
-                  onChange={(e) => setGoogleForm({ ...googleForm, propertyId: e.target.value })}
-                  placeholder="e.g., 123456789"
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className="block text-gray-700 text-sm font-semibold mb-2">
-                  GTM Container ID <span className="text-xs text-gray-400 font-normal">(optional — for GTM audit only)</span>
-                </label>
-                <input
-                  type="text"
-                  value={googleForm.containerId}
-                  onChange={(e) => setGoogleForm({ ...googleForm, containerId: e.target.value })}
-                  placeholder="e.g., GTM-XXXXXX"
-                  className={inputClass}
-                />
-              </div>
-            </div>
-          </details>
-
-          {/* Optional — Login Customer ID (only needed for MCC accounts) */}
-          <details className="border border-gray-200 rounded-lg">
-            <summary className="cursor-pointer px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 select-none">
-              Optional — Login Customer ID (only if using a Manager / MCC account)
+              Optional — Partner ID (needed only for Floodlight config reads)
             </summary>
             <div className="p-4 border-t border-gray-200">
               <label className="block text-gray-700 text-sm font-semibold mb-2">
-                Login Customer ID <span className="text-xs text-gray-400 font-normal">(optional — MCC accounts only)</span>
+                DV360 Partner ID <span className="text-xs text-gray-400 font-normal">(optional)</span>
               </label>
               <input
                 type="text"
-                value={googleForm.loginCustomerId}
-                onChange={(e) => setGoogleForm({ ...googleForm, loginCustomerId: e.target.value })}
-                placeholder="If using MCC, enter the manager Customer ID"
+                value={dv360Form.partnerId}
+                onChange={(e) => setDV360Form({ ...dv360Form, partnerId: e.target.value })}
+                placeholder="e.g., 123456"
                 className={inputClass}
               />
               <p className="text-gray-500 text-xs mt-1">
-                Skip if you have a single Google Ads account (no Manager). The Manager&apos;s Customer ID is shown top-right when you switch to MCC view.
+                The number after <code className="bg-gray-100 px-1 rounded">/p/</code> in the DV360 URL. Improves Floodlight group lookups.
               </p>
             </div>
           </details>
@@ -414,8 +393,8 @@ export default function CredentialInput({ platform, onClose, onComplete }: Crede
           <div className="flex gap-2 pt-2">
             <button
               type="button"
-              onClick={testGoogleConnection}
-              disabled={testing || !googleForm.accessToken || !googleForm.customerId}
+              onClick={testDV360Connection}
+              disabled={testing || !dv360Form.clientId || !dv360Form.clientSecret || !dv360Form.refreshToken || !dv360Form.advertiserId}
               className="flex-1 bg-gray-100 hover:bg-gray-200 disabled:bg-gray-50 disabled:text-gray-400 text-gray-700 font-semibold py-2.5 px-4 rounded-lg transition flex items-center justify-center gap-2"
             >
               {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
@@ -426,7 +405,7 @@ export default function CredentialInput({ platform, onClose, onComplete }: Crede
               disabled={isLoading}
               className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-2.5 px-4 rounded-lg transition"
             >
-              {isLoading ? "Saving..." : "Connect Google"}
+              {isLoading ? "Saving..." : "Connect DV360"}
             </button>
             <button
               type="button"

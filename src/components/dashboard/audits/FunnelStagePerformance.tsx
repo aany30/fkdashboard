@@ -14,7 +14,7 @@ import {
 import type { CampaignData } from "@/types";
 import { TermText } from "@/components/shared/Term";
 import { basisMetrics, BASIS_OPTIONS, BASIS_SUBTITLE, type SpendBasis, type LifetimeMap } from "@/lib/spend-basis";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { currencyFor, formatMoney } from "@/lib/currency";
 import AttributionInfo from "@/components/shared/AttributionInfo";
 import FunnelStageCompare from "./FunnelStageCompare";
 import { usePersistentValue } from "@/hooks/useColumnPrefs";
@@ -140,6 +140,8 @@ interface Props {
   dateRange?: string;
   customStart?: string;
   customEnd?: string;
+  /** When set, renders a header above the chart section for this platform slice. */
+  platformLabel?: string;
 }
 
 /** Derive ISO start/end from the picker — mirrors AccountStructureTab.rangeToDates. */
@@ -157,14 +159,15 @@ function fmtHumanDate(iso: string): string {
   catch { return iso; }
 }
 
-export default function FunnelStagePerformance({ campaigns, accountTotal, dateRange, customStart, customEnd }: Props) {
+export default function FunnelStagePerformance({ campaigns, accountTotal, dateRange, customStart, customEnd, platformLabel }: Props) {
   // Detect account currency from campaign data — avoids hardcoding "$"
-  const acctCurrency = detectCurrency(campaigns);
+  const acctCurrency = currencyFor(campaigns, "meta");
   const { metaAccessToken, metaBusinessId } = useAuthStore();
   const [compareMode, setCompareMode] = useState(false);
-  const [primaryMetric, setPrimaryMetric] = usePersistentValue<MetricId>("funnel-stage-perf-primary", "spend");
-  const [secondaryMetric, setSecondaryMetric] = usePersistentValue<MetricId>("funnel-stage-perf-secondary", "cpm");
-  const [tertiaryMetric, setTertiaryMetric] = usePersistentValue<MetricId>("funnel-stage-perf-tertiary", "ctr");
+  const keyPrefix = platformLabel ? `funnel-stage-perf-${platformLabel.toLowerCase()}` : "funnel-stage-perf";
+  const [primaryMetric, setPrimaryMetric] = usePersistentValue<MetricId>(`${keyPrefix}-primary`, "spend");
+  const [secondaryMetric, setSecondaryMetric] = usePersistentValue<MetricId>(`${keyPrefix}-secondary`, "cpm");
+  const [tertiaryMetric, setTertiaryMetric] = usePersistentValue<MetricId>(`${keyPrefix}-tertiary`, "ctr");
   // Default to "window" so the date picker IMMEDIATELY affects the chart.
   // Avg/day uses lifetime data and ignores the date range — users found this confusing.
   const [basis, setBasis] = useState<SpendBasis>("window");
@@ -233,10 +236,18 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
   const stageColor = (stage: Stage) =>
     stage === "TOF" ? "bg-purple-500" : stage === "MOF" ? "bg-blue-500" : "bg-green-500";
 
+  const isMeta = !platformLabel || platformLabel === "Meta";
+
   return (
    <div className="space-y-4">
+    {platformLabel && (
+      <div className="flex items-center gap-2 pt-2">
+        <h3 className="text-base font-bold text-gray-900">{platformLabel}</h3>
+        <span className="text-xs text-gray-500">{campaigns.length} campaign{campaigns.length !== 1 ? "s" : ""}</span>
+      </div>
+    )}
     {/* Compare-periods toggle */}
-    {metaAccessToken && metaBusinessId && (
+    {isMeta && metaAccessToken && metaBusinessId && (
       <div className="flex justify-end">
         <button
           onClick={() => setCompareMode((v) => !v)}
@@ -251,7 +262,7 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
       </div>
     )}
 
-    {compareMode && metaAccessToken && metaBusinessId && (
+    {isMeta && compareMode && metaAccessToken && metaBusinessId && (
       <FunnelStageCompare
         metaAccessToken={metaAccessToken}
         metaBusinessId={metaBusinessId}
@@ -505,7 +516,7 @@ export default function FunnelStagePerformance({ campaigns, accountTotal, dateRa
 
           {/* Verify-against-Ads-Manager footer — spells out exactly what the
               chart is showing so the client can reproduce the totals in Meta. */}
-          {basis === "window" && (() => {
+          {isMeta && basis === "window" && (() => {
             const win = resolveWindow(dateRange, customStart, customEnd);
             const days = Math.max(1, Math.round((new Date(win.endDate).getTime() - new Date(win.startDate).getTime()) / 86_400_000) + 1);
             const adsMgrUrl = `https://adsmanager.facebook.com/adsmanager/manage/campaigns?date=${win.startDate}_${win.endDate}%2Cmaximum&insights_date=${win.startDate}_${win.endDate}%2Cmaximum`;

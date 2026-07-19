@@ -23,14 +23,14 @@ import type { CampaignData } from "@/types";
 import { TermText } from "@/components/shared/Term";
 import { useAuthStore } from "@/store/auth";
 import { basisMetrics, BASIS_OPTIONS, BASIS_SUBTITLE, type SpendBasis, type LifetimeMap } from "@/lib/spend-basis";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { currencyFor, formatMoney } from "@/lib/currency";
 import AttributionInfo from "@/components/shared/AttributionInfo";
 import { usePersistentValue } from "@/hooks/useColumnPrefs";
 
 type Structure = "CBO" | "ABO" | "Unknown";
 
 /** Classify a Meta campaign as CBO (budget at campaign level) vs ABO (budget
- * at ad-set level). Google campaigns or campaigns with no budget data fall
+ * at ad-set level). DV360 campaigns or campaigns with no budget data fall
  * back to "Unknown". Same logic used in LearningPhaseAudit. */
 function classifyStructure(c: CampaignData): Structure {
   if (c.platform !== "meta") return "Unknown";
@@ -161,7 +161,7 @@ interface Props {
 }
 
 export default function AboCboPerformance({ campaigns }: Props) {
-  const acctCurrency = detectCurrency(campaigns);
+  const acctCurrency = currencyFor(campaigns, "meta");
   const { metaAccessToken } = useAuthStore();
   const [primaryMetric, setPrimaryMetric] = usePersistentValue<MetricId>("abo-cbo-perf-primary", "spend");
   const [secondaryMetric, setSecondaryMetric] = usePersistentValue<MetricId>("abo-cbo-perf-secondary", "cpm");

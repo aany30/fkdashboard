@@ -4,7 +4,7 @@ import { useAudit } from "@/hooks/useAudit";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -12,9 +12,9 @@ interface Props {
 }
 
 export default function InsightsOverview({ platform, dateRange, customStart, customEnd, setActiveTab }: Props) {
-  const { meta, google } = useAudit(platform, dateRange, customStart, customEnd);
+  const { meta } = useAudit(platform, dateRange, customStart, customEnd);
 
-  const recommendations = (meta?.recommendations?.length || 0) + (google?.recommendations?.length || 0);
+  const recommendations = meta?.recommendations?.length || 0;
 
   return (
     <SectionOverview

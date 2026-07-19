@@ -1,20 +1,20 @@
 /**
  * Reporting → Planning
  *
- * Planned vs Delivered media-plan reconciliation (Meta only, v1).
+ * Planned vs Delivered media-plan reconciliation, per platform.
  *
  * The marketer picks which campaigns to plan for (dropdown). Each selected
  * campaign is a row: type the PLANNED buy (Net Spend / Reach / Impressions),
- * and DELIVERED is shown right beside it — auto-matched from real Meta data over
+ * and DELIVERED is shown right beside it — auto-matched from real ad data over
  * the selected date range, with a pacing % and an AI insight panel.
  *
- * Planned inputs + the campaign selection persist per account via
- * usePersistentJSON, so they survive reloads. Planned rows are driven purely by
- * the persisted selection + planned map (NOT the live fetch), so typing is never
- * interrupted when delivered data refreshes.
+ * In "Both" mode the page splits into a Meta section and a DV360 section, each
+ * with its own campaign picker + planned/delivered deep-dive. Planned inputs +
+ * selection persist per account AND per platform (separate storage keys) so the
+ * two plans never collide.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ClipboardList, Info, Sparkles } from "lucide-react";
 import type { DateRange } from "@/components/shared/DateRangePicker";
 import { useCampaigns } from "@/hooks/useCampaigns";
@@ -23,11 +23,11 @@ import CampaignMultiPicker from "@/components/shared/CampaignMultiPicker";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useAuthStore } from "@/store/auth";
 import { toDisplayCredits } from "@/lib/ai-cost";
-import { detectCurrency, formatMoney } from "@/lib/currency";
+import { formatMoney } from "@/lib/currency";
 import type { CampaignData } from "@/types";
 
 interface Props {
-  platform: "meta" | "google" | "both";
+  platform: "meta" | "dv360" | "both";
   dateRange: DateRange;
   customStart?: string;
   customEnd?: string;
@@ -63,32 +63,23 @@ function deliveredOf(c: CampaignData | undefined): Delivered {
   };
 }
 
-// Pacing sentiment is by DISTANCE FROM 100% — for spend, both large over- and
-// under-delivery are off-plan (235% is an overspend, not "good"), so green =
-// on-plan (±10%), yellow = drifting (±25%), red = materially off.
-function pacingCell(delivered: number, planned: number) {
-  if (!planned || planned <= 0) return <span className="text-gray-300" title="Enter a planned spend to see pacing">—</span>;
-  const pct = (delivered / planned) * 100;
-  const off = Math.abs(pct - 100);
-  const cls =
-    off <= 10 ? "bg-green-100 text-green-800"
-    : off <= 25 ? "bg-yellow-100 text-yellow-800"
-    : "bg-red-100 text-red-800";
-  const label = pct > 100 ? "over plan" : "under plan";
+function SectionHeader({ label, sub }: { label: string; sub: string }) {
   return (
-    <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${cls}`} title={`Delivered spend is ${Math.round(pct)}% of planned (${label})`}>
-      {Math.round(pct)}%
-    </span>
+    <div className="flex items-center gap-3 pt-2 pb-1 border-b border-gray-200">
+      <h2 className="text-xl font-bold text-gray-900">{label}</h2>
+      <span className="text-xs text-gray-400 font-medium">{sub}</span>
+    </div>
   );
 }
 
 // Compact per-campaign gap explainer — 2-3 plain-English sentences, on demand.
-function GapInsight({ campaign, planned, delivered, pacing, dateRange }: {
+function GapInsight({ campaign, planned, delivered, pacing, dateRange, platform }: {
   campaign: string;
   planned: Record<string, number>;
   delivered: Record<string, number>;
   pacing: Record<string, number | null>;
   dateRange: string;
+  platform: "meta" | "dv360";
 }) {
   const demoMode = useAuthStore((s) => s.demoMode);
   const addAiCredits = useAuthStore((s) => s.addAiCredits);
@@ -100,7 +91,7 @@ function GapInsight({ campaign, planned, delivered, pacing, dateRange }: {
       const r = await fetch("/api/ai/plan-gap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaign, planned, delivered, pacing, dateRange, isDemo: demoMode }),
+        body: JSON.stringify({ campaign, planned, delivered, pacing, dateRange, platform, isDemo: demoMode }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
@@ -132,20 +123,45 @@ function GapInsight({ campaign, planned, delivered, pacing, dateRange }: {
   );
 }
 
-export default function PlanningReport({ platform, dateRange, customStart, customEnd }: Props) {
-  const { campaigns, loading } = useCampaigns("meta", dateRange, customStart, customEnd);
-  const currency = detectCurrency(campaigns);
-  const cur = (n: number) => (n > 0 ? formatMoney(n, currency, 0) : "—");
+// ─── One platform's planning surface (picker + deep-dive), fully self-contained ─
+function PlanningSection({ campaigns, loading, currency, storageSuffix, dateRange, aiPlatform }: {
+  campaigns: CampaignData[];
+  loading: boolean;
+  currency: string;
+  storageSuffix: string;
+  dateRange: DateRange;
+  aiPlatform: "meta" | "dv360";
+}) {
+  const byId = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
 
-  const metaCampaigns = useMemo(() => campaigns.filter((c) => c.platform === "meta"), [campaigns]);
-  const byId = useMemo(() => new Map(metaCampaigns.map((c) => [c.id, c])), [metaCampaigns]);
-
-  // Persisted per account: which campaigns to plan for + their planned numbers.
-  const [selected, setSelected] = usePersistentJSON<string[]>("planning-selected", []);
-  const [planned, setPlanned] = usePersistentJSON<PlannedMap>("planning-planned", {});
-
-  // Which campaign the deep-dive comparison window focuses on (session-only).
+  // Persisted per account AND per platform so Meta and DV360 plans don't collide.
+  const [selected, setSelected] = usePersistentJSON<string[]>(`planning-selected-${storageSuffix}`, []);
+  const [planned, setPlanned] = usePersistentJSON<PlannedMap>(`planning-planned-${storageSuffix}`, {});
+  // Explicitly "saved" plans: campaignId → snapshot + timestamp. Planned inputs
+  // already auto-persist, but Save records a confirmed snapshot the user can
+  // review in the Saved Plans list below (and detect unsaved edits against).
+  const [saved, setSaved] = usePersistentJSON<Record<string, { at: number; plan: Planned }>>(`planning-saved-${storageSuffix}`, {});
   const [focusId, setFocusId] = useState<string>("");
+  const [justSavedId, setJustSavedId] = useState<string>("");
+  const deepDiveRef = useRef<HTMLDivElement>(null);
+
+  // Open a saved plan in the deep-dive: ensure it's selected, focus it, and
+  // scroll the deep-dive into view (it sits above the Saved Plans list).
+  const viewPlan = (id: string) => {
+    if (!selected.includes(id)) setSelected([...selected, id]);
+    setFocusId(id);
+    setTimeout(() => deepDiveRef.current?.scrollIntoView({ block: "start" }), 60);
+  };
+  // Edit = open in the deep-dive AND focus the first planned input so the user
+  // can immediately change a value, then Save.
+  const editPlan = (id: string) => {
+    viewPlan(id);
+    setTimeout(() => {
+      const input = deepDiveRef.current?.querySelector<HTMLInputElement>('input[type="number"]');
+      input?.focus();
+      input?.select();
+    }, 140);
+  };
 
   const setPlan = (id: string, patch: Partial<Planned>) =>
     setPlanned((prev) => {
@@ -153,8 +169,17 @@ export default function PlanningReport({ platform, dateRange, customStart, custo
       return { ...prev, [id]: { ...cur0, ...patch } };
     });
 
-  // Rows come from the persisted selection (stable), name resolved from the
-  // fetched list when available; delivered looked up by id (— while loading).
+  const savePlan = (id: string) => {
+    setSaved((prev) => ({ ...prev, [id]: { at: Date.now(), plan: planned[id] ?? { spend: 0, reach: 0, impressions: 0 } } }));
+    setJustSavedId(id);
+    setTimeout(() => setJustSavedId((cur) => (cur === id ? "" : cur)), 2000);
+  };
+  const removeSaved = (id: string) =>
+    setSaved((prev) => { const next = { ...prev }; delete next[id]; return next; });
+  // A plan has unsaved changes if its current values differ from the saved snapshot.
+  const isDirty = (id: string) =>
+    !!saved[id] && JSON.stringify(saved[id].plan) !== JSON.stringify(planned[id] ?? {});
+
   const rows = useMemo(() =>
     selected.map((id) => {
       const c = byId.get(id);
@@ -187,8 +212,8 @@ export default function PlanningReport({ platform, dateRange, customStart, custo
     };
   }, [rows]);
 
-  // Compact context for the AI insight panel — planned vs delivered per row.
   const aiContext = useMemo(() => ({
+    platform: aiPlatform,
     window: dateRange,
     campaigns: rows.map((r) => ({
       name: r.name,
@@ -206,49 +231,23 @@ export default function PlanningReport({ platform, dateRange, customStart, custo
       plannedSpend: totals.planned.spend, deliveredSpend: Math.round(totals.delivered.spend),
       plannedImpressions: totals.planned.impressions, deliveredImpressions: Math.round(totals.delivered.impressions),
     },
-  }), [rows, totals, dateRange]);
+  }), [rows, totals, dateRange, aiPlatform]);
 
-  const hasPlan = rows.some((r) => r.planned.spend > 0 || r.planned.reach > 0 || r.planned.impressions > 0);
-
-  const th = "px-3 py-2 text-[10px] uppercase font-semibold text-gray-500 whitespace-nowrap";
-  const td = "px-3 py-2 text-right text-gray-800 whitespace-nowrap tabular-nums";
-  const numField = (id: string, field: keyof Planned, value: number, opts?: { placeholder?: string; step?: number }) => (
-    <input
-      type="number" min={0} step={opts?.step ?? 1} value={value || ""}
-      onChange={(e) => setPlan(id, { [field]: Math.max(0, Number(e.target.value) || 0) })}
-      placeholder={opts?.placeholder ?? "0"}
-      className="w-24 px-2 py-1 text-xs text-right border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
-    />
-  );
-
-  const options = useMemo(() => metaCampaigns.map((c) => ({ id: c.id, name: c.name })), [metaCampaigns]);
+  const options = useMemo(() => campaigns.map((c) => ({ id: c.id, name: c.name })), [campaigns]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3">
-          <ClipboardList className="w-8 h-8 text-blue-600" />
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Planning</h1>
-            <p className="text-gray-600 mt-1 text-sm">What you planned to buy vs what actually delivered — per campaign. Meta only.</p>
-          </div>
-        </div>
-        {rows.length > 0 && (
-          <AIExecutiveSummary tabName="Planning (Planned vs Delivered)" context={aiContext} platform="meta" dateRange={String(dateRange)} inline />
-        )}
-      </div>
-
-      {platform === "google" && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800 flex items-start gap-2">
-          <Info className="w-4 h-4 mt-0.5 shrink-0" />
-          Planning is Meta-specific right now — switch Platform to Meta or Both.
+    <div className="space-y-4">
+      {/* Per-section AI summary */}
+      {rows.length > 0 && (
+        <div className="flex justify-end">
+          <AIExecutiveSummary tabName={`Planning — ${aiPlatform === "dv360" ? "DV360" : "Meta"}`} context={aiContext} platform={aiPlatform} dateRange={String(dateRange)} inline />
         </div>
       )}
 
       {/* Campaign selector */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4 flex items-center gap-3 flex-wrap">
         <span className="text-sm font-semibold text-gray-700">Campaigns in this plan:</span>
-        <CampaignMultiPicker options={options} values={selected} onChange={setSelected} allLabelText="None selected — pick campaigns to plan" />
+        <CampaignMultiPicker options={options} values={selected} onChange={setSelected} allLabelText="None selected — pick campaigns to plan" loading={loading} />
       </div>
 
       <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 flex items-start gap-2 text-xs text-blue-800">
@@ -260,142 +259,252 @@ export default function PlanningReport({ platform, dateRange, customStart, custo
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-10 text-center text-sm text-gray-400">
           {loading ? "Loading campaigns…" : "No campaigns selected yet — use the picker above to choose which campaigns to plan for."}
         </div>
-      ) : (
-        <>
-        {/* ── Per-campaign deep-dive: pick one campaign, compare every metric
-              planned vs delivered, with an AI insight for that exact campaign ── */}
-        {(() => {
-          const focus = rows.find((r) => r.id === focusId) ?? rows[0];
-          if (!focus) return null;
-          const p = focus.planned;
-          const d = focus.delivered;
-          const pFreq = p.frequency && p.frequency > 0 ? p.frequency : (p.reach > 0 ? p.impressions / p.reach : 0);
-          const pCpm = p.cpm && p.cpm > 0 ? p.cpm : (p.impressions > 0 ? (p.spend / p.impressions) * 1000 : 0);
+      ) : (() => {
+        const focus = rows.find((r) => r.id === focusId) ?? rows[0];
+        if (!focus) return null;
+        const p = focus.planned;
+        const d = focus.delivered;
+        const pFreq = p.frequency && p.frequency > 0 ? p.frequency : (p.reach > 0 ? p.impressions / p.reach : 0);
+        const pCpm = p.cpm && p.cpm > 0 ? p.cpm : (p.impressions > 0 ? (p.spend / p.impressions) * 1000 : 0);
 
-          // Per-metric comparison rows. Every planned cell is editable; freq/cpm
-          // fall back to a derived placeholder until overridden. pacing = delivered
-          // ÷ planned effective value.
-          const money = (n: number) => (n > 0 ? formatMoney(n, currency, 0) : "—");
-          const pct = (pl: number, de: number) => (pl > 0 ? Math.round((de / pl) * 100) : null);
-          type Kind = "money" | "int" | "pct" | "decimal";
-          const metricRows: {
-            label: string; field: keyof Planned; kind: Kind; step: number;
-            plannedEff: number; deliveredNum: number; deliveredStr: string; placeholder?: string;
-          }[] = [
-            { label: "Net Spend",   field: "spend",       kind: "money",   step: 1,    plannedEff: p.spend,        deliveredNum: d.spend,        deliveredStr: money(d.spend) },
-            { label: "Reach",       field: "reach",       kind: "int",     step: 1,    plannedEff: p.reach,        deliveredNum: d.reach,        deliveredStr: fmtInt(d.reach) },
-            { label: "Impressions", field: "impressions", kind: "int",     step: 1,    plannedEff: p.impressions,  deliveredNum: d.impressions,  deliveredStr: fmtInt(d.impressions) },
-            { label: "Frequency",   field: "frequency",   kind: "decimal", step: 0.1,  plannedEff: pFreq,          deliveredNum: d.frequency,    deliveredStr: fmtX(d.frequency), placeholder: pFreq > 0 ? pFreq.toFixed(1) : "0" },
-            { label: "CPM",         field: "cpm",         kind: "money",   step: 1,    plannedEff: pCpm,           deliveredNum: d.cpm,          deliveredStr: money(d.cpm), placeholder: pCpm > 0 ? String(Math.round(pCpm)) : "0" },
-            { label: "VTR",         field: "vtr",         kind: "pct",     step: 0.01, plannedEff: p.vtr ?? 0,     deliveredNum: d.vtr,          deliveredStr: fmtPct(d.vtr) },
-            { label: "CTR",         field: "ctr",         kind: "pct",     step: 0.01, plannedEff: p.ctr ?? 0,     deliveredNum: d.ctr,          deliveredStr: fmtPct(d.ctr) },
-            { label: "Views",       field: "views",       kind: "int",     step: 1,    plannedEff: p.views ?? 0,   deliveredNum: d.videoViews,   deliveredStr: fmtInt(d.videoViews) },
-            { label: "Clicks",      field: "clicks",      kind: "int",     step: 1,    plannedEff: p.clicks ?? 0,  deliveredNum: d.clicks,       deliveredStr: fmtInt(d.clicks) },
-          ];
-          const focusContext = {
-            campaign: focus.name,
-            window: String(dateRange),
-            planned: {
-              spend: p.spend, reach: p.reach, impressions: p.impressions, frequency: +pFreq.toFixed(2), cpm: +pCpm.toFixed(2),
-              vtr: p.vtr ?? 0, ctr: p.ctr ?? 0, views: p.views ?? 0, clicks: p.clicks ?? 0,
-            },
-            delivered: {
-              spend: Math.round(d.spend), reach: Math.round(d.reach), impressions: Math.round(d.impressions),
-              frequency: +d.frequency.toFixed(2), cpm: +d.cpm.toFixed(2), vtr: +d.vtr.toFixed(2), ctr: +d.ctr.toFixed(2),
-              views: Math.round(d.videoViews), clicks: Math.round(d.clicks),
-            },
-            pacing: {
-              spendPct: pct(p.spend, d.spend), reachPct: pct(p.reach, d.reach), impressionPct: pct(p.impressions, d.impressions),
-              vtrPct: pct(p.vtr ?? 0, d.vtr), ctrPct: pct(p.ctr ?? 0, d.ctr), viewsPct: pct(p.views ?? 0, d.videoViews), clicksPct: pct(p.clicks ?? 0, d.clicks),
-            },
-          };
-          return (
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
-              <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-3 flex-wrap">
-                  <h3 className="text-sm font-bold text-gray-900">Campaign deep-dive</h3>
-                  <select
-                    value={focus.id}
-                    onChange={(e) => setFocusId(e.target.value)}
-                    className="text-xs border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-200 max-w-[280px]"
-                  >
-                    {rows.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                  </select>
-                </div>
+        const money = (n: number) => (n > 0 ? formatMoney(n, currency, 0) : "—");
+        const pct = (pl: number, de: number) => (pl > 0 ? Math.round((de / pl) * 100) : null);
+        type Kind = "money" | "int" | "pct" | "decimal";
+        const metricRows: {
+          label: string; field: keyof Planned; kind: Kind; step: number;
+          plannedEff: number; deliveredNum: number; deliveredStr: string; placeholder?: string;
+        }[] = [
+          { label: "Net Spend",   field: "spend",       kind: "money",   step: 1,    plannedEff: p.spend,        deliveredNum: d.spend,        deliveredStr: money(d.spend) },
+          { label: "Reach",       field: "reach",       kind: "int",     step: 1,    plannedEff: p.reach,        deliveredNum: d.reach,        deliveredStr: fmtInt(d.reach) },
+          { label: "Impressions", field: "impressions", kind: "int",     step: 1,    plannedEff: p.impressions,  deliveredNum: d.impressions,  deliveredStr: fmtInt(d.impressions) },
+          { label: "Frequency",   field: "frequency",   kind: "decimal", step: 0.1,  plannedEff: pFreq,          deliveredNum: d.frequency,    deliveredStr: fmtX(d.frequency), placeholder: pFreq > 0 ? pFreq.toFixed(1) : "0" },
+          { label: "CPM",         field: "cpm",         kind: "money",   step: 1,    plannedEff: pCpm,           deliveredNum: d.cpm,          deliveredStr: money(d.cpm), placeholder: pCpm > 0 ? String(Math.round(pCpm)) : "0" },
+          { label: "VTR",         field: "vtr",         kind: "pct",     step: 0.01, plannedEff: p.vtr ?? 0,     deliveredNum: d.vtr,          deliveredStr: fmtPct(d.vtr) },
+          { label: "CTR",         field: "ctr",         kind: "pct",     step: 0.01, plannedEff: p.ctr ?? 0,     deliveredNum: d.ctr,          deliveredStr: fmtPct(d.ctr) },
+          { label: "Views",       field: "views",       kind: "int",     step: 1,    plannedEff: p.views ?? 0,   deliveredNum: d.videoViews,   deliveredStr: fmtInt(d.videoViews) },
+          { label: "Clicks",      field: "clicks",      kind: "int",     step: 1,    plannedEff: p.clicks ?? 0,  deliveredNum: d.clicks,       deliveredStr: fmtInt(d.clicks) },
+        ];
+        const focusContext = {
+          campaign: focus.name,
+          window: String(dateRange),
+          planned: {
+            spend: p.spend, reach: p.reach, impressions: p.impressions, frequency: +pFreq.toFixed(2), cpm: +pCpm.toFixed(2),
+            vtr: p.vtr ?? 0, ctr: p.ctr ?? 0, views: p.views ?? 0, clicks: p.clicks ?? 0,
+          },
+          delivered: {
+            spend: Math.round(d.spend), reach: Math.round(d.reach), impressions: Math.round(d.impressions),
+            frequency: +d.frequency.toFixed(2), cpm: +d.cpm.toFixed(2), vtr: +d.vtr.toFixed(2), ctr: +d.ctr.toFixed(2),
+            views: Math.round(d.videoViews), clicks: Math.round(d.clicks),
+          },
+          pacing: {
+            spendPct: pct(p.spend, d.spend), reachPct: pct(p.reach, d.reach), impressionPct: pct(p.impressions, d.impressions),
+            vtrPct: pct(p.vtr ?? 0, d.vtr), ctrPct: pct(p.ctr ?? 0, d.ctr), viewsPct: pct(p.views ?? 0, d.videoViews), clicksPct: pct(p.clicks ?? 0, d.clicks),
+          },
+        };
+        return (
+          <div ref={deepDiveRef} className="bg-white rounded-xl border border-gray-200 shadow-sm scroll-mt-24">
+            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3 flex-wrap">
+                <h3 className="text-sm font-bold text-gray-900">Campaign deep-dive</h3>
+                <select
+                  value={focus.id}
+                  onChange={(e) => setFocusId(e.target.value)}
+                  className="text-xs border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-200 max-w-[280px]"
+                >
+                  {rows.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => savePlan(focus.id)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border shadow-sm transition ${
+                    justSavedId === focus.id
+                      ? "bg-green-50 border-green-300 text-green-700"
+                      : isDirty(focus.id)
+                        ? "bg-blue-600 border-blue-600 text-white hover:bg-blue-700"
+                        : saved[focus.id]
+                          ? "bg-white border-gray-300 text-gray-500"
+                          : "bg-blue-600 border-blue-600 text-white hover:bg-blue-700"
+                  }`}
+                >
+                  {justSavedId === focus.id ? "Saved ✓" : isDirty(focus.id) ? "Save changes" : saved[focus.id] ? "Saved" : "Save plan"}
+                </button>
                 <GapInsight
                   campaign={focus.name}
                   planned={focusContext.planned}
                   delivered={focusContext.delivered}
                   pacing={focusContext.pacing}
                   dateRange={String(dateRange)}
+                  platform={aiPlatform}
                 />
               </div>
-              <div className="p-5">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="bg-gray-50 border-b border-gray-100">
-                      <tr>
-                        <th className="px-3 py-2 text-left text-[10px] uppercase font-semibold text-gray-500">Metric</th>
-                        <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Planned</th>
-                        <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Delivered</th>
-                        <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Pacing</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {metricRows.map((m) => {
-                        // This is the only planning surface, so every planned cell
-                        // is editable. Freq/CPM show a derived placeholder.
-                        const editableHere = true;
-                        const stored = (p[m.field] as number | undefined) ?? 0;
-                        const pacing = m.plannedEff > 0 ? Math.round((m.deliveredNum / m.plannedEff) * 100) : null;
-                        const plannedDisplay =
-                          m.kind === "money" ? money(m.plannedEff)
-                          : m.kind === "pct" ? fmtPct(m.plannedEff)
-                          : m.kind === "decimal" ? fmtX(m.plannedEff)
-                          : fmtInt(m.plannedEff);
-                        return (
-                          <tr key={m.label} className="border-b border-gray-50 last:border-0">
-                            <td className="px-3 py-2 font-medium text-gray-700">{m.label}</td>
-                            <td className="px-3 py-2 text-right">
-                              {editableHere ? (
-                                // Fixed-width prefix/suffix slots (always rendered) keep
-                                // every input box aligned in one column regardless of ₹ / %.
-                                <div className="inline-flex items-center justify-end gap-1">
-                                  <span className="w-3 text-right text-[11px] text-gray-400">{m.kind === "money" && currency === "INR" ? "₹" : ""}</span>
-                                  <input
-                                    type="number" min={0} step={m.step} value={stored || ""}
-                                    placeholder={m.placeholder ?? "0"}
-                                    onChange={(e) => setPlan(focus.id, { [m.field]: Math.max(0, Number(e.target.value) || 0) })}
-                                    className="w-28 px-2 py-1 text-xs text-right border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
-                                  />
-                                  <span className="w-3 text-left text-[11px] text-gray-400">{m.kind === "pct" ? "%" : ""}</span>
-                                </div>
-                              ) : (
-                                <span className="text-gray-600 tabular-nums">{plannedDisplay}</span>
-                              )}
-                            </td>
-                            <td className="px-3 py-2 text-right text-gray-900 font-semibold tabular-nums">{m.deliveredStr}</td>
-                            <td className="px-3 py-2 text-right">
-                              {pacing === null ? <span className="text-gray-300">—</span> : (() => {
-                                const off = Math.abs(pacing - 100);
-                                const cls = off <= 10 ? "bg-green-100 text-green-800" : off <= 25 ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-800";
-                                return <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${cls}`}>{pacing}%</span>;
-                              })()}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <p className="mt-3 text-[11px] text-gray-500">
-                  Enter planned targets for each metric; delivered is matched from Meta and pacing is delivered ÷ planned. Click <span className="font-semibold">Explain the gap</span> for a 2-3 line read on <span className="font-medium">{focus.name}</span>.
-                </p>
-              </div>
             </div>
-          );
-        })()}
-        </>
+            <div className="p-5">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 border-b border-gray-100">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-[10px] uppercase font-semibold text-gray-500">Metric</th>
+                      <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Planned</th>
+                      <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Delivered</th>
+                      <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Pacing</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {metricRows.map((m) => {
+                      const stored = (p[m.field] as number | undefined) ?? 0;
+                      return (
+                        <tr key={m.label} className="border-b border-gray-50 last:border-0">
+                          <td className="px-3 py-2 font-medium text-gray-700">{m.label}</td>
+                          <td className="px-3 py-2 text-right">
+                            <div className="inline-flex items-center justify-end gap-1">
+                              <span className="w-3 text-right text-[11px] text-gray-400">{m.kind === "money" && currency === "INR" ? "₹" : ""}</span>
+                              <input
+                                type="number" min={0} step={m.step} value={stored || ""}
+                                placeholder={m.placeholder ?? "0"}
+                                onChange={(e) => setPlan(focus.id, { [m.field]: Math.max(0, Number(e.target.value) || 0) })}
+                                className="w-28 px-2 py-1 text-xs text-right border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                              />
+                              <span className="w-3 text-left text-[11px] text-gray-400">{m.kind === "pct" ? "%" : ""}</span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-right text-gray-900 font-semibold tabular-nums">{m.deliveredStr}</td>
+                          <td className="px-3 py-2 text-right">
+                            {m.plannedEff <= 0 ? <span className="text-gray-300">—</span> : (() => {
+                              const pacing = Math.round((m.deliveredNum / m.plannedEff) * 100);
+                              const off = Math.abs(pacing - 100);
+                              const cls = off <= 10 ? "bg-green-100 text-green-800" : off <= 25 ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-800";
+                              return <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${cls}`}>{pacing}%</span>;
+                            })()}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-3 text-[11px] text-gray-500">
+                Enter planned targets for each metric; delivered is matched from real {aiPlatform === "dv360" ? "DV360" : "Meta"} data and pacing is delivered ÷ planned. Click <span className="font-semibold">Explain the gap</span> for a 2-3 line read on <span className="font-medium">{focus.name}</span>.
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Saved Plans — review anything you've saved, jump back in ── */}
+      {Object.keys(saved).length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+          <div className="px-5 py-3 border-b border-gray-100">
+            <h3 className="text-sm font-bold text-gray-900">Saved Plans</h3>
+            <p className="text-[11px] text-gray-400 mt-0.5">Plans you&apos;ve saved for this account — click View to open one in the deep-dive.</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 border-b border-gray-100">
+                <tr>
+                  <th className="px-5 py-2 text-left text-[10px] uppercase font-semibold text-gray-500">Campaign</th>
+                  <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Planned Spend</th>
+                  <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Delivered</th>
+                  <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Pacing</th>
+                  <th className="px-3 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Saved</th>
+                  <th className="px-5 py-2 text-right text-[10px] uppercase font-semibold text-gray-500">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(saved).sort((a, b) => b[1].at - a[1].at).map(([id, s]) => {
+                  const c = byId.get(id);
+                  const name = c?.name ?? id;
+                  const dv = deliveredOf(c);
+                  const pacing = s.plan.spend > 0 ? Math.round((dv.spend / s.plan.spend) * 100) : null;
+                  const off = pacing == null ? 0 : Math.abs(pacing - 100);
+                  const cls = off <= 10 ? "bg-green-100 text-green-800" : off <= 25 ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-800";
+                  return (
+                    <tr key={id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50">
+                      <td className="px-5 py-2.5 font-medium text-gray-800 max-w-[280px] truncate" title={name}>
+                        {name}
+                        {isDirty(id) && <span className="ml-2 text-[10px] text-amber-600 font-semibold">unsaved edits</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-gray-700">{s.plan.spend > 0 ? formatMoney(s.plan.spend, currency, 0) : "—"}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-gray-900 font-semibold">{formatMoney(dv.spend, currency, 0)}</td>
+                      <td className="px-3 py-2.5 text-right">
+                        {pacing == null ? <span className="text-gray-300">—</span> : <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${cls}`}>{pacing}%</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-[11px] text-gray-400">{new Date(s.at).toLocaleDateString()}</td>
+                      <td className="px-5 py-2.5 text-right whitespace-nowrap">
+                        <button
+                          onClick={() => viewPlan(id)}
+                          className="text-blue-600 hover:underline font-semibold"
+                        >View</button>
+                        <button
+                          onClick={() => editPlan(id)}
+                          className="ml-3 text-gray-600 hover:text-blue-600 hover:underline font-semibold"
+                        >Edit</button>
+                        <button onClick={() => removeSaved(id)} className="ml-3 text-gray-400 hover:text-red-600">Remove</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function PlanningReport({ platform, dateRange, customStart, customEnd }: Props) {
+  const { campaigns, loading, metaCurrency, dv360Currency } = useCampaigns(
+    platform === "dv360" ? "dv360" : platform,
+    dateRange, customStart, customEnd,
+  );
+
+  const showMeta = platform !== "dv360";
+  const showDv   = platform === "dv360" || platform === "both";
+
+  const metaCampaigns = useMemo(() => campaigns.filter((c) => c.platform === "meta"), [campaigns]);
+  const dv360Campaigns = useMemo(() => campaigns.filter((c) => c.platform === "dv360"), [campaigns]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3">
+          <ClipboardList className="w-8 h-8 text-blue-600" />
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Planning</h1>
+            <p className="text-gray-600 mt-1 text-sm">What you planned to buy vs what actually delivered — per campaign.</p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Meta section ── */}
+      {showMeta && (
+        <div className="space-y-4">
+          {platform === "both" && <SectionHeader label="Meta" sub="Meta Ads" />}
+          <PlanningSection
+            campaigns={metaCampaigns}
+            loading={loading}
+            currency={metaCurrency}
+            storageSuffix="meta"
+            dateRange={dateRange}
+            aiPlatform="meta"
+          />
+        </div>
+      )}
+
+      {/* ── DV360 section ── */}
+      {showDv && (
+        <div className="space-y-4">
+          {platform === "both" && <SectionHeader label="DV360" sub="Display & Video 360" />}
+          <PlanningSection
+            campaigns={dv360Campaigns}
+            loading={loading}
+            currency={dv360Currency}
+            storageSuffix="dv360"
+            dateRange={dateRange}
+            aiPlatform="dv360"
+          />
+        </div>
       )}
     </div>
   );
