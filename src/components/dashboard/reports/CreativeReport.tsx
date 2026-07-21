@@ -545,7 +545,6 @@ function LanguageDeliveryPanel({
 
 type TopCol = "language" | "impressions" | "clicks" | "ctr" | "spend" | "cpm" | "cpc" | "conversions" | "conversionValue" | "roas" | "cpa" | "cvr" | "aov";
 const TOP_COLS: { id: TopCol; label: string }[] = [
-  { id: "language",        label: "Language" },
   { id: "impressions",     label: "Impressions" },
   { id: "clicks",          label: "Clicks" },
   { id: "ctr",             label: "CTR" },
@@ -559,14 +558,20 @@ const TOP_COLS: { id: TopCol; label: string }[] = [
   { id: "cvr",             label: "CVR" },
   { id: "aov",             label: "AOV" },
 ];
-const TOP_DEFAULT: TopCol[] = ["language", "impressions", "clicks", "ctr", "spend"];
+const TOP_DEFAULT: TopCol[] = ["impressions", "clicks", "ctr", "spend"];
 
 function TopCreativesTable({ ads, currency }: { ads: EnrichedAd[]; currency: string }) {
   const [columns, setColumns] = usePersistentColumns<TopCol>("creative-top", TOP_DEFAULT);
+  // "language" was removed from this table; strip it from any persisted layout.
+  useEffect(() => {
+    if (columns.includes("language" as TopCol)) {
+      setColumns(prev => prev.filter(c => c !== "language"));
+    }
+  }, [columns, setColumns]);
   const [colOpen, setColOpen] = useState(false);
   const [swapIdx, setSwapIdx] = useState<number | null>(null);
   const ref = useRef<HTMLDivElement>(null);
-  const { sorted, sort: topSort, toggle: topToggle } = useSort(ads, "impressions", "desc");
+  const { sorted, sort: topSort, toggle: topToggle } = useSort(ads, "ctr", "desc");
 
   useEffect(() => {
     if (swapIdx === null) return;
@@ -600,7 +605,7 @@ function TopCreativesTable({ ads, currency }: { ads: EnrichedAd[]; currency: str
         <div>
           <h3 className="font-bold text-gray-900 text-base">Top 50 Creatives</h3>
           <p className="text-xs text-gray-400 mt-0.5">
-            Showing {Math.min(ads.length, 50)} of {ads.length} creatives, ranked by impressions
+            Showing {Math.min(ads.length, 50)} of {ads.length} creatives, ranked by CTR
           </p>
         </div>
         <CreativeColPicker cols={columns} setCols={(c) => setColumns(c as TopCol[])} allCols={TOP_COLS} defaultIds={TOP_DEFAULT} colOpen={colOpen} setColOpen={setColOpen} />

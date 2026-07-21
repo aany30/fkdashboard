@@ -21,6 +21,7 @@ import { useSort } from "@/hooks/useSort";
 import TabSummaryFooter from "@/components/shared/TabSummaryFooter";
 import {
   Bar, ComposedChart, Line, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Scatter, ScatterChart, ZAxis,
 } from "recharts";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
 import { useAuthStore } from "@/store/auth";
@@ -1070,13 +1071,17 @@ function CombinedKpiSection({
     const dvByDate   = new Map(dv360Daily.map(r => [r.label, r]));
     const zero = { spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0 };
     const allDates = Array.from(new Set([...metaByDate.keys(), ...dvByDate.keys()])).sort();
-    return allDates.map(d => ({
-      date:      d.slice(5),
-      metaSpend: (metaByDate.get(d) ?? zero).spend,
-      dvSpend:   (dvByDate.get(d)   ?? zero).spend,
-      metaImpr:  (metaByDate.get(d) ?? zero).impressions,
-      dvImpr:    (dvByDate.get(d)   ?? zero).impressions,
-    }));
+    return allDates.map(d => {
+      const m = metaByDate.get(d) ?? zero;
+      const v = dvByDate.get(d)   ?? zero;
+      return {
+        date:      d.slice(5),
+        // Combined (Meta + DV360) so a single axis pair means Impressions vs Spend,
+        // not two platforms on two scales.
+        combImpr:  m.impressions + v.impressions,
+        combSpend: m.spend       + v.spend,
+      };
+    });
   }, [metaDaily, dv360Daily]);
 
   return (
@@ -1101,46 +1106,28 @@ function CombinedKpiSection({
       </div>
 
       {chartData.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-0.5">Daily Spend</div>
-            <p className="text-[11px] text-gray-400 mb-3">Meta bars · DV360 line · independent Y-axes</p>
-            <ResponsiveContainer width="100%" height={200}>
-              <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis yAxisId="left"  orientation="left"  tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
-                  tickFormatter={(v: number) => fmt(v, "money", currency)} />
-                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
-                  tickFormatter={(v: number) => fmt(v, "money", currency)} />
-                <Tooltip contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
-                  formatter={(v: number, name: string) => [fmt(v as number, "money", currency), name] as [string, string]} />
-                <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
-                <Bar  yAxisId="left"  dataKey="metaSpend" name="Meta"  fill="#6366f1" radius={[3, 3, 0, 0]} />
-                <Line yAxisId="right" type="monotone" dataKey="dvSpend" name="DV360" stroke="#10b981" strokeWidth={2} dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-0.5">Daily Impressions</div>
-            <p className="text-[11px] text-gray-400 mb-3">Meta bars · DV360 line · independent Y-axes</p>
-            <ResponsiveContainer width="100%" height={200}>
-              <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis yAxisId="left"  orientation="left"  tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
-                  tickFormatter={(v: number) => fmt(v, "int", currency)} />
-                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
-                  tickFormatter={(v: number) => fmt(v, "int", currency)} />
-                <Tooltip contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
-                  formatter={(v: number, name: string) => [fmt(v as number, "int", currency), name] as [string, string]} />
-                <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
-                <Bar  yAxisId="left"  dataKey="metaImpr" name="Meta"  fill="#6366f1" radius={[3, 3, 0, 0]} />
-                <Line yAxisId="right" type="monotone" dataKey="dvImpr" name="DV360" stroke="#10b981" strokeWidth={2} dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-0.5">Impressions vs Spend — Meta + DV360 combined</div>
+          <p className="text-[11px] text-gray-400 mb-3">Each dot = one day · X-axis: Spend · Y-axis: Impressions</p>
+          <ResponsiveContainer width="100%" height={260}>
+            <ScatterChart margin={{ top: 8, right: 16, left: 4, bottom: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis type="number" dataKey="combSpend" name="Spend" tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
+                tickFormatter={(v: number) => fmt(v, "money", currency)}
+                label={{ value: "Spend", position: "insideBottom", offset: -6, fontSize: 11, fill: "#9ca3af" }} />
+              <YAxis type="number" dataKey="combImpr" name="Impressions" tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
+                tickFormatter={(v: number) => fmt(v, "int", currency)}
+                label={{ value: "Impressions", angle: -90, position: "insideLeft", fontSize: 11, fill: "#9ca3af" }} />
+              <ZAxis type="category" dataKey="date" name="Day" />
+              <Tooltip cursor={{ strokeDasharray: "3 3" }}
+                contentStyle={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}
+                formatter={(v: number, name: string) =>
+                  [name === "Spend" ? fmt(v as number, "money", currency)
+                    : name === "Impressions" ? fmt(v as number, "int", currency)
+                    : String(v), name] as [string, string]} />
+              <Scatter data={chartData} fill="#6366f1" fillOpacity={0.75} />
+            </ScatterChart>
+          </ResponsiveContainer>
         </div>
       )}
     </div>

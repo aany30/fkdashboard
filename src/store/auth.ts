@@ -219,8 +219,18 @@ interface AuthState {
   setLoginEmail: (email: string | null) => void;
   setMonthlyBudget: (amount: number | null) => void;
   setEmqInput: (eventId: string, value: number | null) => void;
-  /** Running total of AI API costs (USD) for the current session. */
+  /**
+   * AI credits displayed in the header for the currently signed-in account.
+   * Always mirrors this account's bucket in `aiCreditsByEmail` — restored on
+   * re-login rather than reset, so a user's usage total is never lost.
+   */
   totalAiCreditsUsd: number;
+  /**
+   * Cumulative AI credits (display units) per login email. Persisted, never
+   * reset on logout — so re-logging in with the same email restores the total.
+   * Keyed by `loginEmail`, or "__local__" for token-only (no-email) sessions.
+   */
+  aiCreditsByEmail: Record<string, number>;
   addAiCredits: (usd: number) => void;
 
   // Auth Methods
@@ -278,6 +288,7 @@ export const useAuthStore = create<AuthState>()(
       monthlyBudget: null,
       emqInputs: {},
       totalAiCreditsUsd: 0,
+      aiCreditsByEmail: {},
       demoMode: false,
       enterDemoMode: () => set({ demoMode: true }),
       exitDemoMode: () => set({ demoMode: false }),
@@ -310,14 +321,26 @@ export const useAuthStore = create<AuthState>()(
         loginEmail: email,
         // Default the alert recipient to the login email if the user hasn't set one.
         alertEmail: state.alertEmail ?? email,
+        // Restore this email's accumulated AI credits into the header counter.
+        totalAiCreditsUsd: (state.aiCreditsByEmail || {})[email || "__local__"] || 0,
       })),
       setMonthlyBudget: (amount) => set({ monthlyBudget: amount }),
       setEmqInput: (eventId, value) =>
         set((state) => ({ emqInputs: { ...state.emqInputs, [eventId]: value } })),
       // Callers pass the RAW Anthropic cost; we store the PRODUCT-priced value
       // (raw × 3 ÷ 0.05) so the counter reflects what the customer is charged.
+      // The running total is accumulated per login email (bucketed in
+      // aiCreditsByEmail) so it survives logout and is restored on re-login.
       addAiCredits: (usd) =>
-        set((state) => ({ totalAiCreditsUsd: +(state.totalAiCreditsUsd + toDisplayCredits(usd)).toFixed(4) })),
+        set((state) => {
+          const key = state.loginEmail || "__local__";
+          const buckets = state.aiCreditsByEmail || {};
+          const next = +((buckets[key] || 0) + toDisplayCredits(usd)).toFixed(4);
+          return {
+            totalAiCreditsUsd: next,
+            aiCreditsByEmail: { ...buckets, [key]: next },
+          };
+        }),
 
       setMetaCredentials: (token, businessId, pixelIds) =>
         set({ metaAccessToken: token, metaBusinessId: businessId, metaPixelIds: pixelIds }),
@@ -402,7 +425,9 @@ export const useAuthStore = create<AuthState>()(
           dv360AdvertiserId: null,
           dv360PartnerId: null,
           dv360Currency: null,
-          totalAiCreditsUsd: 0, // reset credit counter on logout
+          // NOTE: totalAiCreditsUsd is intentionally NOT reset here. Each email's
+          // usage lives in aiCreditsByEmail and is restored on re-login, so a
+          // user's credit total is never lost by logging out.
           demoMode: false,      // exit demo on logout
         }),
 

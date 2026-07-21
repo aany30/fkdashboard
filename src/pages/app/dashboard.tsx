@@ -458,10 +458,10 @@ export default function Dashboard() {
           <div className="flex items-center gap-3">
             <AccountSelector />
 
-            {/* Running AI credit counter — accumulates the product-priced cost of every AI call this session */}
+            {/* Running AI credit counter — accumulates the product-priced cost of every AI call, saved per account */}
             <div
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-xs font-semibold text-indigo-800"
-              title="Total AI credits used this session. Resets on logout."
+              title="Total AI credits used by this account. Saved per login email — restored when you log back in."
             >
               <span>✦ AI Credits</span>
               <span className="font-mono">{totalAiCreditsUsd.toFixed(2)}</span>
