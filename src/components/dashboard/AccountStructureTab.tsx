@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
-import { useAuthStore } from "@/store/auth";
 import { Layers } from "lucide-react";
-import type { CampaignData } from "@/types";
+import { useCampaigns } from "@/hooks/useCampaigns";
+import type { CampaignData, DateRange } from "@/types";
 import { objectiveMatches } from "./CampaignObjectiveFilter";
 import NamingConventionAudit from "./audits/NamingConventionAudit";
 import FunnelSeparationAudit from "./audits/FunnelSeparationAudit";
@@ -44,21 +44,17 @@ function rangeToDates(range: string, customStart?: string, customEnd?: string): 
 }
 
 export default function AccountStructureTab({ platform, dateRange, customStart, customEnd, selectedObjectives, setActiveTab }: Props) {
-  const {
-    metaAccessToken,
-    metaBusinessId,
-    dv360ClientId,
-    dv360ClientSecret,
-    dv360RefreshToken,
-    dv360AdvertiserId,
-    dv360PartnerId,
-    demoMode,
-  } = useAuthStore();
-  const effectiveMetaToken = demoMode ? "demo-meta-token" : metaAccessToken;
-  const effectiveMetaBiz = demoMode ? "demo-business-123" : metaBusinessId;
-  const [campaigns, setCampaigns] = useState<CampaignData[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  // Use the shared campaigns hook (same data path as Key Metrics) so DV360
+  // creatives — which arrive via an async Bid Manager report that only fills on
+  // a *later* fetch — get picked up through its SWR revalidation + cache. The
+  // previous one-shot fetch here froze on the first (creative-less) response,
+  // which is why the LI → Creative drill level never appeared in this tab.
+  const { campaigns, loading, error: fetchError } = useCampaigns(
+    platform,
+    dateRange as DateRange,
+    customStart,
+    customEnd
+  );
   const [active, setActive] = useState<SubTab>("naming");
 
   const visibleTabs = useMemo(
@@ -73,70 +69,6 @@ export default function AccountStructureTab({ platform, dateRange, customStart, 
   const globalRange = rangeToDates(dateRange, customStart, customEnd);
   const winStart = globalRange.startDate;
   const winEnd = globalRange.endDate;
-
-  useEffect(() => {
-    let cancelled = false;
-    const fetchCampaigns = async () => {
-      setLoading(true);
-      setFetchError(null);
-      const all: CampaignData[] = [];
-      const startDate = winStart;
-      const endDate = winEnd;
-      try {
-        if ((platform === "meta" || platform === "both") && effectiveMetaToken && effectiveMetaBiz) {
-          const r = await fetch("/api/naming/campaigns/meta", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ accessToken: effectiveMetaToken, businessId: effectiveMetaBiz, startDate, endDate }),
-          });
-          if (r.ok) {
-            all.push(...(await r.json()));
-          } else {
-            const body = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-            if (!cancelled) setFetchError(body.error || `Meta API error (HTTP ${r.status})`);
-          }
-        }
-        const effectiveDv360Refresh = demoMode ? "demo-dv360-refresh" : dv360RefreshToken;
-        if (
-          (platform === "dv360" || platform === "both") &&
-          effectiveDv360Refresh &&
-          (demoMode || (dv360ClientId && dv360ClientSecret && dv360AdvertiserId))
-        ) {
-          const r = await fetch("/api/naming/campaigns/dv360", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              clientId: demoMode ? "demo-client" : dv360ClientId,
-              clientSecret: demoMode ? "demo-secret" : dv360ClientSecret,
-              refreshToken: effectiveDv360Refresh,
-              advertiserId: demoMode ? "demo-advertiser-1" : dv360AdvertiserId,
-              partnerId: dv360PartnerId || undefined,
-              startDate,
-              endDate,
-            }),
-          });
-          if (r.ok) {
-            all.push(...(await r.json()));
-          } else {
-            const body = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-            if (!cancelled) setFetchError(body.error || `DV360 API error (HTTP ${r.status})`);
-          }
-        }
-      } catch (e) {
-        if (!cancelled) setFetchError(e instanceof Error ? e.message : "Fetch failed");
-      } finally {
-        if (!cancelled) {
-          setCampaigns(all);
-          setLoading(false);
-        }
-      }
-    };
-    fetchCampaigns();
-    return () => {
-      cancelled = true;
-    };
-  }, [platform, winStart, winEnd, effectiveMetaToken, effectiveMetaBiz, dv360ClientId, dv360ClientSecret, dv360RefreshToken, dv360AdvertiserId, dv360PartnerId, demoMode]);
-
 
   const filteredCampaigns = useMemo(() => {
     if (!selectedObjectives || selectedObjectives.size === 0) return campaigns;
