@@ -19,6 +19,7 @@ export interface BreakdownRow {
   conversionValue: number;
   reach?: number;
   frequency?: number;
+  videoViews?: number;
 }
 
 export function useMetaBreakdown(

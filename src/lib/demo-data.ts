@@ -159,6 +159,16 @@ export function getDemoMetaCampaigns() {
       currency: "USD",
       effectiveAttribution: "7d_click + 1d_view",
       conv1dClick: 88, conv7dClick: 131, conv1dView: 11,
+      adSets: [
+        { id: "as-101", name: "Carousel — 25-44 Broad", status: "ACTIVE", spend: 3200, impressions: 238000, clicks: 3600, reach: 98000, ads: [
+          { id: "ad-1011", name: "Carousel_Mova_Serum_25-44", status: "ACTIVE", spend: 1800, impressions: 134000, clicks: 2100, reach: 56000 },
+          { id: "ad-1012", name: "Carousel_Mova_Cream_25-44", status: "ACTIVE", spend: 1400, impressions: 104000, clicks: 1500, reach: 42000 },
+        ] },
+        { id: "as-102", name: "Carousel — Lookalike 1%", status: "ACTIVE", spend: 2640, impressions: 174000, clicks: 2600, reach: 70000, ads: [
+          { id: "ad-1021", name: "Carousel_Mova_Serum_LAL1", status: "ACTIVE", spend: 1540, impressions: 98000, clicks: 1500, reach: 40000 },
+          { id: "ad-1022", name: "Carousel_Mova_Cream_LAL1", status: "ACTIVE", spend: 1100, impressions: 76000, clicks: 1100, reach: 30000 },
+        ] },
+      ],
     },
     {
       id: "1002",
@@ -179,6 +189,17 @@ export function getDemoMetaCampaigns() {
       currency: "USD",
       effectiveAttribution: "7d_click + 1d_view",
       conv1dClick: 198, conv7dClick: 289, conv1dView: 23,
+      adSets: [
+        { id: "as-201", name: "Video — Interest: Skincare", status: "ACTIVE", spend: 4800, impressions: 125000, clicks: 4200, reach: 52000, ads: [
+          { id: "ad-2011", name: "Video_15s_Serum_Interest", status: "ACTIVE", spend: 2800, impressions: 72000, clicks: 2400, reach: 30000 },
+          { id: "ad-2012", name: "Video_30s_FullRange_Interest", status: "ACTIVE", spend: 2000, impressions: 53000, clicks: 1800, reach: 22000 },
+        ] },
+        { id: "as-202", name: "Video — Retargeting 30d", status: "ACTIVE", spend: 3600, impressions: 92000, clicks: 3200, reach: 38000, ads: [
+          { id: "ad-2021", name: "Video_15s_Serum_Retarget", status: "ACTIVE", spend: 2100, impressions: 54000, clicks: 1900, reach: 22000 },
+          { id: "ad-2022", name: "Video_30s_FullRange_Retarget", status: "ACTIVE", spend: 1500, impressions: 38000, clicks: 1300, reach: 16000 },
+        ] },
+        { id: "as-203", name: "Video — Custom Audience", status: "ACTIVE", spend: 2800, impressions: 68000, clicks: 2400, reach: 28000, ads: [] },
+      ],
     },
     {
       id: "1003",
@@ -471,8 +492,8 @@ export function getDemoDV360Campaigns() {
 }
 
 export function getDemoDV360Breakdown(dimension: string) {
-  const mk = (label: string, spend: number, imp: number, clicks: number, conv: number, val: number) =>
-    ({ label, breakdownValues: { [dimension]: label }, spend, impressions: imp, clicks, conversions: conv, conversionValue: val });
+  const mk = (label: string, spend: number, imp: number, clicks: number, conv: number, val: number, vv = 0) =>
+    ({ label, breakdownValues: { [dimension]: label }, spend, impressions: imp, clicks, conversions: conv, conversionValue: val, videoViews: vv });
   switch (dimension) {
     case "age":
       return [
@@ -583,6 +604,24 @@ export function getDemoDV360Breakdown(dimension: string) {
       }
       return out;
     }
+    case "exchange":
+      return [
+        mk("Google Ad Manager",  142000, 5_800_000, 24800, 640, 468000),
+        mk("YouTube & partners", 108000, 4_200_000, 11200, 310, 226000),
+        mk("OpenX",               42000, 1_700_000,  7100, 185, 135000),
+        mk("PubMatic",            38000, 1_520_000,  6300, 165, 120000),
+        mk("Magnite DV+",         24000,   960_000,  4000, 104,  76000),
+        mk("BidSwitch",           15000,   600_000,  2500,  64,  47000),
+        mk("Equativ",              9000,   360_000,  1500,  39,  28000),
+      ];
+    case "creative_type":
+      return [
+        mk("Display",   168000, 6_900_000, 32400, 820, 600000),
+        mk("Video",     142000, 5_200_000, 14600, 420, 308000, 1_820_000),
+        mk("Audio",      32000, 1_280_000,  3400,  92,  67000, 448_000),
+        mk("Rich Media", 24000,   960_000,  7200, 195, 142000),
+        mk("Native",     12000,   480_000,  3000,  58,  42000),
+      ];
     default:
       return [];
   }

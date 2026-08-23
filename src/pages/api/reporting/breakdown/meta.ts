@@ -28,6 +28,9 @@ type Row = {
   clicks: number;
   conversions: number;
   conversionValue: number;
+  reach?: number;
+  frequency?: number;
+  videoViews?: number;
 };
 
 function getDemoBreakdown(breakdown: string): Row[] {
@@ -87,10 +90,10 @@ function getDemoBreakdown(breakdown: string): Row[] {
       { label: "connected_tv",      breakdownValues: { platform_position: "connected_tv" },      spend: 3200,  impressions: 85000,   clicks: 310,   conversions: 5,   conversionValue: 4000   },
     ],
     publisher_platform: [
-      { label: "facebook",         breakdownValues: { publisher_platform: "facebook" },         spend: 88000, impressions: 2050000, clicks: 31500, conversions: 580, conversionValue: 390000 },
-      { label: "instagram",        breakdownValues: { publisher_platform: "instagram" },        spend: 62000, impressions: 1620000, clicks: 23800, conversions: 410, conversionValue: 285000 },
-      { label: "audience_network", breakdownValues: { publisher_platform: "audience_network" }, spend: 4000,  impressions: 110000,  clicks: 1800,  conversions: 12,  conversionValue: 9000 },
-      { label: "messenger",        breakdownValues: { publisher_platform: "messenger" },        spend: 1000,  impressions: 22000,   clicks: 300,   conversions: 3,   conversionValue: 2400 },
+      { label: "facebook",         breakdownValues: { publisher_platform: "facebook" },         spend: 88000, impressions: 2050000, clicks: 31500, conversions: 580, conversionValue: 390000, reach: 820000, frequency: 2.5, videoViews: 145000 },
+      { label: "instagram",        breakdownValues: { publisher_platform: "instagram" },        spend: 62000, impressions: 1620000, clicks: 23800, conversions: 410, conversionValue: 285000, reach: 610000, frequency: 2.7, videoViews: 98000 },
+      { label: "audience_network", breakdownValues: { publisher_platform: "audience_network" }, spend: 4000,  impressions: 110000,  clicks: 1800,  conversions: 12,  conversionValue: 9000,   reach: 85000,  frequency: 1.3, videoViews: 0 },
+      { label: "messenger",        breakdownValues: { publisher_platform: "messenger" },        spend: 1000,  impressions: 22000,   clicks: 300,   conversions: 3,   conversionValue: 2400,   reach: 18000,  frequency: 1.2, videoViews: 0 },
     ],
     daily: (() => {
       // Generate 30 days ending yesterday with a realistic spend curve
@@ -102,7 +105,7 @@ function getDemoBreakdown(breakdown: string): Row[] {
         const label = d.toISOString().slice(0, 10);
         const wave = 0.7 + 0.5 * Math.sin((i / 30) * Math.PI * 2);
         const spend = Math.round(5000 + 3000 * wave);
-        rows.push({ label, breakdownValues: { date: label }, spend, impressions: Math.round(spend * 22), clicks: Math.round(spend * 0.32), conversions: Math.round(spend * 0.006), conversionValue: Math.round(spend * 4.1) });
+        rows.push({ label, breakdownValues: { date: label }, spend, impressions: Math.round(spend * 22), clicks: Math.round(spend * 0.32), conversions: Math.round(spend * 0.006), conversionValue: Math.round(spend * 4.1), reach: Math.round(spend * 12) });
       }
       return rows;
     })(),

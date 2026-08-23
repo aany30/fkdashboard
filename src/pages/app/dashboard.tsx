@@ -23,6 +23,7 @@ import AttributionReport from "@/components/dashboard/reports/AttributionReport"
 import PlanningReport from "@/components/dashboard/reports/PlanningReport";
 import ExportReport from "@/components/dashboard/reports/ExportReport";
 import GenerateReport from "@/components/dashboard/reports/GenerateReport";
+import DashboardReport from "@/components/dashboard/reports/DashboardReport";
 import AskAITab from "@/components/dashboard/tabs/AskAITab";
 import AccountSelector from "@/components/dashboard/AccountSelector";
 import CampaignObjectiveFilter from "@/components/dashboard/CampaignObjectiveFilter";
@@ -110,13 +111,14 @@ const NAV: NavGroup[] = [
     label: "Reporting",
     Icon: FileText,
     children: [
+      { id: "rep-dashboard",   label: "Dashboard",           Icon: BarChart2 },
       { id: "rep-overview",    label: "Overview",            Icon: BarChart3 },
       { id: "rep-key-metric",  label: "Key Metrics",         Icon: Megaphone },
       { id: "rep-audience",    label: "Audience Analysis",   Icon: Sparkles  },
       { id: "rep-creative",    label: "Creative Analysis",   Icon: ImageIcon },
       { id: "rep-placement",   label: "Placement Analysis",  Icon: MapIcon,    platforms: ["meta"] },
       { id: "rep-attribution", label: "Attribution Report",  Icon: GitBranch,  platforms: ["meta"] },
-      { id: "rep-planning",    label: "Planning",            Icon: Briefcase },
+      // Planning merged into Dashboard
       { id: "rep-generate",    label: "Generate Report",     Icon: Download  },
     ],
   },
@@ -345,6 +347,8 @@ export default function Dashboard() {
       case "conversion-monitoring":
         return <ConversionMonitoringTab {...props} />;
       // Reporting
+      case "rep-dashboard":
+        return <DashboardReport {...props} />;
       case "reporting":
       case "rep-overview":
         return <ReportingOverview {...props} setActiveTab={setActiveTab} />;
@@ -359,7 +363,7 @@ export default function Dashboard() {
       case "rep-attribution":
         return <AttributionReport {...props} />;
       case "rep-planning":
-        return <PlanningReport {...props} />;
+        return <DashboardReport {...props} />;
       case "rep-export":
         return <ExportReport {...props} />;
       case "rep-generate":

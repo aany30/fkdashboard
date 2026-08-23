@@ -18,6 +18,7 @@ export function dotColor(id: string): string {
 
 export default function CampaignMultiPicker({
   options, values, onChange, allLabelText = "All campaigns", loading = false,
+  entityLabel = "campaigns", icon,
 }: {
   options: { id: string; name: string }[];
   values: string[];
@@ -26,6 +27,10 @@ export default function CampaignMultiPicker({
   allLabelText?: string;
   /** When true and options is empty, show "Loading…" instead of "No campaigns match." */
   loading?: boolean;
+  /** Entity type label for search placeholder and empty state (default "campaigns"). */
+  entityLabel?: string;
+  /** Override the icon shown before the label. Null to hide. */
+  icon?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -39,7 +44,7 @@ export default function CampaignMultiPicker({
   const allLabel = values.length === 0 ? allLabelText : `${values.length} selected`;
   return (
     <div className="relative inline-flex items-center gap-2">
-      <Megaphone className="w-3.5 h-3.5 text-gray-400" />
+      {icon !== undefined ? icon : <Megaphone className="w-3.5 h-3.5 text-gray-400" />}
       <span className="text-xs italic text-gray-500">{allLabel}</span>
       <button
         onClick={() => setOpen(v => !v)}
@@ -67,14 +72,14 @@ export default function CampaignMultiPicker({
                   autoFocus
                   value={query}
                   onChange={e => setQuery(e.target.value)}
-                  placeholder="Search campaigns…"
+                  placeholder={`Search ${entityLabel}…`}
                   className="w-full pl-8 pr-3 py-2 rounded-lg text-xs border border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-300"
                 />
               </div>
             </div>
             <div className="max-h-72 overflow-y-auto">
               {filtered.length === 0 ? (
-                <div className="px-3 py-6 text-center text-xs text-gray-400">{loading && options.length === 0 ? "Loading campaigns…" : "No campaigns match."}</div>
+                <div className="px-3 py-6 text-center text-xs text-gray-400">{loading && options.length === 0 ? `Loading ${entityLabel}…` : `No ${entityLabel} match.`}</div>
               ) : filtered.map(c => {
                 const selected = values.includes(c.id);
                 return (

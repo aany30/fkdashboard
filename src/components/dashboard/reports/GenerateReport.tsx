@@ -436,7 +436,7 @@ export default function GenerateReport({ platform, dateRange, customStart, custo
     () => (dvCreatives || []).map((c) => ({
       id: c.id, name: c.name, creativeType: c.type || "",
       spend: c.spend || 0, impressions: c.impressions || 0, clicks: c.clicks || 0,
-      conversions: 0, conversionValue: 0,
+      conversions: 0, conversionValue: 0, reach: 0, videoViews: 0,
     })),
     [dvCreatives],
   );

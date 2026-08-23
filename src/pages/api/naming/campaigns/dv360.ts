@@ -335,9 +335,12 @@ export default async function handler(
       if (cached) return cached;
       try {
         const pend = queryIdCache.get(key);
+        // Reach runs in PARALLEL with the 40s delivery-metrics report, so give it
+        // the same poll window — an 8s cap cut it off on large accounts, leaving
+        // reach/frequency permanently at 0 ("—") even though the report was fine.
         const result = pend
-          ? await client.resumeReport(pend.queryId, pend.reportId, 8_000)
-          : await client.runBidManagerReport({ dimensions: dims, metrics: REACH_METRICS, startDate, endDate, reportType: "REACH" }, 8_000);
+          ? await client.resumeReport(pend.queryId, pend.reportId, 40_000)
+          : await client.runBidManagerReport({ dimensions: dims, metrics: REACH_METRICS, startDate, endDate, reportType: "REACH" }, 40_000);
         if (result.status === "done") { reportCache.set(key, result.rows); return result.rows; }
         queryIdCache.set(key, { queryId: result.queryId, reportId: result.reportId });
         reachPending = true;

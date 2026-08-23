@@ -33,6 +33,7 @@ interface BreakdownRow {
   clicks: number;
   conversions: number;
   conversionValue: number;
+  videoViews: number;
 }
 
 // Each breakdown maps to one or more BM dimensions. `cols` lists the label
@@ -85,6 +86,7 @@ const BREAKDOWN_TO_BM: Record<string, BreakdownDef> = {
   // FILTER_EXCHANGE returns the human-readable name ("Google Ad Manager") in the
   // "Exchange" column; FILTER_EXCHANGE_ID would return an opaque numeric id.
   exchange:     { dimensions: ["FILTER_EXCHANGE"], cols: [{ key: "exchange", column: "Exchange", re: /exchange/i }] },
+  creative_type:{ dimensions: ["FILTER_CREATIVE_TYPE"], cols: [{ key: "creative_type", column: "Creative Type", re: /creative.type/i }] },
 };
 
 // Spend metrics require FILTER_ADVERTISER_CURRENCY as a dimension.
@@ -93,12 +95,14 @@ const CORE_METRICS = [
   "METRIC_CLICKS",
   "METRIC_REVENUE_ADVERTISER",
   "METRIC_TOTAL_CONVERSIONS",
+  "METRIC_TRUEVIEW_VIEWS",
 ];
 // Demographic-safe set — no revenue, so no currency dimension needed.
 const DEMO_METRICS = [
   "METRIC_IMPRESSIONS",
   "METRIC_CLICKS",
   "METRIC_TOTAL_CONVERSIONS",
+  "METRIC_TRUEVIEW_VIEWS",
 ];
 // CM360 post-click revenue 400s for advertisers without a CM360 link (common),
 // so it is NOT requested by default. RICH == CORE keeps the first query valid;
@@ -282,6 +286,7 @@ export default async function handler(
           clicks: num(row, "Clicks"),
           conversions: num(row, "Total Conversions"),
           conversionValue: num(row, "CM360 Post-Click Revenue"),
+          videoViews: num(row, "TrueView Views"),
         };
       })
       // Drop only rows with no primary label (blank dimension cells).

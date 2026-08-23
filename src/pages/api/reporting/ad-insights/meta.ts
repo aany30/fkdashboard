@@ -21,9 +21,11 @@ export interface AdInsightRow {
   language?: string;
   spend: number;
   impressions: number;
+  reach: number;
   clicks: number;
   conversions: number;
   conversionValue: number;
+  videoViews: number;
 }
 
 // Meta's full ad-locale table is static reference data — fetch once and cache
@@ -92,16 +94,16 @@ const DEMO_ADSET_LOCALES: Record<string, number[]> = {
 };
 
 const DEMO_ADS: AdInsightRow[] = [
-  { id: "ad_01", adSetId: "as_001", name: "Hero Reel — Skincare Routine v3",     campaignName: "GW_All_Product_Sales_Campaign_7_May'26",        adSetName: "TOF - Broad - All India",         creativeType: "VIDEO",    language: "English / Hindi", spend: 18500, impressions: 920000, clicks: 14200, conversions: 142, conversionValue: 96000 },
-  { id: "ad_02", adSetId: "as_002", name: "Static — B1G1 Offer Banner",           campaignName: "Plenaire - TOF - B1G1 - 21/05",                 adSetName: "TOF - Interest - Skincare",       creativeType: "PHOTO",    language: "English",         spend: 14200, impressions: 780000, clicks: 11800, conversions: 110, conversionValue: 71500 },
-  { id: "ad_03", adSetId: "as_003", name: "Carousel — Product Range Tour",        campaignName: "GW_All_Product_Sales_Campaign_7_May'26",        adSetName: "TOF - LAL 1pct Purchasers",       creativeType: "CAROUSEL", language: "English",         spend: 12800, impressions: 540000, clicks: 9600,  conversions: 132, conversionValue: 102000 },
-  { id: "ad_04", adSetId: "as_004", name: "UGC Video — Customer Testimonial",     campaignName: "Plenaire - TOF - Glacee - 21/05",               adSetName: "TOF - Broad 18-35 Female",        creativeType: "VIDEO",    language: "English / Hindi", spend: 9800,  impressions: 410000, clicks: 7200,  conversions: 88,  conversionValue: 61000 },
-  { id: "ad_05", adSetId: "as_005", name: "Static — Limited Time Offer",          campaignName: "GW_Add_Cart_Retargeting_22nd_May'26",           adSetName: "MOF - Website Visitors 30d",      creativeType: "PHOTO",    language: "English",         spend: 8200,  impressions: 280000, clicks: 6400,  conversions: 95,  conversionValue: 78000 },
-  { id: "ad_06", adSetId: "as_006", name: "Reel — 30s Founder Story",             campaignName: "Plenaire - TOF - Aesthetique - 03/06",          adSetName: "MOF - Video Viewers 75pct",       creativeType: "VIDEO",    language: "English",         spend: 7500,  impressions: 320000, clicks: 5100,  conversions: 42,  conversionValue: 33000 },
-  { id: "ad_07", adSetId: "as_007", name: "Carousel — Bestsellers Top 5",         campaignName: "GW_All_Product_Sales_Campaign_8th_June'26",     adSetName: "BOF - ATC 7d",                    creativeType: "CAROUSEL", language: "English / Hindi", spend: 6800,  impressions: 145000, clicks: 4400,  conversions: 118, conversionValue: 102000 },
-  { id: "ad_08", adSetId: "as_008", name: "Static — Free Sample Promo",           campaignName: "GW_All_Product_Catalogue_Sales_Campaign_12_May",adSetName: "BOF - Checkout Abandon 3d",       creativeType: "PHOTO",    language: "English",         spend: 5200,  impressions: 98000,  clicks: 3800,  conversions: 78,  conversionValue: 78000 },
-  { id: "ad_09", adSetId: "as_009", name: "Reel — Influencer Collab #2",          campaignName: "Plenaire - TOF - Consolidate - BC - 14/05",     adSetName: "TOF - LAL 2pct Engagers",         creativeType: "VIDEO",    language: "English",         spend: 4500,  impressions: 195000, clicks: 2900,  conversions: 38,  conversionValue: 26000 },
-  { id: "ad_10", adSetId: "as_010", name: "Static — Brand Awareness",             campaignName: "Plenaire - TOF - B1G1 - 21/05",                 adSetName: "TOF - Broad - All India",         creativeType: "PHOTO",    language: "English / Hindi", spend: 3800,  impressions: 142000, clicks: 2100,  conversions: 24,  conversionValue: 16000 },
+  { id: "ad_01", adSetId: "as_001", name: "Hero Reel — Skincare Routine v3",     campaignName: "GW_All_Product_Sales_Campaign_7_May'26",        adSetName: "TOF - Broad - All India",         creativeType: "VIDEO",    language: "English / Hindi", spend: 18500, impressions: 920000, reach: 680000,  clicks: 14200, conversions: 142, conversionValue: 96000,  videoViews: 276000 },
+  { id: "ad_02", adSetId: "as_002", name: "Static — B1G1 Offer Banner",           campaignName: "Plenaire - TOF - B1G1 - 21/05",                 adSetName: "TOF - Interest - Skincare",       creativeType: "PHOTO",    language: "English",         spend: 14200, impressions: 780000, reach: 520000,  clicks: 11800, conversions: 110, conversionValue: 71500,  videoViews: 0 },
+  { id: "ad_03", adSetId: "as_003", name: "Carousel — Product Range Tour",        campaignName: "GW_All_Product_Sales_Campaign_7_May'26",        adSetName: "TOF - LAL 1pct Purchasers",       creativeType: "CAROUSEL", language: "English",         spend: 12800, impressions: 540000, reach: 380000,  clicks: 9600,  conversions: 132, conversionValue: 102000, videoViews: 0 },
+  { id: "ad_04", adSetId: "as_004", name: "UGC Video — Customer Testimonial",     campaignName: "Plenaire - TOF - Glacee - 21/05",               adSetName: "TOF - Broad 18-35 Female",        creativeType: "VIDEO",    language: "English / Hindi", spend: 9800,  impressions: 410000, reach: 310000,  clicks: 7200,  conversions: 88,  conversionValue: 61000,  videoViews: 143500 },
+  { id: "ad_05", adSetId: "as_005", name: "Static — Limited Time Offer",          campaignName: "GW_Add_Cart_Retargeting_22nd_May'26",           adSetName: "MOF - Website Visitors 30d",      creativeType: "PHOTO",    language: "English",         spend: 8200,  impressions: 280000, reach: 195000,  clicks: 6400,  conversions: 95,  conversionValue: 78000,  videoViews: 0 },
+  { id: "ad_06", adSetId: "as_006", name: "Reel — 30s Founder Story",             campaignName: "Plenaire - TOF - Aesthetique - 03/06",          adSetName: "MOF - Video Viewers 75pct",       creativeType: "VIDEO",    language: "English",         spend: 7500,  impressions: 320000, reach: 240000,  clicks: 5100,  conversions: 42,  conversionValue: 33000,  videoViews: 112000 },
+  { id: "ad_07", adSetId: "as_007", name: "Carousel — Bestsellers Top 5",         campaignName: "GW_All_Product_Sales_Campaign_8th_June'26",     adSetName: "BOF - ATC 7d",                    creativeType: "CAROUSEL", language: "English / Hindi", spend: 6800,  impressions: 145000, reach: 98000,   clicks: 4400,  conversions: 118, conversionValue: 102000, videoViews: 0 },
+  { id: "ad_08", adSetId: "as_008", name: "Static — Free Sample Promo",           campaignName: "GW_All_Product_Catalogue_Sales_Campaign_12_May",adSetName: "BOF - Checkout Abandon 3d",       creativeType: "PHOTO",    language: "English",         spend: 5200,  impressions: 98000,  reach: 72000,   clicks: 3800,  conversions: 78,  conversionValue: 78000,  videoViews: 0 },
+  { id: "ad_09", adSetId: "as_009", name: "Reel — Influencer Collab #2",          campaignName: "Plenaire - TOF - Consolidate - BC - 14/05",     adSetName: "TOF - LAL 2pct Engagers",         creativeType: "VIDEO",    language: "English",         spend: 4500,  impressions: 195000, reach: 148000,  clicks: 2900,  conversions: 38,  conversionValue: 26000,  videoViews: 68250 },
+  { id: "ad_10", adSetId: "as_010", name: "Static — Brand Awareness",             campaignName: "Plenaire - TOF - B1G1 - 21/05",                 adSetName: "TOF - Broad - All India",         creativeType: "PHOTO",    language: "English / Hindi", spend: 3800,  impressions: 142000, reach: 105000,  clicks: 2100,  conversions: 24,  conversionValue: 16000,  videoViews: 0 },
 ];
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

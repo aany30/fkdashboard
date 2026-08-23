@@ -28,13 +28,23 @@ interface GapResponse {
   creditsUsedUsd?: number;
 }
 
-const SYSTEM_PROMPT = `You are a paid-media analyst. You are given ONE campaign's PLANNED vs DELIVERED numbers (spend, reach, impressions, frequency, CPM) plus pacing percentages.
+const SYSTEM_PROMPT = `You are a senior paid-media strategist. You are given a campaign's (or an aggregated view's) PLANNED vs DELIVERED numbers (spend, reach, impressions, frequency, CPM, CTR, VTR, views, clicks) plus pacing percentages.
 
-Write 2-3 plain-English sentences (no bullet points, no headers, no markdown) that explain the gap between planned and delivered. Rules:
-- Lead with the single biggest gap and quote the actual numbers (e.g. "delivered ₹46,998 vs ₹20,000 planned").
-- Say clearly whether the campaign is over- or under-delivering, and on which metric.
-- If spend is over/under but a delivery metric (reach/impressions) is on plan, call that out — it's the real story for awareness.
-- Be concrete and neutral. Do not give a to-do list; just explain what happened. Maximum 3 sentences.`;
+Respond in PLAIN TEXT (no markdown headers, no ** ** bold) in exactly this shape:
+
+<2-3 sentence INSIGHT explaining the biggest gaps, quoting the actual numbers (e.g. "delivered ₹1.7cr vs ₹40L planned — 426% pacing") and WHY it matters (e.g. spend blew past plan but reach fell short → bought cheap volume, not unique audience).>
+
+Recommendations:
+• <a concrete, actionable fix tied to a specific gap and number>
+• <another practical lever>
+• <optional third>
+
+Rules:
+- Ground every claim AND every recommendation in the provided numbers — no generic platitudes.
+- Give 2-4 recommendations, each a real lever (reallocate budget, cap frequency, shift to reach-priced inventory, fix creative for CTR, pause an over-pacing line, etc.), not vague advice.
+- If planned is 0/missing for a metric, don't invent a target — say that metric's gap can't be assessed.
+- For DV360, reach/frequency come from Bid Manager and conversion revenue may be missing; don't assume Meta-style optimisation levers.
+- Keep it tight: insight ≤3 sentences, ≤4 recommendation lines.`;
 
 // Compute a decent 2-3 sentence summary without the API (no key / demo).
 function fallback(body: GapRequest): GapResponse {
@@ -55,9 +65,14 @@ function fallback(body: GapRequest): GapResponse {
     const dir = imprPct >= 90 ? "on/ahead of" : "behind";
     parts.push(`Impressions came in ${dir} plan at ${num(d.impressions)} vs ${num(p.impressions)} planned (${imprPct}%)${reachPct != null ? `, with reach at ${reachPct}% of plan` : ""}.`);
   }
-  const summary = parts.length
-    ? parts.join(" ") + " (Set ANTHROPIC_API_KEY for a fuller AI read.)"
-    : `Enter planned numbers for ${body.campaign} to see how delivery compares. (Set ANTHROPIC_API_KEY for AI analysis.)`;
+  const recos: string[] = [];
+  if (spendPct != null && spendPct > 110) recos.push("• Spend is over plan — pause or cap the fastest-pacing lines and reallocate to under-delivering ones.");
+  if (reachPct != null && reachPct < 90) recos.push("• Reach is short — shift budget from cheap high-frequency placements to reach-priced inventory.");
+  if (imprPct != null && imprPct > 150 && (reachPct == null || reachPct < 90)) recos.push("• Impressions ran well ahead of reach — tighten frequency caps to buy unique audience, not repeats.");
+  if (!recos.length) recos.push("• Enter planned targets for each metric to get specific reallocation and pacing fixes.");
+
+  const insight = parts.length ? parts.join(" ") : `Enter planned numbers for ${body.campaign} to see how delivery compares.`;
+  const summary = `${insight}\n\nRecommendations:\n${recos.join("\n")}\n\n(Set ANTHROPIC_API_KEY for a fuller AI read.)`;
   return { summary, source: "fallback", creditsUsedUsd: 0 };
 }
 
@@ -77,7 +92,7 @@ export default async function handler(
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 300,
+      max_tokens: 512,
       system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
       messages: [
         {

@@ -812,7 +812,7 @@ export default function CreativeReport({ platform, dateRange, customStart, custo
     return dv360CreativeRows.map<AdInsightRow>((cr) => ({
       id: cr.id, name: cr.name,
       spend: cr.spend ?? 0, impressions: cr.impressions ?? 0, clicks: cr.clicks ?? 0,
-      conversions: 0, conversionValue: 0,
+      conversions: 0, conversionValue: 0, reach: 0, videoViews: 0,
       creativeType: cr.type || "",
     }));
   }, [dv360CreativeRows, platform]);

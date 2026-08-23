@@ -22,13 +22,14 @@ export interface DV360BreakdownRow {
   clicks: number;
   conversions: number;
   conversionValue: number;
+  videoViews: number;
 }
 
 export function useDV360Breakdown(
   breakdown:
     | "age" | "gender" | "age,gender"
     | "country" | "region" | "city" | "region,city" | "zip"
-    | "language" | "device" | "daily" | "environment" | "exchange",
+    | "language" | "device" | "daily" | "environment" | "exchange" | "creative_type",
   dateRange: DateRange,
   customStart?: string,
   customEnd?: string,

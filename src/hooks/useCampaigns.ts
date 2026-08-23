@@ -80,6 +80,13 @@ export function useCampaigns(
   const [platformErrors, setPlatformErrors] = useState<{ meta?: string; dv360?: string }>({});
   // Track whether we seeded from the SWR cache so we don't flash a spinner.
   const swrSeeded = useRef(false);
+  // DV360 delivery arrives via an async Bid Manager report that is often still
+  // generating on the first request (the route returns campaigns with zeroed
+  // metrics and resumes on the next call). Re-poll — like the breakdown hooks —
+  // so the Delivered numbers fill in on their own instead of staying at zero.
+  const dvRetries = useRef(0);
+  const [reloadTick, setReloadTick] = useState(0);
+  const MAX_DV360_RETRIES = 12; // slow DV360 accounts: keep resuming the async reach/delivery reports across more cycles
 
   const { startDate, endDate } = rangeToDates(dateRange, customStart, customEnd);
 
@@ -88,6 +95,7 @@ export function useCampaigns(
   const effectiveAdvertiserId = demoMode ? "demo-advertiser-1" : dv360AdvertiserId;
   useEffect(() => {
     swrSeeded.current = false;
+    dvRetries.current = 0; // fresh account/date window — restart the DV360 poll budget
     if (!effectiveAdvertiserId || !(platform === "dv360" || platform === "both")) return;
     const key = swrKey(effectiveAdvertiserId, startDate, endDate);
     const cached = swrRead(key);
@@ -107,9 +115,12 @@ export function useCampaigns(
 
   useEffect(() => {
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const fetchCampaigns = async () => {
       // If we already have stale data from localStorage, don't flash a spinner.
-      setLoading(!swrSeeded.current);
+      // On re-poll ticks keep the (named) campaigns on screen — only the delivery
+      // numbers are still filling in — rather than flashing a spinner each poll.
+      setLoading(reloadTick === 0 && !swrSeeded.current);
       setError(null);
       setPlatformErrors({});
       const errs: { meta?: string; dv360?: string } = {};
@@ -183,12 +194,29 @@ export function useCampaigns(
           const d = all.find((c) => c.platform === "dv360" && c.currency)?.currency;
           if (m) setMetaCurrency(m);
           if (d) setDv360Currency(d);
+
+          // DV360 re-poll: DV360 delivery comes from async Bid Manager reports that
+          // are often still generating on the first call — and unique reach lives in
+          // a SEPARATE, slower REACH report. Keep asking every 5s until both the
+          // delivery metrics AND reach have landed (or the poll budget runs out).
+          // Genuine zero-delivery / no-reach accounts simply exhaust the retries.
+          if (!errs.dv360 && (platform === "dv360" || platform === "both") && !demoMode) {
+            const dv = all.filter((c) => c.platform === "dv360");
+            const dvDelivered = dv.reduce((s, c) => s + (c.spend || 0) + (c.impressions || 0), 0);
+            const dvReach = dv.reduce((s, c) => s + (c.reach || 0), 0);
+            const pending = dv.length > 0 && (dvDelivered === 0 || dvReach === 0);
+            if (pending && dvRetries.current < MAX_DV360_RETRIES) {
+              dvRetries.current += 1;
+              retryTimer = setTimeout(() => { if (!cancelled) setReloadTick((t) => t + 1); }, 5000);
+            }
+          }
         }
       }
     };
     fetchCampaigns();
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -202,6 +230,7 @@ export function useCampaigns(
     dv360RefreshToken,
     dv360AdvertiserId,
     demoMode,
+    reloadTick,
   ]);
 
   // Per-platform account currencies. Detect strictly from each platform's own

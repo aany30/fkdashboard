@@ -1570,12 +1570,12 @@ export class MetaApiClient {
   ): Promise<Array<{
     id: string; name: string; campaignName?: string; adSetName?: string; adSetId?: string;
     creativeType?: string; thumbnailUrl?: string;
-    spend: number; impressions: number; clicks: number;
-    conversions: number; conversionValue: number;
+    spend: number; impressions: number; reach: number; clicks: number;
+    conversions: number; conversionValue: number; videoViews: number;
   }>> {
     const params: Record<string, string> = {
       level: "ad",
-      fields: "ad_id,ad_name,adset_id,campaign_name,adset_name,spend,impressions,clicks,actions,action_values",
+      fields: "ad_id,ad_name,adset_id,campaign_name,adset_name,spend,impressions,reach,clicks,actions,action_values,video_play_actions",
       limit: String(limit),
       sort: "spend_descending",
     };
@@ -1585,8 +1585,8 @@ export class MetaApiClient {
     const out: Array<{
       id: string; name: string; campaignName?: string; adSetName?: string;
       creativeType?: string; thumbnailUrl?: string;
-      spend: number; impressions: number; clicks: number;
-      conversions: number; conversionValue: number;
+      spend: number; impressions: number; reach: number; clicks: number;
+      conversions: number; conversionValue: number; videoViews: number;
     }> = [];
 
     let res: { data?: any[] };
@@ -1603,9 +1603,11 @@ export class MetaApiClient {
       adSetId:      row.adset_id      ? String(row.adset_id)      : undefined,
       spend: row.spend ? parseFloat(row.spend) : 0,
       impressions: row.impressions ? parseInt(row.impressions, 10) : 0,
+      reach: row.reach ? parseInt(row.reach, 10) : 0,
       clicks: row.clicks ? parseInt(row.clicks, 10) : 0,
       conversions: sumConversions(row.actions) || 0,
       conversionValue: sumConversions(row.action_values) || 0,
+      videoViews: sumActionValues(row.video_play_actions) || 0,
     }));
 
     // Hydrate top 30 with creative details — keep it bounded so we don't burn quota.
@@ -1659,6 +1661,8 @@ export class MetaApiClient {
     clicks: number;
     conversions: number;
     conversionValue: number;
+    reach?: number;
+    frequency?: number;
   }>> {
     // Meta rejects `platform_position` on its own with a (#100) error — it must
     // be paired with `publisher_platform` (the only valid groupings are
@@ -1672,7 +1676,7 @@ export class MetaApiClient {
 
     const params: Record<string, string> = {
       breakdowns: reqBreakdown,
-      fields: "spend,impressions,clicks,actions,action_values",
+      fields: "spend,impressions,clicks,reach,frequency,actions,action_values,video_play_actions",
       limit: "500",
       action_attribution_windows: JSON.stringify([...META_ATTRIBUTION_WINDOW.raw]),
     };
@@ -1687,6 +1691,9 @@ export class MetaApiClient {
       clicks: number;
       conversions: number;
       conversionValue: number;
+      reach?: number;
+      frequency?: number;
+      videoViews?: number;
     };
     const out: BRow[] = [];
 
@@ -1719,6 +1726,9 @@ export class MetaApiClient {
             clicks: row.clicks !== undefined ? parseInt(row.clicks, 10) : 0,
             conversions: sumConversions(row.actions) || 0,
             conversionValue: sumConversions(row.action_values) || 0,
+            reach: row.reach !== undefined ? parseInt(row.reach, 10) : undefined,
+            frequency: row.frequency !== undefined ? parseFloat(row.frequency) : undefined,
+            videoViews: sumActionValues(row.video_play_actions) || 0,
           });
         }
         const next = res.paging?.next;
@@ -1744,9 +1754,11 @@ export class MetaApiClient {
         const bv: Record<string, string> = {};
         for (const dim of wantDims) if (r.breakdownValues[dim] !== undefined) bv[dim] = r.breakdownValues[dim];
         const label = Object.values(bv).join(" · ") || "Unknown";
-        const cur = merged.get(label) ?? { label, breakdownValues: bv, spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0 };
+        const cur = merged.get(label) ?? { label, breakdownValues: bv, spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0, videoViews: 0 };
         cur.spend += r.spend; cur.impressions += r.impressions; cur.clicks += r.clicks;
         cur.conversions += r.conversions; cur.conversionValue += r.conversionValue;
+        cur.videoViews = (cur.videoViews ?? 0) + (r.videoViews ?? 0);
+        if (r.reach !== undefined) cur.reach = (cur.reach ?? 0) + r.reach;
         merged.set(label, cur);
       }
       return Array.from(merged.values());
@@ -1939,18 +1951,19 @@ export class MetaApiClient {
     spend: number;
     impressions: number;
     clicks: number;
+    reach: number;
     conversions: number;
     conversionValue: number;
   }>> {
     const params: Record<string, string> = {
       time_increment: "1",
-      fields: "spend,impressions,clicks,actions,action_values,date_start",
+      fields: "spend,impressions,clicks,reach,actions,action_values,date_start",
       limit: "500",
     };
     if (startDate && endDate) params.time_range = `{"since":"${startDate}","until":"${endDate}"}`;
     else params.date_preset = "last_30d";
 
-    const dayMap = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number; conversionValue: number }>();
+    const dayMap = new Map<string, { spend: number; impressions: number; clicks: number; reach: number; conversions: number; conversionValue: number }>();
 
     let path: string | null = `/${accountPath}/insights`;
     let nextParams: Record<string, string> | undefined = params;
@@ -1960,10 +1973,11 @@ export class MetaApiClient {
         : await this.fetchAbsolute<{ data?: any[]; paging?: { next?: string } }>(path);
       for (const row of res.data || []) {
         const date: string = row.date_start || "Unknown";
-        const cur = dayMap.get(date) || { spend: 0, impressions: 0, clicks: 0, conversions: 0, conversionValue: 0 };
+        const cur = dayMap.get(date) || { spend: 0, impressions: 0, clicks: 0, reach: 0, conversions: 0, conversionValue: 0 };
         cur.spend += row.spend ? parseFloat(row.spend) : 0;
         cur.impressions += row.impressions ? parseInt(row.impressions, 10) : 0;
         cur.clicks += row.clicks ? parseInt(row.clicks, 10) : 0;
+        cur.reach += row.reach ? parseInt(row.reach, 10) : 0;
         cur.conversions += sumConversions(row.actions) || 0;
         cur.conversionValue += sumConversions(row.action_values) || 0;
         dayMap.set(date, cur);

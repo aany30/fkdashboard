@@ -1044,7 +1044,7 @@ export class DV360ApiClient {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }, 30_000);
     if (!r.ok) {
       const text = await r.text();
       throw new Error(`Bid Manager ${path} failed (HTTP ${r.status}): ${text.slice(0, 300)}`);
@@ -1088,7 +1088,7 @@ export class DV360ApiClient {
     const token = await this.getAccessToken();
     const r = await fetchWithTimeout(`${BM_BASE}/queries/${queryId}/reports/${reportId}`, {
       headers: { Authorization: `Bearer ${token}` },
-    });
+    }, 30_000);
     if (!r.ok) {
       const text = await r.text();
       throw new Error(`Bid Manager report poll failed (HTTP ${r.status}): ${text.slice(0, 300)}`);
