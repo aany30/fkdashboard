@@ -315,6 +315,51 @@ export default async function handler(
       }
     })();
 
+    // All-time per-LINE-ITEM delivery — same wide window, so line items whose
+    // flight ended before the dashboard date picker still show real metrics in
+    // the Planning deep-dive (mirrors the campaign all-time fallback).
+    const AT_LI_DIMS = ["FILTER_LINE_ITEM", "FILTER_ADVERTISER_CURRENCY"];
+    const atLiKey = reportCacheKey({ advertiserId, dims: AT_LI_DIMS, t: "alltime-li" });
+    const allTimeLiPromise: Promise<Array<Record<string, string | number>> | null> = (async () => {
+      const cached = reportCache.get(atLiKey);
+      if (cached) return cached;
+      try {
+        const pend = queryIdCache.get(atLiKey);
+        const result = pend
+          ? await client.resumeReport(pend.queryId, pend.reportId, 8_000)
+          : await client.runBidManagerReport({ dimensions: AT_LI_DIMS, metrics: AT_METRICS, startDate: atStart, endDate: atEnd }, 8_000);
+        if (result.status === "done") { reportCache.set(atLiKey, result.rows); return result.rows; }
+        queryIdCache.set(atLiKey, { queryId: result.queryId, reportId: result.reportId });
+        return null;
+      } catch (e) {
+        console.warn("[AllTime-LI] report failed:", e instanceof Error ? e.message : e);
+        return null;
+      }
+    })();
+
+    // All-time per-CREATIVE delivery — same wide window, so creatives whose
+    // parent line item flight ended before the dashboard date picker still show
+    // real metrics in the Planning deep-dive.
+    const AT_CR_DIMS = ["FILTER_LINE_ITEM", "FILTER_CREATIVE_ID", "FILTER_ADVERTISER_CURRENCY"];
+    const AT_CR_METRICS = ["METRIC_IMPRESSIONS", "METRIC_CLICKS", "METRIC_REVENUE_ADVERTISER"];
+    const atCrKey = reportCacheKey({ advertiserId, dims: AT_CR_DIMS, t: "alltime-cr" });
+    const allTimeCrPromise: Promise<Array<Record<string, string | number>> | null> = (async () => {
+      const cached = reportCache.get(atCrKey);
+      if (cached) return cached;
+      try {
+        const pend = queryIdCache.get(atCrKey);
+        const result = pend
+          ? await client.resumeReport(pend.queryId, pend.reportId, 8_000)
+          : await client.runBidManagerReport({ dimensions: AT_CR_DIMS, metrics: AT_CR_METRICS, startDate: atStart, endDate: atEnd }, 8_000);
+        if (result.status === "done") { reportCache.set(atCrKey, result.rows); return result.rows; }
+        queryIdCache.set(atCrKey, { queryId: result.queryId, reportId: result.reportId });
+        return null;
+      } catch (e) {
+        console.warn("[AllTime-CR] report failed:", e instanceof Error ? e.message : e);
+        return null;
+      }
+    })();
+
     // Campaign-level unique reach + average frequency. These metrics live in a
     // separate Bid Manager REACH report (they can't combine with delivery
     // metrics), keyed by campaign (FILTER_MEDIA_PLAN) so reach is de-duplicated
@@ -443,6 +488,30 @@ export default async function handler(
       }
     }
 
+    // 2a3. Resolve the all-time per-LINE-ITEM report → fallback metrics for
+    // line items whose flight ended before the dashboard date window.
+    const allTimeByLi = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number }>();
+    const allTimeLiRows = await allTimeLiPromise;
+    if (allTimeLiRows) {
+      for (const row of allTimeLiRows) {
+        const keys = Object.keys(row);
+        const idKey = keys.find((k) => /line.?item.*id/i.test(k));
+        if (!idKey) continue;
+        const id = String(row[idKey]);
+        if (!id || id === "0") continue;
+        const num = (re: RegExp) => {
+          const k = keys.find((kk) => re.test(kk));
+          return k ? (typeof row[k] === "number" ? (row[k] as number) : Number(String(row[k]).replace(/,/g, "")) || 0) : 0;
+        };
+        allTimeByLi.set(id, {
+          impressions: num(/^impressions$/i),
+          clicks: num(/^clicks$/i),
+          spend: num(/revenue \(adv/i),
+          conversions: num(/total conversions/i),
+        });
+      }
+    }
+
     // 2b. Resolve the per-creative report started above (ran in parallel).
     const creativesByLi = new Map<string, Array<{ id: string; name: string; impressions: number; clicks: number; spend: number }>>();
     const crRows = await crRowsPromise;
@@ -466,6 +535,29 @@ export default async function handler(
         const num = (k?: string) => (k ? (typeof row[k] === "number" ? (row[k] as number) : Number(String(row[k]).replace(/,/g, "")) || 0) : 0);
         const arr = creativesByLi.get(liId) ?? [];
         arr.push({ id: crId, name: crNameKey && row[crNameKey] ? String(row[crNameKey]) : `Creative ${crId}`, impressions: num(imprKey), clicks: num(clickKey), spend: num(spendKey) });
+        creativesByLi.set(liId, arr);
+      }
+    }
+
+    // 2b2. Merge all-time creative data as fallback for line items with no
+    // window-scoped creative delivery (flight ended before the date picker).
+    const allTimeCrRows = await allTimeCrPromise;
+    if (allTimeCrRows) {
+      for (const row of allTimeCrRows) {
+        const keys = Object.keys(row);
+        const liIdKey = keys.find((k) => /line.?item.*id/i.test(k));
+        const crIdKey = keys.find((k) => /creative.*id/i.test(k));
+        const imprKey = keys.find((k) => /^impressions$/i.test(k));
+        const clickKey = keys.find((k) => /^clicks$/i.test(k));
+        const spendKey = keys.find((k) => /revenue \(adv/i.test(k));
+        if (!liIdKey || !crIdKey) continue;
+        const liId = String(row[liIdKey]); const crId = String(row[crIdKey]);
+        if (!crId || crId === "0") continue;
+        // Only add if the window report didn't already cover this LI
+        if (creativesByLi.has(liId)) continue;
+        const num = (k?: string) => (k ? (typeof row[k] === "number" ? (row[k] as number) : Number(String(row[k]).replace(/,/g, "")) || 0) : 0);
+        const arr = creativesByLi.get(liId) ?? [];
+        arr.push({ id: crId, name: `Creative ${crId}`, impressions: num(imprKey), clicks: num(clickKey), spend: num(spendKey) });
         creativesByLi.set(liId, arr);
       }
     }
@@ -539,19 +631,24 @@ export default async function handler(
     // 3c. Line Items → keyed by IO id
     const lisByIo = new Map<string, AdData[]>();
     for (const li of lineItems) {
-      const m = liMetrics.get(String(li.lineItemId)) ?? emptyMetrics();
+      const liId = String(li.lineItemId);
+      const m = liMetrics.get(liId) ?? emptyMetrics();
+      // Fall back to all-time metrics when the window report has zero delivery
+      // (line item flight ended before the selected date range).
+      const useAllTime = !m.spend && !m.impressions && !m.clicks;
+      const at = useAllTime ? allTimeByLi.get(liId) : undefined;
       const liFlightStart = li.flight?.dateRange?.startDate ? rawDateToIso(li.flight.dateRange.startDate) : undefined;
       const liFlightEnd = li.flight?.dateRange?.endDate ? rawDateToIso(li.flight.dateRange.endDate) : undefined;
       const ad: AdData = {
-        id: String(li.lineItemId),
+        id: liId,
         name: li.displayName,
         status: li.entityStatus,
         lineItemType: li.lineItemType,
-        spend: m.spend,
-        impressions: m.impressions,
-        clicks: m.clicks,
-        conversions: m.conversions,
-        reach: reachByLi.get(String(li.lineItemId))?.reach ?? m.reach,
+        spend: at?.spend ?? m.spend,
+        impressions: at?.impressions ?? m.impressions,
+        clicks: at?.clicks ?? m.clicks,
+        conversions: at?.conversions ?? m.conversions,
+        reach: reachByLi.get(liId)?.reach ?? m.reach,
         adGroups: agsByLi.get(String(li.lineItemId)),
         creatives: (creativesByLi.get(String(li.lineItemId)) ?? []).map<CreativeData>((c) => ({
           id: c.id, name: creativeNameById.get(c.id) || c.name, type: creativeTypeById.get(c.id),
@@ -573,10 +670,11 @@ export default async function handler(
       const lis = lisByIo.get(String(io.insertionOrderId)) ?? [];
       const total = emptyMetrics();
       for (const li of lis) {
-        const m = liMetrics.get(li.id) ?? emptyMetrics();
-        total.spend += m.spend; total.impressions += m.impressions; total.clicks += m.clicks;
-        total.conversions += m.conversions; total.conversionValue += m.conversionValue;
-        total.videoViews += m.videoViews; total.reach += m.reach;
+        // Use the AdData fields (which already include the all-time fallback)
+        // instead of re-reading from window-scoped liMetrics.
+        total.spend += li.spend || 0; total.impressions += li.impressions || 0; total.clicks += li.clicks || 0;
+        total.conversions += li.conversions || 0;
+        total.videoViews += 0; total.reach += li.reach || 0;
       }
       ioTotals.set(String(io.insertionOrderId), total);
       const adSet: AdSetData = {
