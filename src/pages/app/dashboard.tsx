@@ -162,6 +162,7 @@ export default function Dashboard() {
     enterDemoMode,
     exitDemoMode,
   } = useAuthStore();
+  const hydrated = useAuthStore((s) => (s as any)._hydrated ?? false);
   const [emailPopoverOpen, setEmailPopoverOpen] = useState(false);
   const [emailDraft, setEmailDraft] = useState(alertEmail || "");
   const [emailSavedFlash, setEmailSavedFlash] = useState(false);
@@ -203,9 +204,10 @@ export default function Dashboard() {
   // Prevent route guard from bouncing during OAuth redirect processing
   const justOauthedRef = useRef(false);
 
-  // Handle OAuth redirects
+  // Handle OAuth redirects — wait for Zustand hydration so we don't overwrite
+  // the other platform's credentials that are still loading from localStorage.
   useEffect(() => {
-    if (!router.isReady) return;
+    if (!router.isReady || !hydrated) return;
 
     const {
       meta_token,
@@ -279,7 +281,7 @@ export default function Dashboard() {
       router.replace("/app/dashboard");
     }
 
-  }, [router.isReady, router.query, setMetaCredentials, setMetaPixelList, setDV360Credentials, setLoginEmail, router]);
+  }, [router.isReady, hydrated, router.query, setMetaCredentials, setMetaPixelList, setDV360Credentials, setLoginEmail, router]);
 
   // Hydrate demo mode from ?demo=1 — survives refresh / back-button within the
   // tab without leaking into localStorage.
@@ -290,7 +292,7 @@ export default function Dashboard() {
 
   // Route guard — block /app/dashboard for unconnected, non-demo visitors.
   useEffect(() => {
-    if (!mounted || !router.isReady) return;
+    if (!mounted || !router.isReady || !hydrated) return;
     if (router.query.demo === "1") return; // grace period while demoMode hydrates
     // A DV360 refresh token present but no advertiser yet = mid-connection
     // (OAuth found no advertisers, user must paste the ID). Don't bounce them
@@ -299,7 +301,7 @@ export default function Dashboard() {
     if (!isMetaConnected() && !isDV360Connected() && !dv360Pending && !demoMode && !justOauthedRef.current) {
       router.replace("/");
     }
-  }, [mounted, router.isReady, router.query.demo, isMetaConnected, isDV360Connected, dv360RefreshToken, demoMode, router]);
+  }, [mounted, hydrated, router.isReady, router.query.demo, isMetaConnected, isDV360Connected, dv360RefreshToken, demoMode, router]);
 
   const handleLogout = () => {
     clearAllCredentials();
