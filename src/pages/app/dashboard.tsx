@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useAuthStore } from "@/store/auth";
 import { useRouter } from "next/router";
 import PixelHealthTab from "@/components/dashboard/PixelHealthTab";
@@ -200,6 +200,9 @@ export default function Dashboard() {
     }
   }, [platform, visibleNav, activeTab]);
 
+  // Prevent route guard from bouncing during OAuth redirect processing
+  const justOauthedRef = useRef(false);
+
   // Handle OAuth redirects
   useEffect(() => {
     if (!router.isReady) return;
@@ -213,6 +216,7 @@ export default function Dashboard() {
 
     // Handle Meta OAuth
     if (meta_token && business_id && pixel_ids) {
+      justOauthedRef.current = true;
       const pixelIdArray = (pixel_ids as string).split(",");
       const nameArray = pixel_names ? (pixel_names as string).split("|") : pixelIdArray;
 
@@ -245,6 +249,7 @@ export default function Dashboard() {
     if (login_email) setLoginEmail(login_email as string);
 
     if (dv360_refresh && dv360_client_id && dv360_client_secret) {
+      justOauthedRef.current = true;
       const advIds = dv360_adv_ids ? (dv360_adv_ids as string).split(",") : [];
       const advNames = dv360_adv_names ? (dv360_adv_names as string).split("|") : [];
 
@@ -291,7 +296,7 @@ export default function Dashboard() {
     // (OAuth found no advertisers, user must paste the ID). Don't bounce them
     // back to landing — let the "Paste your Advertiser ID" prompt show.
     const dv360Pending = !!dv360RefreshToken;
-    if (!isMetaConnected() && !isDV360Connected() && !dv360Pending && !demoMode) {
+    if (!isMetaConnected() && !isDV360Connected() && !dv360Pending && !demoMode && !justOauthedRef.current) {
       router.replace("/");
     }
   }, [mounted, router.isReady, router.query.demo, isMetaConnected, isDV360Connected, dv360RefreshToken, demoMode, router]);
