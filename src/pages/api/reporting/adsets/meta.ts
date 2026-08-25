@@ -49,14 +49,14 @@ function getDemoAdSets(): AdSetRow[] {
       conversions: 342, conversionValue: 1710000, cpm: 37.89, ctr: 1.50, videoViews: 18400,
     },
     {
-      id: "demo_adset_002", name: "Retargeting - Website Visitors 30d",
+      id: "a004", name: "Retargeting - Website Visitors 30d",
       campaignId: "demo_camp_001", campaignName: "Summer Sale 2026",
       targeting: "Men 18-34, Tier 1 Cities, Custom Audience: Website Visitors",
       spend: 32000, impressions: 540000, clicks: 16200, reach: 185000, frequency: 2.92,
       conversions: 480, conversionValue: 2400000, cpm: 59.26, ctr: 3.00, videoViews: 4200,
     },
     {
-      id: "demo_adset_003", name: "Lookalike - Purchase 1% IN",
+      id: "a003", name: "Lookalike - Purchase 1% IN",
       campaignId: "demo_camp_002", campaignName: "Monsoon Collection Launch",
       targeting: "All Genders 21-45, India, Lookalike: Purchasers 1%",
       spend: 42000, impressions: 1050000, clicks: 14700, reach: 510000, frequency: 2.06,
@@ -77,7 +77,7 @@ function getDemoAdSets(): AdSetRow[] {
       conversions: 148, conversionValue: 1184000, cpm: 35.48, ctr: 1.30, videoViews: 9500,
     },
     {
-      id: "demo_adset_006", name: "Custom Audience - Email Subscribers",
+      id: "a008", name: "Custom Audience - Email Subscribers",
       campaignId: "demo_camp_003", campaignName: "Home Makeover Diwali",
       targeting: "All Genders 22-55, Custom Audience: Email Subscribers (45K list)",
       spend: 15200, impressions: 280000, clicks: 11200, reach: 38000, frequency: 7.37,
@@ -98,7 +98,7 @@ function getDemoAdSets(): AdSetRow[] {
       conversions: 88, conversionValue: 440000, cpm: 35.56, ctr: 1.40, videoViews: 6700,
     },
     {
-      id: "demo_adset_009", name: "Retargeting - Cart Abandoners 7d",
+      id: "a006", name: "Retargeting - Cart Abandoners 7d",
       campaignId: "demo_camp_005", campaignName: "Always-On Retargeting",
       targeting: "All Genders 18-55, India, Custom Audience: Cart Abandoners (7 days)",
       spend: 9800, impressions: 145000, clicks: 7250, reach: 42000, frequency: 3.45,
@@ -133,7 +133,7 @@ function getDemoAdSets(): AdSetRow[] {
       conversions: 42, conversionValue: 168000, cpm: 17.24, ctr: 0.40, videoViews: 185000,
     },
     {
-      id: "demo_adset_014", name: "Retargeting - Video Viewers 50%",
+      id: "a005", name: "Retargeting - Video Viewers 50%",
       campaignId: "demo_camp_007", campaignName: "Brand Awareness - Video",
       targeting: "All Genders 18-45, India, Custom Audience: Video Viewers (50%+ watched, 30d)",
       spend: 11000, impressions: 220000, clicks: 6600, reach: 68000, frequency: 3.24,

@@ -23,6 +23,7 @@ export interface PlanGroup {
   id: string;
   name: string;
   items: PlanItem[];
+  panelFocusIds?: string[];
   createdAt: number;
   updatedAt: number;
 }

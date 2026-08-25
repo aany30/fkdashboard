@@ -27,6 +27,7 @@ import { useMetaBreakdown } from "@/hooks/useMetaBreakdown";
 import { useDV360Breakdown } from "@/hooks/useDV360Breakdown";
 import { useDV360Reach } from "@/hooks/useDV360Reach";
 import { useMetaAdSets, useDV360LineItems } from "@/hooks/useAudienceData";
+import { useAdSetInsights } from "@/hooks/useAdSetInsights";
 import { useMetaCampaignLifetime } from "@/hooks/useMetaCampaignLifetime";
 import CampaignMultiPicker from "@/components/shared/CampaignMultiPicker";
 import AIExecutiveSummary from "@/components/shared/AIExecutiveSummary";
@@ -392,14 +393,12 @@ function DeepDiveDropdown({ items, focusId, setFocusId, platform }: {
 
 // ─── Extra deep-dive panel (additional comparison window) ─
 function ExtraDeepDivePanel({
-  panelId, items, rows, planned, setPlan, byId, currency, metaLifetime, aiPlatform, dateRange, onRemove,
-  entityDeliveredMap,
+  panelId, items, rows, byId, currency, metaLifetime, aiPlatform, dateRange, onRemove,
+  entityDeliveredMap, onSavePlan, initialFocusId, onFocusChange,
 }: {
   panelId: string;
   items: DeepDiveItem[];
   rows: { id: string; name: string; planned: Planned; delivered: any }[];
-  planned: Record<string, Planned>;
-  setPlan: (id: string, patch: Partial<Planned>) => void;
   byId: Map<string, CampaignData>;
   currency: string;
   metaLifetime: Record<string, any>;
@@ -407,8 +406,23 @@ function ExtraDeepDivePanel({
   dateRange: DateRange;
   onRemove: () => void;
   entityDeliveredMap: Map<string, Delivered>;
+  onSavePlan: (name: string, entityIds: Set<string>) => void;
+  initialFocusId?: string;
+  onFocusChange?: (panelId: string, focusId: string) => void;
 }) {
-  const [focusId, setFocusId] = useState<string>(items[0]?.id ?? "");
+  const [focusId, setFocusIdRaw] = useState<string>(initialFocusId || (items[0]?.id ?? ""));
+  const setFocusId = (id: string) => { setFocusIdRaw(id); onFocusChange?.(panelId, id); };
+  const [localSaveName, setLocalSaveName] = useState<string | null>(null);
+  const [localJustSaved, setLocalJustSaved] = useState(false);
+
+  // Each extra panel has its own independent planned values
+  const [localPlanned, setLocalPlanned] = useState<Record<string, Planned>>({});
+  const planned = localPlanned;
+  const setPlan = (id: string, patch: Partial<Planned>) =>
+    setLocalPlanned((prev) => {
+      const cur0 = prev[id] ?? { spend: 0, reach: 0, impressions: 0 };
+      return { ...prev, [id]: { ...cur0, ...patch } };
+    });
 
   const focusIds = new Set(focusId ? focusId.split(",").filter(Boolean) : [items[0]?.id]);
   // Resolve focused items — check campaign rows first, then entityDeliveredMap
@@ -472,18 +486,75 @@ function ExtraDeepDivePanel({
 
   const planKey = isMulti ? groupKey! : focus.id;
 
+  const focusLabel = isMulti ? `${focusEntries.length} campaigns` : focus.name;
+  const pct2 = (pl: number, de: number) => (pl > 0 ? Math.round((de / pl) * 100) : null);
+  const extraFocusContext = {
+    planned: { spend: p.spend, reach: p.reach, impressions: p.impressions, frequency: pFreq, cpm: pCpm, views: (p as any).views ?? 0, clicks: (p as any).clicks ?? 0, ctr: (p as any).ctr ?? 0, vtr: (p as any).vtr ?? 0 },
+    delivered: { spend: d.spend, reach: d.reach, impressions: d.impressions, frequency: d.frequency, cpm: d.cpm, views: d.videoViews, clicks: d.clicks, ctr: d.ctr, vtr: d.vtr },
+    pacing: { spend: pct2(p.spend, d.spend), reach: pct2(p.reach, d.reach), impressions: pct2(p.impressions, d.impressions) },
+  };
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm scroll-mt-24">
       <div className="px-5 py-3 border-b border-gray-100">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h3 className="text-sm font-bold text-gray-900">Campaign deep-dive</h3>
-          <button
-            onClick={onRemove}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-gray-400 hover:text-red-600 hover:bg-red-50 transition"
-            title="Remove this panel"
-          >
-            <X className="w-3.5 h-3.5" /> Remove
-          </button>
+          <div className="flex items-center gap-2">
+            {localSaveName !== null ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const trimmed = localSaveName.trim();
+                  if (trimmed) {
+                    const entityKeys = isMulti
+                      ? new Set(focusEntries.map((r) => `campaign:${r.id}`))
+                      : new Set([`campaign:${focus.id}`]);
+                    onSavePlan(trimmed, entityKeys);
+                    setLocalJustSaved(true);
+                    setTimeout(() => setLocalJustSaved(false), 2000);
+                  }
+                  setLocalSaveName(null);
+                }}
+                className="inline-flex items-center gap-1.5"
+              >
+                <input
+                  autoFocus
+                  value={localSaveName}
+                  onChange={(e) => setLocalSaveName(e.target.value)}
+                  placeholder="Plan name"
+                  className="px-2 py-1 text-xs border border-blue-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200 w-40"
+                  onKeyDown={(e) => { if (e.key === "Escape") setLocalSaveName(null); }}
+                />
+                <button type="submit" className="px-2 py-1 text-xs font-semibold bg-blue-600 text-white rounded-md hover:bg-blue-700">Save</button>
+                <button type="button" onClick={() => setLocalSaveName(null)} className="px-2 py-1 text-xs font-semibold text-gray-500 hover:text-gray-700">Cancel</button>
+              </form>
+            ) : (
+              <button
+                onClick={() => setLocalSaveName(isMulti ? `${focusEntries.length} campaigns plan` : `${focus.name} plan`)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border shadow-sm transition ${
+                  localJustSaved ? "bg-green-50 border-green-300 text-green-700" : "bg-blue-600 border-blue-600 text-white hover:bg-blue-700"
+                }`}
+              >
+                <Save className="w-3.5 h-3.5" />
+                {localJustSaved ? "Saved ✓" : "Save plan"}
+              </button>
+            )}
+            <GapInsight
+              campaign={focusLabel}
+              planned={extraFocusContext.planned}
+              delivered={extraFocusContext.delivered}
+              pacing={extraFocusContext.pacing}
+              dateRange={String(dateRange)}
+              platform={aiPlatform}
+            />
+            <button
+              onClick={onRemove}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-gray-400 hover:text-red-600 hover:bg-red-50 transition"
+              title="Remove this panel"
+            >
+              <X className="w-3.5 h-3.5" /> Remove
+            </button>
+          </div>
         </div>
         <DeepDiveDropdown items={items} focusId={focusId} setFocusId={setFocusId} platform={aiPlatform} />
       </div>
@@ -601,6 +672,63 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
 
   // Extra deep-dive panels
   const [extraPanels, setExtraPanels] = useState<{ id: string; focusId: string }[]>([]);
+  const [saveAllName, setSaveAllName] = useState<string | null>(null);
+  const [justSavedAll, setJustSavedAll] = useState(false);
+
+  // Saved plans management
+  const [activePlanId, setActivePlanId] = useState<string | null>(null);
+  const [renamingPlanId, setRenamingPlanId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [showSavedPlans, setShowSavedPlans] = useState(false);
+
+  const handleExtraPanelFocusChange = (panelId: string, newFocusId: string) => {
+    setExtraPanels((prev) => prev.map((p) => p.id === panelId ? { ...p, focusId: newFocusId } : p));
+  };
+
+  const loadPlanGroup = (group: PlanGroup) => {
+    const campaignIds = [...new Set(group.items.filter((i) => i.entityType === "campaign").map((i) => i.entityId))];
+    if (campaignIds.length > 0) setSelected(campaignIds);
+    const newPlanned: PlannedMap = {};
+    for (const item of group.items) {
+      const key = item.entityType === "campaign" ? item.entityId : `${item.entityType}:${item.entityId}`;
+      newPlanned[key] = item.plan;
+    }
+    setPlanned(newPlanned);
+    setActivePlanId(group.id);
+    // Restore deep-dive panels
+    const pf = group.panelFocusIds ?? [];
+    if (pf.length > 0) {
+      setFocusId(pf[0]);
+      setExtraPanels(pf.slice(1).map((fid, i) => ({ id: `panel-loaded-${Date.now()}-${i}`, focusId: fid })));
+    } else if (campaignIds.length > 0) {
+      setFocusId(campaignIds[0]);
+      setExtraPanels([]);
+    }
+  };
+
+  // Auto-load the most recent saved plan on first mount
+  const autoLoadedRef = useRef(false);
+  useEffect(() => {
+    if (autoLoadedRef.current) return;
+    if (planGroups.groups.length === 0) return;
+    autoLoadedRef.current = true;
+    const sorted = [...planGroups.groups].sort((a, b) => b.updatedAt - a.updatedAt);
+    loadPlanGroup(sorted[0]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planGroups.groups.length]);
+
+  const renamePlanGroup = (id: string, newName: string) => {
+    setPlanGroups((prev) => ({
+      ...prev,
+      groups: prev.groups.map((g) => g.id === id ? { ...g, name: newName, updatedAt: Date.now() } : g),
+    }));
+    setRenamingPlanId(null);
+  };
+
+  const removePlanGroup = (id: string) => {
+    setPlanGroups((prev) => ({ ...prev, groups: prev.groups.filter((g) => g.id !== id) }));
+    if (activePlanId === id) setActivePlanId(null);
+  };
 
   // ── Meta ad set data for the focused campaign ──
   const { rows: metaAdSetRows, loading: metaAdSetsLoading } = useMetaAdSets(
@@ -684,7 +812,7 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
       return { ...prev, [id]: { ...cur0, ...patch } };
     });
 
-  const savePlanAsGroup = (name: string, selectedEntityIds: Set<string>) => {
+  const savePlanAsGroup = (name: string, selectedEntityIds: Set<string>, panelFocusIds?: string[]) => {
     const items = [...selectedEntityIds].map((key) => {
       const [entityType, entityId] = key.includes(":") ? key.split(":", 2) : ["campaign", key];
       const campaignId = entityType === "campaign" ? entityId : "";
@@ -703,6 +831,7 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
       id: `pg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
       items,
+      panelFocusIds,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -711,6 +840,21 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
     setTimeout(() => setJustSavedId(""), 2000);
   };
 
+  const saveAllPlans = (name: string) => {
+    const allEntityIds = new Set<string>();
+    for (const id of selected) allEntityIds.add(`campaign:${id}`);
+    for (const [key, val] of Object.entries(planned)) {
+      if (val && (val.spend > 0 || val.reach > 0 || val.impressions > 0)) {
+        allEntityIds.add(key.includes(":") ? key : `campaign:${key}`);
+      }
+    }
+    if (allEntityIds.size === 0) return;
+    const effectiveFocusId = focusId || rows[0]?.id || "";
+    const panelFocusIds = [effectiveFocusId, ...extraPanels.map((p) => p.focusId || rows[0]?.id || "")].filter(Boolean);
+    savePlanAsGroup(name, allEntityIds, panelFocusIds);
+    setJustSavedAll(true);
+    setTimeout(() => setJustSavedAll(false), 2000);
+  };
 
   const rows = useMemo(() =>
     selected.map((id) => {
@@ -833,9 +977,81 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
 
       {/* Campaign / Ad Set / Ad selectors */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4 space-y-2.5">
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-sm font-semibold text-gray-700">Campaigns:</span>
-          <CampaignMultiPicker options={options} values={selected} onChange={setSelected} allLabelText="None selected — pick campaigns to plan" loading={loading} />
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 flex-wrap flex-1">
+            <span className="text-sm font-semibold text-gray-700">Campaigns:</span>
+            <CampaignMultiPicker options={options} values={selected} onChange={setSelected} allLabelText="None selected — pick campaigns to plan" loading={loading} />
+          </div>
+          {/* Saved Plans dropdown */}
+          <div className="relative shrink-0">
+            <button
+              onClick={() => setShowSavedPlans(!showSavedPlans)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition ${
+                activePlanId ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100"
+              }`}
+            >
+              <Save className="w-3.5 h-3.5" />
+              {activePlanId ? planGroups.groups.find((g) => g.id === activePlanId)?.name || "Saved Plan" : "Saved Plans"}
+              {planGroups.groups.length > 0 && <span className="text-[10px] bg-gray-200 text-gray-600 rounded-full px-1.5">{planGroups.groups.length}</span>}
+            </button>
+            {showSavedPlans && (
+              <div className="absolute right-0 top-full mt-1 w-80 bg-white rounded-xl border border-gray-200 shadow-xl z-50 overflow-hidden">
+                <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                  <span className="text-sm font-bold text-gray-900">Saved Plans</span>
+                  <button onClick={() => setShowSavedPlans(false)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                </div>
+                {planGroups.groups.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-xs text-gray-400">No saved plans yet. Enter planned targets and click &quot;Save plan&quot; to save one.</div>
+                ) : (
+                  <div className="max-h-72 overflow-y-auto divide-y divide-gray-50">
+                    {planGroups.groups.map((g) => (
+                      <div key={g.id} className={`px-4 py-3 hover:bg-gray-50 transition ${activePlanId === g.id ? "bg-blue-50" : ""}`}>
+                        {renamingPlanId === g.id ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              autoFocus
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === "Enter" && renameValue.trim()) renamePlanGroup(g.id, renameValue.trim()); if (e.key === "Escape") setRenamingPlanId(null); }}
+                              className="flex-1 text-sm border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            />
+                            <button onClick={() => { if (renameValue.trim()) renamePlanGroup(g.id, renameValue.trim()); }} className="text-xs font-semibold text-blue-600 hover:text-blue-800">Save</button>
+                            <button onClick={() => setRenamingPlanId(null)} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-sm font-semibold text-gray-900 truncate max-w-[160px]" title={g.name}>{g.name}</span>
+                              <span className="text-[10px] text-gray-400 shrink-0">{new Date(g.updatedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</span>
+                            </div>
+                            <div className="text-[11px] text-gray-500 mb-2">
+                              {g.items.filter((i) => i.entityType === "campaign").length} campaign{g.items.filter((i) => i.entityType === "campaign").length === 1 ? "" : "s"}
+                              {(g.panelFocusIds?.length ?? 0) > 1 && <> · {g.panelFocusIds!.length} deep-dives</>}
+                              {g.items.some((i) => i.plan.spend > 0) && <> · {"₹"}{Math.round(g.items.reduce((s, i) => s + (i.plan.spend || 0), 0)).toLocaleString("en-IN")} planned</>}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => { loadPlanGroup(g); setShowSavedPlans(false); }}
+                                className="px-2 py-1 text-[11px] font-semibold text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 transition">
+                                {activePlanId === g.id ? "Reload" : "Load"}
+                              </button>
+                              <button onClick={() => { setRenamingPlanId(g.id); setRenameValue(g.name); }}
+                                className="px-2 py-1 text-[11px] font-semibold text-gray-600 bg-gray-100 rounded-md hover:bg-gray-200 transition">
+                                Rename
+                              </button>
+                              <button onClick={() => removePlanGroup(g.id)}
+                                className="px-2 py-1 text-[11px] font-semibold text-red-600 bg-red-50 rounded-md hover:bg-red-100 transition">
+                                Remove
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         {selected.length > 0 && adSetOptions.length > 0 && (
           <div className="flex items-center gap-3 flex-wrap">
@@ -1001,7 +1217,9 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
                           const entityKeys = isMulti
                             ? new Set(focusEntries.map((r) => `campaign:${r.id}`))
                             : new Set([`campaign:${focus.id}`]);
-                          savePlanAsGroup(trimmed, entityKeys);
+                          const eFid = focusId || rows[0]?.id || "";
+                          const pids = [eFid, ...extraPanels.map((p) => p.focusId || rows[0]?.id || "")].filter(Boolean);
+                          savePlanAsGroup(trimmed, entityKeys, pids);
                         }
                         setSavePlanName(null);
                       }}
@@ -1123,11 +1341,7 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
                     {aiPlatform === "meta" && (() => {
                       const adSets = focusedMetaAdSets.filter((as) => as.campaignId === fr.id);
                       if (metaAdSetsLoading) return <div className="text-xs text-gray-400 py-2">Loading ad sets…</div>;
-                      if (adSets.length === 0) return (
-                        <div className="border border-gray-200 rounded-lg px-4 py-3 bg-gray-50 text-xs text-gray-400">
-                          No ad set data available for this campaign.
-                        </div>
-                      );
+                      if (adSets.length === 0) return null;
                       const sorted = [...adSets].sort((a, b) => b.spend - a.spend);
                       return (
                         <div className="border border-gray-200 rounded-lg overflow-hidden">
@@ -1170,12 +1384,7 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
                     })()}
                     {aiPlatform === "dv360" && (() => {
                       const ios = c.adSets?.filter((a) => (a.spend ?? 0) > 0 || (a.impressions ?? 0) > 0) || [];
-                      const lis = lineItemReach ? Object.entries(lineItemReach).filter(([, v]) => v.campaignId === fr.id).sort((a, b) => b[1].reach - a[1].reach) : [];
-                      if (ios.length === 0 && lis.length === 0) return (
-                        <div className="border border-gray-200 rounded-lg px-4 py-3 bg-gray-50 text-xs text-gray-400">
-                          No insertion order / line item data available for this campaign.
-                        </div>
-                      );
+                      if (ios.length === 0) return null;
                       return (
                         <>
                           {ios.length > 0 && (
@@ -1214,7 +1423,6 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
                               </div>
                             </div>
                           )}
-                          {lis.length > 0 && <LineItemReachTable lineItems={lis} currency={currency} />}
                         </>
                       );
                     })()}
@@ -1318,8 +1526,6 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
           panelId={panel.id}
           items={deepDiveItems}
           rows={rows}
-          planned={planned}
-          setPlan={setPlan}
           byId={byId}
           currency={currency}
           metaLifetime={metaLifetime}
@@ -1327,17 +1533,59 @@ export function PlanningSection({ campaigns, loading, currency, storageSuffix, d
           dateRange={dateRange}
           entityDeliveredMap={entityDeliveredMap}
           onRemove={() => setExtraPanels((prev) => prev.filter((p) => p.id !== panel.id))}
+          onSavePlan={savePlanAsGroup}
+          initialFocusId={panel.focusId}
+          onFocusChange={handleExtraPanelFocusChange}
         />
       ))}
 
-      {/* ── Add another deep-dive panel ── */}
+      {/* ── Add another deep-dive + Save all ── */}
       {rows.length > 0 && (
-        <button
-          onClick={() => setExtraPanels((prev) => [...prev, { id: `panel-${Date.now()}`, focusId: "" }])}
-          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed border-gray-200 text-sm font-medium text-gray-400 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50/50 transition"
-        >
-          <Plus className="w-4 h-4" /> Add another deep-dive
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setExtraPanels((prev) => [...prev, { id: `panel-${Date.now()}`, focusId: "" }])}
+            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed border-gray-200 text-sm font-medium text-gray-400 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50/50 transition"
+          >
+            <Plus className="w-4 h-4" /> Add another deep-dive
+          </button>
+          {saveAllName !== null ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const trimmed = saveAllName.trim();
+                if (trimmed) saveAllPlans(trimmed);
+                setSaveAllName(null);
+              }}
+              className="flex items-center gap-1.5 shrink-0"
+            >
+              <input
+                autoFocus
+                value={saveAllName}
+                onChange={(e) => setSaveAllName(e.target.value)}
+                placeholder="Plan group name"
+                className="px-2.5 py-2 text-xs border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200 w-44"
+                onKeyDown={(e) => { if (e.key === "Escape") setSaveAllName(null); }}
+              />
+              <button type="submit" className="px-3 py-2 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700">Save</button>
+              <button type="button" onClick={() => setSaveAllName(null)} className="px-2 py-2 text-xs font-semibold text-gray-500 hover:text-gray-700">Cancel</button>
+            </form>
+          ) : (
+            <button
+              onClick={() => {
+                const names = selected.slice(0, 2).map((id) => byId.get(id)?.name || id);
+                setSaveAllName(extraPanels.length > 0 ? `${names.join(" + ")}${selected.length > 2 ? " +…" : ""} plan` : `${names[0] || "Plan"}`);
+              }}
+              className={`shrink-0 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-semibold border shadow-sm transition ${
+                justSavedAll
+                  ? "bg-green-50 border-green-300 text-green-700"
+                  : "bg-indigo-600 border-indigo-600 text-white hover:bg-indigo-700"
+              }`}
+            >
+              <Save className="w-4 h-4" />
+              {justSavedAll ? "All saved ✓" : `Save all plans (${1 + extraPanels.length})`}
+            </button>
+          )}
+        </div>
       )}
 
     </div>
@@ -1469,17 +1717,17 @@ export function DailyTrendCharts({ dateRange: parentRange, customStart, customEn
 }) {
   const [localRange, setLocalRange] = useState<DateRange | null>(null);
   const [localPlatform, setLocalPlatform] = useState<"both" | "meta" | "dv360" | null>(null);
-  const [localCustomStart, setLocalCustomStart] = useState("");
-  const [localCustomEnd, setLocalCustomEnd] = useState("");
+  const [localCustomStart, setLocalCustomStart] = useState(customStart || "");
+  const [localCustomEnd, setLocalCustomEnd] = useState(customEnd || "");
   const dateRange = localRange ?? parentRange;
-  const isCustom = localRange === ("custom" as DateRange);
-  const effectiveCustomStart = isCustom ? localCustomStart : (localRange ? undefined : customStart);
-  const effectiveCustomEnd = isCustom ? localCustomEnd : (localRange ? undefined : customEnd);
+  const isCustom = dateRange === ("custom" as DateRange);
+  const effectiveCustomStart = localRange === ("custom" as DateRange) ? localCustomStart : (localRange ? undefined : customStart);
+  const effectiveCustomEnd = localRange === ("custom" as DateRange) ? localCustomEnd : (localRange ? undefined : customEnd);
   const platform = localPlatform ?? parentPlatform;
   const showMeta = platform !== "dv360";
   const showDv = platform !== "meta";
 
-  const customReady = !isCustom || (!!localCustomStart && !!localCustomEnd);
+  const customReady = !isCustom || (!!effectiveCustomStart && !!effectiveCustomEnd);
   const { rows: metaDaily, loading: metaLoading } = useMetaBreakdown("daily", dateRange, effectiveCustomStart, effectiveCustomEnd, showMeta && customReady);
   const { rows: dv360Daily, loading: dv360Loading } = useDV360Breakdown("daily", dateRange, effectiveCustomStart, effectiveCustomEnd, showDv && customReady);
 
@@ -1544,14 +1792,17 @@ export function DailyTrendCharts({ dateRange: parentRange, customStart, customEn
           </button>
         ))}
         <button
-          onClick={() => setLocalRange(isCustom ? null : "custom" as DateRange)}
+          onClick={() => {
+            if (localRange === ("custom" as DateRange)) { setLocalRange(null); }
+            else { setLocalRange("custom" as DateRange); setLocalCustomStart(customStart || ""); setLocalCustomEnd(customEnd || ""); }
+          }}
           className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition ${
             isCustom ? "bg-white text-blue-700 shadow-sm" : "text-gray-500 hover:text-gray-700"
           }`}>
           Custom
         </button>
       </div>
-      {isCustom && (
+      {isCustom && localRange === ("custom" as DateRange) && (
         <div className="flex items-center gap-2">
           <input type="date" value={localCustomStart}
             onChange={(e) => setLocalCustomStart(e.target.value)}
@@ -1575,15 +1826,20 @@ export function DailyTrendCharts({ dateRange: parentRange, customStart, customEn
       </div>
     );
   }
-  if (noData && !isCustom) return null;
+  if (noData && !isCustom && !loading) return null;
 
   return (
     <div className="space-y-4">
       {header}
 
-      {isCustom && noData && !loading && (
+      {isCustom && noData && !loading && !customReady && (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-10 text-center text-sm text-gray-400">
           Pick a start and end date above to view trends
+        </div>
+      )}
+      {isCustom && noData && !loading && customReady && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-10 text-center text-sm text-gray-400">
+          No daily data available for this date range
         </div>
       )}
 
@@ -1700,6 +1956,35 @@ export function AggregatePlanning({ campaigns, loading, metaCurrency, dv360Curre
   const [metaAudFilter, setMetaAudFilter] = useState("all");
   const [dv360AudFilter, setDv360AudFilter] = useState("all");
 
+  // Saved audiences from the account — used for the audience dropdown.
+  const { audiences: savedAudiences, audienceMap, adsets: insightAdSets } = useAdSetInsights(
+    hasMeta ? "meta" : "dv360",
+    "custom" as DateRange, wideWindow.start, wideWindow.end
+  );
+
+  // Build a map: saved audience name → set of ad set IDs + names that target it
+  const audNameToAdSetMatch = useMemo(() => {
+    const m = new Map<string, { ids: Set<string>; names: Set<string> }>();
+    for (const a of savedAudiences) {
+      m.set(a.name, { ids: new Set(), names: new Set() });
+    }
+    for (const as_ of insightAdSets) {
+      const cas = (as_.targeting as any)?.custom_audiences as Array<{ id: string }> | undefined;
+      if (!cas) continue;
+      for (const ca of cas) {
+        const aud = audienceMap.get(ca.id);
+        if (aud) {
+          const entry = m.get(aud.name);
+          if (entry) {
+            entry.ids.add(as_.id);
+            entry.names.add(as_.name);
+          }
+        }
+      }
+    }
+    return m;
+  }, [savedAudiences, insightAdSets, audienceMap]);
+
   const META_OBJECTIVES = ["Awareness", "Traffic", "Engagement", "Leads", "App Promotion", "Sales"];
   const DV360_OBJECTIVES = ["Brand Awareness", "Conversions", "Offline Action", "App Installs"];
   const metaObjectives = useMemo(() => {
@@ -1777,7 +2062,7 @@ export function AggregatePlanning({ campaigns, loading, metaCurrency, dv360Curre
     return [...new Set(from)].filter(Boolean).sort();
   }, [dvCreativeType.rows]);
 
-  // Audience filter options — group by audience type category, not raw targeting strings.
+  // Audience filter options — show saved audience names from the account.
   const metaAudCategory = useCallback((row: { name: string; targeting: string }) => {
     const t = (row.targeting + " " + row.name).toLowerCase();
     if (t.includes("lookalike")) return "Lookalike";
@@ -1787,9 +2072,13 @@ export function AggregatePlanning({ campaigns, loading, metaCurrency, dv360Curre
     return "Other";
   }, []);
   const metaAudOptions = useMemo(() => {
-    const set = new Set(metaAdSets.rows.map((r) => metaAudCategory(r)).filter(Boolean));
+    if (savedAudiences.length > 0) {
+      const set = new Set(savedAudiences.map((a) => a.name).filter(Boolean));
+      return ["all", ...Array.from(set).sort()];
+    }
+    const set = new Set(metaAdSets.rows.map((r) => r.name).filter(Boolean));
     return ["all", ...Array.from(set).sort()];
-  }, [metaAdSets.rows, metaAudCategory]);
+  }, [savedAudiences, metaAdSets.rows]);
   const dv360AudOptions = useMemo(() => {
     const set = new Set(dv360LineItems.rows.map((r) => r.audienceType).filter(Boolean));
     return ["all", ...Array.from(set).sort()];
@@ -1849,7 +2138,12 @@ export function AggregatePlanning({ campaigns, loading, metaCurrency, dv360Curre
     // groupBy === "audience" — always 2 summary cards (Meta + DV360), detail table below shows filtered rows
     const out: AggTable[] = [];
     if (hasMeta) {
-      const filtered = metaAudFilter === "all" ? metaAdSets.rows : metaAdSets.rows.filter((r) => metaAudCategory(r) === metaAudFilter);
+      const match = audNameToAdSetMatch.get(metaAudFilter);
+      const filtered = metaAudFilter === "all"
+        ? metaAdSets.rows
+        : match && (match.ids.size > 0 || match.names.size > 0)
+          ? metaAdSets.rows.filter((r) => match.ids.has(r.id) || match.names.has(r.name))
+          : metaAdSets.rows.filter((r) => (r.targeting + " " + r.name).toLowerCase().includes(metaAudFilter.toLowerCase()));
       const d = filtered.length > 0
         ? deriveDelivered(filtered.reduce((a, r) => ({ spend: a.spend + r.spend, impressions: a.impressions + r.impressions, clicks: a.clicks + r.clicks, reach: a.reach + r.reach, videoViews: a.videoViews + r.videoViews }), { spend: 0, impressions: 0, clicks: 0, reach: 0, videoViews: 0 }))
         : deliveredOfGroup(metaCampaigns);
@@ -1865,7 +2159,7 @@ export function AggregatePlanning({ campaigns, loading, metaCurrency, dv360Curre
       out.push({ key: "aud:dv360", label: "DV360", sub: subLabel, count: filtered.length || dv360Campaigns.length, delivered: d, gcur: dv360Currency, platform: "dv360" });
     }
     return out;
-  }, [groupBy, campaigns, metaCampaigns, dv360Campaigns, hasMeta, hasDv, metaChannel, dv360Channel, metaObjective, dv360Objective, metaCreative, dv360Creative, metaPub.rows, dvExch.rows, dvCreativeType.rows, metaFormatRows, metaCurrency, dv360Currency, metaAudFilter, dv360AudFilter, metaAdSets.rows, metaAdSets.loading, dv360LineItems.rows, dv360LineItems.loading, metaAudCategory]);
+  }, [groupBy, campaigns, metaCampaigns, dv360Campaigns, hasMeta, hasDv, metaChannel, dv360Channel, metaObjective, dv360Objective, metaCreative, dv360Creative, metaPub.rows, dvExch.rows, dvCreativeType.rows, metaFormatRows, metaCurrency, dv360Currency, metaAudFilter, dv360AudFilter, metaAdSets.rows, metaAdSets.loading, dv360LineItems.rows, dv360LineItems.loading, audNameToAdSetMatch]);
 
   const scopeLabel = groupBy === "overall" ? "Overall"
     : groupBy === "channel" ? "By channel"
@@ -2534,7 +2828,12 @@ ${savedPlanPages}
 
       {/* Audience detail table — shows filtered ad sets / line items when Audience view is active */}
       {groupBy === "audience" && (() => {
-        const filteredMeta = metaAudFilter === "all" ? metaAdSets.rows : metaAdSets.rows.filter((r) => metaAudCategory(r) === metaAudFilter);
+        const detailMatch = audNameToAdSetMatch.get(metaAudFilter);
+        const filteredMeta = metaAudFilter === "all"
+          ? metaAdSets.rows
+          : detailMatch && (detailMatch.ids.size > 0 || detailMatch.names.size > 0)
+            ? metaAdSets.rows.filter((r) => detailMatch.ids.has(r.id) || detailMatch.names.has(r.name))
+            : metaAdSets.rows.filter((r) => (r.targeting + " " + r.name).toLowerCase().includes(metaAudFilter.toLowerCase()));
         const filteredDv = dv360AudFilter === "all" ? dv360LineItems.rows : dv360LineItems.rows.filter((r) => r.audienceType === dv360AudFilter);
         return (
           <div className="border-t border-gray-100 px-5 py-4">
