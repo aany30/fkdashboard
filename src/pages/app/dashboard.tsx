@@ -178,6 +178,27 @@ export default function Dashboard() {
   const [dv360NeedsAdvertiser, setDv360NeedsAdvertiser] = useState(false);
   const [logoutMenuOpen, setLogoutMenuOpen] = useState(false);
 
+  // Zustand-persist hydration gate.
+  //
+  // On the production build, `persist` finishes reading localStorage AFTER the
+  // OAuth effect below fires — timing depends on bundle size (auditorgw's
+  // smaller build won the race, fkdashboard's larger build loses it). Writing
+  // credentials before hydration means the write lands on the store's empty
+  // init state, and persist then flushes that back to localStorage — erasing
+  // whichever platform was already connected. Symptom: connect DV360 second,
+  // Meta's token disappears.
+  //
+  // Defaults to `true` if the persist API is somehow missing, so we can never
+  // permanently block the OAuth handler.
+  const [hydrated, setHydrated] = useState<boolean>(
+    () => useAuthStore.persist?.hasHydrated?.() ?? true
+  );
+  useEffect(() => {
+    const unsub = useAuthStore.persist?.onFinishHydration?.(() => setHydrated(true));
+    if (useAuthStore.persist?.hasHydrated?.()) setHydrated(true);
+    return () => unsub?.();
+  }, []);
+
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -200,9 +221,11 @@ export default function Dashboard() {
     }
   }, [platform, visibleNav, activeTab]);
 
-  // Handle OAuth redirects
+  // Handle OAuth redirects. Waits for hydration (see gate above) so the
+  // incoming platform's credentials merge onto the stored ones instead of
+  // stomping empty init state through persist.
   useEffect(() => {
-    if (!router.isReady) return;
+    if (!router.isReady || !hydrated) return;
 
     const {
       meta_token,
@@ -274,7 +297,7 @@ export default function Dashboard() {
       router.replace("/app/dashboard");
     }
 
-  }, [router.isReady, router.query, setMetaCredentials, setMetaPixelList, setDV360Credentials, setLoginEmail, router]);
+  }, [router.isReady, hydrated, router.query, setMetaCredentials, setMetaPixelList, setDV360Credentials, setLoginEmail, router]);
 
   // Hydrate demo mode from ?demo=1 — survives refresh / back-button within the
   // tab without leaking into localStorage.
@@ -285,7 +308,7 @@ export default function Dashboard() {
 
   // Route guard — block /app/dashboard for unconnected, non-demo visitors.
   useEffect(() => {
-    if (!mounted || !router.isReady) return;
+    if (!mounted || !router.isReady || !hydrated) return;
     if (router.query.demo === "1") return; // grace period while demoMode hydrates
     // A DV360 refresh token present but no advertiser yet = mid-connection
     // (OAuth found no advertisers, user must paste the ID). Don't bounce them
@@ -294,7 +317,7 @@ export default function Dashboard() {
     if (!isMetaConnected() && !isDV360Connected() && !dv360Pending && !demoMode) {
       router.replace("/");
     }
-  }, [mounted, router.isReady, router.query.demo, isMetaConnected, isDV360Connected, dv360RefreshToken, demoMode, router]);
+  }, [mounted, hydrated, router.isReady, router.query.demo, isMetaConnected, isDV360Connected, dv360RefreshToken, demoMode, router]);
 
   const handleLogout = () => {
     clearAllCredentials();
