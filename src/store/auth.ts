@@ -5,6 +5,64 @@ import { META_BENCHMARKS, type BenchmarkSnapshot } from "@/lib/funnel-benchmarks
 import { toDisplayCredits } from "@/lib/ai-cost";
 import { isDemoCredential } from "@/lib/demo-data";
 
+/**
+ * Rescue the OTHER platform's credentials from localStorage into the in-memory
+ * store before writing the current platform's credentials.
+ *
+ * Fixes a Zustand-persist hydration race that surfaces on Vercel:
+ *
+ *   1. Full page load lands on /app/dashboard?dv360_refresh=...
+ *   2. Store initializes with defaults (metaAccessToken: null, ...).
+ *   3. OAuth-handler effect fires and calls setDV360Credentials BEFORE persist
+ *      finishes reading localStorage.
+ *   4. Zustand's shallow merge preserves other fields in memory as null, then
+ *      persist immediately flushes state to localStorage, overwriting the
+ *      previously persisted Meta token with null.
+ *
+ * The hydration gate in dashboard.tsx tries to prevent step 3, but on Vercel
+ * builds hasHydrated() can flip true before the merge actually completes.
+ * This helper is the belt-and-suspenders — it forcibly re-reads localStorage
+ * and syncs the OTHER platform's fields into memory before we write ours, so
+ * the persist flush cannot lose them regardless of hydration timing.
+ */
+function rescueOtherPlatformFromStorage(otherPlatform: "meta" | "dv360") {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem("auth-store");
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const stored = parsed?.state;
+    if (!stored) return;
+    const current = useAuthStore.getState();
+    if (otherPlatform === "meta") {
+      // If Meta is in localStorage but missing/blank in memory, re-inject it.
+      if (stored.metaAccessToken && !current.metaAccessToken) {
+        useAuthStore.setState({
+          metaAccessToken: stored.metaAccessToken,
+          metaBusinessId: stored.metaBusinessId ?? null,
+          metaPixelIds: stored.metaPixelIds ?? [],
+          metaPixelList: stored.metaPixelList ?? [],
+          selectedMetaPixelId: stored.selectedMetaPixelId ?? null,
+          metaCurrency: stored.metaCurrency ?? null,
+        });
+      }
+    } else {
+      if (stored.dv360RefreshToken && !current.dv360RefreshToken) {
+        useAuthStore.setState({
+          dv360ClientId: stored.dv360ClientId ?? null,
+          dv360ClientSecret: stored.dv360ClientSecret ?? null,
+          dv360RefreshToken: stored.dv360RefreshToken,
+          dv360AdvertiserId: stored.dv360AdvertiserId ?? null,
+          dv360PartnerId: stored.dv360PartnerId ?? null,
+          dv360Currency: stored.dv360Currency ?? null,
+        });
+      }
+    }
+  } catch {
+    // Best-effort — if localStorage is unavailable or corrupt, fall through.
+  }
+}
+
 interface PixelInfo {
   id: string;
   name: string;
@@ -342,23 +400,33 @@ export const useAuthStore = create<AuthState>()(
           };
         }),
 
-      setMetaCredentials: (token, businessId, pixelIds) =>
-        set({ metaAccessToken: token, metaBusinessId: businessId, metaPixelIds: pixelIds }),
+      setMetaCredentials: (token, businessId, pixelIds) => {
+        // Defensive: re-read the OTHER platform's persisted credentials from
+        // localStorage before writing, so a stale in-memory state (persist
+        // hydration hasn't landed yet) can't blank DV360 through the shallow
+        // merge + persist-write cycle. Cheap: one JSON.parse per connect.
+        rescueOtherPlatformFromStorage("dv360");
+        set({ metaAccessToken: token, metaBusinessId: businessId, metaPixelIds: pixelIds });
+      },
 
-      setMetaPixelList: (pixels) =>
-        set({ metaPixelList: pixels, selectedMetaPixelId: pixels[0]?.id || null }),
+      setMetaPixelList: (pixels) => {
+        rescueOtherPlatformFromStorage("dv360");
+        set({ metaPixelList: pixels, selectedMetaPixelId: pixels[0]?.id || null });
+      },
 
       setSelectedMetaPixelId: (pixelId) =>
         set({ selectedMetaPixelId: pixelId }),
 
-      setDV360Credentials: ({ clientId, clientSecret, refreshToken, advertiserId, partnerId }) =>
+      setDV360Credentials: ({ clientId, clientSecret, refreshToken, advertiserId, partnerId }) => {
+        rescueOtherPlatformFromStorage("meta");
         set({
           dv360ClientId: clientId,
           dv360ClientSecret: clientSecret,
           dv360RefreshToken: refreshToken,
           dv360AdvertiserId: advertiserId,
           dv360PartnerId: partnerId || null,
-        }),
+        });
+      },
 
       setDateRange: (range) => set({ dateRange: range }),
       setCustomDateRange: (range) => set({ customDateRange: range }),

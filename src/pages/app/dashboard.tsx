@@ -194,8 +194,18 @@ export default function Dashboard() {
     () => useAuthStore.persist?.hasHydrated?.() ?? true
   );
   useEffect(() => {
-    const unsub = useAuthStore.persist?.onFinishHydration?.(() => setHydrated(true));
-    if (useAuthStore.persist?.hasHydrated?.()) setHydrated(true);
+    // eslint-disable-next-line no-console
+    console.log("[auth-fix v2] hydration gate armed");
+    const unsub = useAuthStore.persist?.onFinishHydration?.(() => {
+      // eslint-disable-next-line no-console
+      console.log("[auth-fix v2] persist finished hydrating");
+      setHydrated(true);
+    });
+    if (useAuthStore.persist?.hasHydrated?.()) {
+      // eslint-disable-next-line no-console
+      console.log("[auth-fix v2] persist already hydrated on mount");
+      setHydrated(true);
+    }
     return () => unsub?.();
   }, []);
 
